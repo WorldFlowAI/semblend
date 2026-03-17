@@ -103,7 +103,9 @@ pip install semblend[sglang]
 pip install semblend[embedder]
 ```
 
-## Quick Start: vLLM
+## Quick Start: vLLM + LMCache
+
+vLLM integrates via LMCache's `KVConnectorBase_V1` — a first-class public API. No patching required.
 
 ```bash
 pip install semblend[vllm] vllm lmcache
@@ -127,16 +129,20 @@ Configure via environment variables:
 
 ## Quick Start: SGLang
 
+SGLang integrates via a RadixCache patch applied at startup. This is necessary because SGLang's `RadixCache.match_prefix` does not currently have a hook for semantic fallback lookup — a [PR to SGLang](https://github.com/sgl-project/sglang) is in progress to add a first-class `SemanticPrefixProvider` interface (analogous to [LMCache PR #2803](https://github.com/LMCache/LMCache/pull/2803)).
+
 ```bash
 pip install semblend[sglang] sglang
 
-# Option 1: CLI launcher (patches RadixCache automatically)
+# Option 1: CLI launcher — applies the RadixCache patch automatically
 semblend-sglang --model-path Qwen/Qwen2.5-7B-Instruct \
   --host 0.0.0.0 --port 8000
 
-# Option 2: Programmatic patching
+# Option 2: Programmatic — call before SGLang initializes
 from semblend.integration.sglang.radix_patcher import patch_radix_cache
-patch_radix_cache()  # Call before SGLang starts
+patch_radix_cache()
+import sglang as sgl
+# ... start server ...
 ```
 
 ## How It Works
@@ -168,5 +174,5 @@ SemBlend has minimal overhead on dissimilar workloads (e.g. code generation from
 
 Business Source License 1.1 (BSL-1.1). Free for non-production use including testing, development, evaluation, and academic research. Production use requires a commercial license from WorldFlow AI. Converts to Apache License 2.0 on 2030-03-16.
 
-Contact: licensing@worldflow.ai
+Contact: research@worldflowai.com
 
