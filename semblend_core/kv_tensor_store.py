@@ -26,7 +26,6 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
 
 import numpy as np
 
@@ -227,7 +226,7 @@ class KVTensorStore:
         if layers is None:
             return kv
 
-        return {l: kv[l] for l in layers if l in kv}
+        return {layer: kv[layer] for layer in layers if layer in kv}
 
     def get_entry(self, entry_id: str) -> KVEntry | None:
         """Get metadata for an entry."""

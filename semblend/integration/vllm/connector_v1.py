@@ -9,7 +9,7 @@ It lazily re-exports from the canonical implementation in synapse_kv_connector
 to avoid importing torch/vllm at module scope.
 """
 
-__all__ = ["SemBlendConnectorV1"]
+__all__ = ["SemBlendConnectorV1"]  # noqa: F822 — lazy-loaded via __getattr__
 
 
 def __getattr__(name: str):

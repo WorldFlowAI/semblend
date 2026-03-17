@@ -814,7 +814,6 @@ def partial_prefill(
         PartialPrefillResult with output tensor and timing info.
     """
     seq_len = hidden_states.shape[0]
-    hidden_dim = hidden_states.shape[1]
     num_layers = donor_kv.shape[0]
     device = hidden_states.device
 

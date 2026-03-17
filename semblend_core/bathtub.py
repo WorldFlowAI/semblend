@@ -91,11 +91,11 @@ def sigma(
     Returns:
         Deviation score in [0, 1].
     """
-    l = layer_idx
+    layer = layer_idx
     big_l = num_layers - 1
 
-    early = sigma_e * math.exp(-l / tau_e) if tau_e > 0 else 0.0
-    late = sigma_l * math.exp(-(big_l - l) / tau_l) if tau_l > 0 else 0.0
+    early = sigma_e * math.exp(-layer / tau_e) if tau_e > 0 else 0.0
+    late = sigma_l * math.exp(-(big_l - layer) / tau_l) if tau_l > 0 else 0.0
 
     return min(sigma_base + early + late, 1.0)
 

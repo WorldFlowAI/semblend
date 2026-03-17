@@ -64,7 +64,7 @@ from semblend_core.simhash import (
 
 # Optional GPU components
 try:
-    from semblend_core.rope_correction import (
+    from semblend_core.rope_correction import (  # noqa: F401
         apply_rope_delta_inplace,
         nope_permute_paged_kv,
         permute_paged_kv_with_rope,
@@ -77,7 +77,7 @@ except ImportError:
     HAS_ROPE_CORRECTION = False
 
 try:
-    from semblend_core.triton_kernels import (
+    from semblend_core.triton_kernels import (  # noqa: F401
         PartialPrefillResult,
         masked_qkv_projection,
         partial_prefill,

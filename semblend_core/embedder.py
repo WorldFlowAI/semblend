@@ -204,8 +204,8 @@ class OnnxGpuEmbedder:
 
         # Export from sentence-transformers to ONNX
         try:
-            from sentence_transformers import SentenceTransformer
             import torch
+            from sentence_transformers import SentenceTransformer
 
             cache_dir.mkdir(parents=True, exist_ok=True)
             model = SentenceTransformer(self.MODEL_NAME, device="cpu")

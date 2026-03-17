@@ -44,7 +44,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-import math
 
 import torch
 
@@ -435,7 +434,6 @@ def permute_paged_kv_with_rope(
     # Layout: [num_blocks, 2, num_heads, block_size, head_dim]
     _, _, num_heads, block_size, head_dim = kv_cache.shape
 
-    n = len(permutation)
     src_pos_list = torch.tensor(
         [p[0] for p in permutation], dtype=torch.long, device=device
     )

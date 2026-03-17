@@ -23,7 +23,6 @@ Environment variables:
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import time
@@ -49,11 +48,7 @@ except ImportError:
 
 # Lazy imports for SGLang types — only available when running inside SGLang
 if TYPE_CHECKING:
-    from sglang.srt.mem_cache.hicache_storage import (
-        HiCacheStorage,
-        HiCacheStorageConfig,
-        HiCacheStorageExtraInfo,
-    )
+    pass
 
 
 def _get_hicache_storage_base():

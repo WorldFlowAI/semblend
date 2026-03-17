@@ -48,7 +48,7 @@ _FUZZY_CHUNK_MIN_OVERLAP = float(
 )
 
 try:
-    from rapidfuzz.distance import Opcodes
+    from rapidfuzz.distance import Opcodes  # noqa: F401
     from rapidfuzz.distance.Levenshtein import opcodes as lev_opcodes
     HAS_RAPIDFUZZ = True
 except ImportError:
@@ -259,7 +259,6 @@ def _fuzzy_match_chunk(
 
     best_idx: int | None = None
     best_overlap = 0
-    best_pairs: list[tuple[int, int]] = []
 
     for d_idx, d_chunk in enumerate(donor_chunks):
         if d_idx in used_donor_chunks:
@@ -287,7 +286,7 @@ def _fuzzy_match_chunk(
     # For the common shifted-prefix case, tokens are identical but offset.
     # Use greedy positional matching: prefer same-position matches first.
     d_chunk = donor_chunks[best_idx]
-    d_start = donor_chunk_starts[best_idx]
+    donor_chunk_starts[best_idx]
     pairs: list[tuple[int, int]] = []
 
     # Phase 1: match tokens at same relative offset (zero-delta preferred)
@@ -640,7 +639,7 @@ def _levenshtein_alignment(
 
     for op in ops:
         tag = op.tag
-        src_start, src_end = op.src_start, op.src_end
+        src_start, _src_end = op.src_start, op.src_end
         dest_start, dest_end = op.dest_start, op.dest_end
 
         if tag == "equal":

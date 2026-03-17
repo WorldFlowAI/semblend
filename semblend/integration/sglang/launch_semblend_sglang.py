@@ -71,8 +71,8 @@ def main() -> None:
     logger.info("Launching SGLang with SemBlend semantic KV cache reuse")
 
     try:
-        from sglang.srt.server_args import prepare_server_args
         from sglang.srt.entrypoints.http_server import launch_server
+        from sglang.srt.server_args import prepare_server_args
         from sglang.srt.utils import kill_process_tree
     except ImportError:
         logger.error(

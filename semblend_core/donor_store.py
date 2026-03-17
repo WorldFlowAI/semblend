@@ -24,8 +24,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from semblend_core.alignment import (
-    AlignmentResult,
     DEFAULT_CHUNK_SIZE,
+    AlignmentResult,
     compute_alignment,
     estimate_reuse_ratio,
 )
