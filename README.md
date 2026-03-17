@@ -69,10 +69,25 @@ Multi-turn conversations naturally reuse the same prefix → near-perfect hit ra
 
 | Engine | Hit Rate | p50 TTFT | Speedup |
 |--------|----------|----------|---------|
-| SGLang (RadixAttention, no SemBlend) | 0% | 3,850 ms | 0.98x |
-| vLLM + LMCache | 0% | 3,193 ms | 1.0x |
-| vLLM + LMCache + SemBlend | 50–88% | 817 ms | **3.9x** |
-| SGLang + SemBlend | 50–88% | 624 ms | **3.7x** |
+| SGLang (RadixAttention, no SemBlend) | 0% | 2,265 ms | 0.98x |
+| vLLM + LMCache (no SemBlend) | 0% | 3,311 ms | 1.0x |
+| vLLM + LMCache + SemBlend | 100% | 1,026 ms | **3.26x** |
+| SGLang + SemBlend | 100% | 624 ms | **3.71x** |
+
+### Extended benchmark suite (cross-instruction pairing, 6,905 samples)
+
+Each sample pair uses the same document and question but **different instruction phrasings**, shifting all chunk boundaries so exact-prefix caching gets 0% hits.
+
+| Dataset | N | vLLM+SemBlend Hit% | Baseline Hit% | Hit-Only Speedup |
+|---------|---|-------------------|---------------|-----------------|
+| LongEval (4K synthetic) | 999 | **82.6%** | 22.7% | 1.48x |
+| WikiText-103 | 230 | **75.7%** | 0.8% | 1.55x |
+| NarrativeQA | 365 | **29.6%** | 18.6% | 2.09x |
+| TriviaQA (Wikipedia QA) | 1,000 | **24.8%** | 0.1% | 3.73x |
+| SCBench (KV cache tasks) | 527 | **17.6%** | 3.4% | 5.73x |
+| **Overall** | **3,121** | **46.4%** | 11.5% | — |
+
+*Baseline = SGLang vanilla (FP16, RadixCache only). SemBlend achieves 4x higher overall hit rate.*
 
 ### Quality
 
