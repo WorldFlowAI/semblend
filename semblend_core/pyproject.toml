@@ -1,0 +1,19 @@
+[project]
+name = "semblend-core"
+version = "0.1.0"
+description = "Backend-agnostic semantic KV cache reuse for LLM inference"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "rapidfuzz>=3.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "torch>=2.0",
+    "triton>=2.0",
+]
+embedder = [
+    "sentence-transformers>=2.0",
+    "onnxruntime>=1.15",
+]

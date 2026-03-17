@@ -1,0 +1,89 @@
+[project]
+name = "semblend"
+version = "0.1.0"
+description = "Semantic KV cache reuse for LLM inference engines (vLLM, SGLang)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [
+    { name = "WorldFlow AI" },
+]
+keywords = ["llm", "inference", "kv-cache", "vllm", "sglang", "semantic-cache"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: Other/Proprietary License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "numpy>=1.24",
+    "rapidfuzz>=3.0",
+]
+
+[project.urls]
+Homepage = "https://worldflow.ai/semblend"
+Repository = "https://github.com/worldflowai/semblend"
+Documentation = "https://docs.worldflow.ai/semblend"
+"Bug Tracker" = "https://github.com/worldflowai/semblend/issues"
+
+[project.scripts]
+semblend-sglang = "semblend.integration.sglang.launch_semblend_sglang:main"
+
+[project.optional-dependencies]
+embedder = [
+    "sentence-transformers>=3.0",
+    "onnxruntime>=1.15",
+]
+gpu = [
+    "torch>=2.0",
+    "triton>=2.0",
+]
+vllm = [
+    "vllm>=0.8.0",
+    "torch>=2.0",
+    "sentence-transformers>=3.0",
+]
+sglang = [
+    "sglang>=0.4.0",
+    "torch>=2.0",
+    "sentence-transformers>=3.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+benchmarks = [
+    "aiohttp>=3.9",
+    "datasets>=2.16",
+    "tqdm>=4.66",
+    "rich>=13.7",
+    "rouge-score>=0.1.2",
+    "transformers>=4.40",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["semblend*", "semblend_core*", "synapse_kv_connector*"]
+exclude = ["benchmarks*", "paper*", "patent*", "infra*", "literature*", "results*", "tests*", "synapse_kv_connector.tests*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "synapse_kv_connector/tests"]
+addopts = "--ignore=synapse_kv_connector/tests/test_rope_correction.py --ignore=synapse_kv_connector/tests/test_triton_kernels.py"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
