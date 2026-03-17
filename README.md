@@ -170,8 +170,3 @@ Business Source License 1.1 (BSL-1.1). Free for non-production use including tes
 
 Contact: licensing@worldflow.ai
 
-## Links
-
-- [Paper](https://arxiv.org/abs/XXXX.XXXXX)
-- [Documentation](https://docs.worldflow.ai/semblend)
-- [GitHub](https://github.com/worldflowai/semblend)
