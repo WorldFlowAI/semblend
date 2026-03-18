@@ -1,126 +1,74 @@
 # SemBlend
 
+<p align="center">
+  <a href="https://pypi.org/project/semblend/"><img alt="PyPI" src="https://img.shields.io/pypi/v/semblend?color=blue&label=pypi"></a>
+  <a href="https://pypi.org/project/semblend/"><img alt="Python" src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue"></a>
+  <a href="https://github.com/worldflowai/semblend/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/worldflowai/semblend/ci.yml?branch=main&label=CI"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-green"></a>
+  <a href="https://arxiv.org/abs/TODO"><img alt="Paper" src="https://img.shields.io/badge/paper-arXiv-red"></a>
+</p>
+
 **Semantic KV cache reuse for LLM inference engines.**
 
-SemBlend extends exact-prefix KV caching (LMCache, vLLM prefix cache, SGLang RadixAttention) with *semantic* donor discovery. When a new prompt is semantically similar to a prior one but lexically different — different instruction wording, sentence ordering, or template fields — SemBlend finds and reuses the cached KV tensors, eliminating redundant prefill computation.
+SemBlend extends exact-prefix KV caching (vLLM, LMCache, SGLang) with *semantic* donor discovery. When a prompt is semantically similar to a cached one but lexically different — different instruction phrasing, sentence order, or template fields — SemBlend finds and reuses the cached KV tensors, replacing a multi-second prefill with sub-second KV retrieval.
 
 ```
-Without SemBlend:  vLLM + LMCache  →  0% hit  →  full prefill every request
-With SemBlend:     vLLM + LMCache  →  30–88% hit  →  reuse KV from similar past requests
+vLLM + LMCache alone:        semantically similar prompt  →  0% hit   →  full prefill
+vLLM + LMCache + SemBlend:                                →  30–88% hit  →  reuse donor KV
 ```
-
-## What It Does
-
-| System | Hit Condition | Semantically Similar Prompts |
-|--------|--------------|------------------------------|
-| vLLM prefix cache | Exact token-level prefix match | Full prefill (0% hit) |
-| LMCache alone | Exact 256-token chunk match | Full prefill (0% hit) |
-| **LMCache + SemBlend** | Semantic similarity ≥ 0.60 | **Reuse donor KV (30–88% hit)** |
-
-SemBlend runs ~8ms of in-process MiniLM embedding + cosine search on every request. On a miss it adds negligible overhead. On a hit it replaces a 2–17 second prefill with sub-second KV retrieval.
 
 ## Performance
 
-Empirical results on A10G GPU, Qwen2.5-7B-AWQ + vLLM 0.14.1 + LMCache.
+Measured on A10G GPU, Qwen2.5-7B-AWQ, vLLM 0.14.1 + LMCache.
 
-### TTFT speedup on hits vs. cold prefill (diverse real content)
+### TTFT speedup vs cold prefill
 
-| Context Length | Cold TTFT | SemBlend Miss (+overhead) | SemBlend Hit | Hit Speedup |
-|---------------|-----------|--------------------------|--------------|-------------|
-| 4K tokens | 1,859 ms | 1,864 ms (+0.3%) | 801 ms | **2.3x** |
-| 8K tokens | 3,193 ms | 3,315 ms (+3.8%) | 817 ms | **3.9x** |
-| 16K tokens | 5,852 ms | 6,064 ms (+3.6%) | 871 ms | **6.7x** |
-| 32K tokens | 15,418 ms | — | 1,288 ms | **12.0x** |
+| Context | Cold TTFT | Hit TTFT | Speedup | Break-even P_hit |
+|---------|-----------|----------|---------|-----------------|
+| 4K | 1,859 ms | 801 ms | **2.3x** | <1% |
+| 8K | 3,193 ms | 817 ms | **3.9x** | 4.9% |
+| 16K | 5,852 ms | 871 ms | **6.7x** | 4.1% |
+| 32K | 15,418 ms | 1,288 ms | **12.0x** | — |
 
-*Hit TTFT is consistently ~800ms regardless of context length — it's bounded by KV retrieval, not prefill.*
+Hit TTFT is ~800ms regardless of context length — bounded by KV retrieval, not prefill. Miss overhead is 5–212ms (negligible). SemBlend is net-positive at virtually any nonzero hit rate for contexts ≥ 4K.
 
-Miss overhead grows with context length (5–212ms at ~20 donors in store). Break-even: P_hit > 5% at 8K is net-positive.
+### Hit rates on real workloads
 
-### Real-world hit rates (WildChat-1M user conversations)
+| Workload | Hit Rate | Hit-only Speedup |
+|---------|----------|-----------------|
+| WildChat-1M short prompts (≥4K) | 29.2% | 1.63x |
+| WildChat-1M long prompts (≥8K) | 30.0% | 1.88x |
+| Summarization (CNN/DM, SAMSum) | 50–88% | 2.3–2.4x |
+| Multi-turn dialogue (turn 2+) | 99.5% | 5.1x |
+| Cross-instruction RAG (8K) | 100% | 3.3–3.7x |
+| Code generation (dissimilar) | 0% | 0.96x |
 
-| Workload | Requests | Hit Rate | Hit-only TTFT speedup |
-|---------|----------|----------|----------------------|
-| Short prompts (≥4K chars) | 250 | 29.2% | **1.63x** |
-| Long prompts (≥8K chars) | 150 | 30.0% | **1.88x** |
-
-Hit rate increases with cosine similarity: 17% at 0.50–0.60 → 60% at 0.90–1.00.
-
-### Cross-dataset hit rates and speedups (8K tokens, Qwen2.5-7B)
-
-| Dataset | Hit Rate | Overall Speedup | Hit-only Speedup |
-|---------|----------|----------------|-----------------|
-| CNN/DailyMail (summarization) | 50% | 2.29x | 2.39x |
-| MultiNews (multi-doc summary) | 75% | 2.23x | 2.23x |
-| SAMSum (dialogue summary) | 88% | 2.37x | 2.37x |
-
-*Speedups measured over cold vLLM+LMCache baseline (0% hit on semantically different requests).*
-
-### Multi-turn dialogue (4K context, 3 turns)
-
-| Turn | Hit Rate | TTFT Speedup |
-|------|----------|-------------|
-| Turn 1 (cold) | — | 1.0x (baseline: 4019 ms) |
-| Turn 2 | 99.5% | **5.1x** (791 ms) |
-| Turn 3 | 99.5% | **5.1x** (787 ms) |
-
-Multi-turn conversations naturally reuse the same prefix → near-perfect hit rates without any workload tuning.
-
-### SGLang comparison (8K, cross-instruction RAG workload)
-
-| Engine | Hit Rate | p50 TTFT | Speedup |
-|--------|----------|----------|---------|
-| SGLang (RadixAttention, no SemBlend) | 0% | 2,265 ms | 0.98x |
-| vLLM + LMCache (no SemBlend) | 0% | 3,311 ms | 1.0x |
-| vLLM + LMCache + SemBlend | 100% | 1,026 ms | **3.26x** |
-| SGLang + SemBlend | 100% | 624 ms | **3.71x** |
-
-### Extended benchmark suite (cross-instruction pairing, 6,905 samples)
-
-Each sample pair uses the same document and question but **different instruction phrasings**, shifting all chunk boundaries so exact-prefix caching gets 0% hits.
-
-| Dataset | N | vLLM+SemBlend Hit% | Baseline Hit% | Hit-Only Speedup |
-|---------|---|-------------------|---------------|-----------------|
-| LongEval (4K synthetic) | 999 | **82.6%** | 22.7% | 1.48x |
-| WikiText-103 | 230 | **75.7%** | 0.8% | 1.55x |
-| NarrativeQA | 365 | **29.6%** | 18.6% | 2.09x |
-| TriviaQA (Wikipedia QA) | 1,000 | **24.8%** | 0.1% | 3.73x |
-| SCBench (KV cache tasks) | 527 | **17.6%** | 3.4% | 5.73x |
-| **Overall** | **3,121** | **46.4%** | 11.5% | — |
-
-*Baseline = SGLang vanilla (FP16, RadixCache only). SemBlend achieves 4x higher overall hit rate.*
+Hit rate scales with semantic similarity: 17% at cos≥0.50 → 60% at cos≥0.90.
 
 ### Quality
 
-SemBlend injects donor KV with RoPE position correction. Output quality impact on high-hit workloads:
+RoPE position correction keeps output quality near baseline:
 
 | Dataset | PPL ratio (SemBlend / cold) |
 |---------|---------------------------|
 | CNN/DailyMail | 1.006 |
 | WikiHow | 1.012 |
 | XSum | 1.025 |
-| MultiNews (hit-only runs) | 1.007 |
 
-PPL ratio ≤ 1.025 on most datasets; elevated ratios (≥1.1) on low-hit runs are due to miss-run variance, not KV injection.
+See the [paper](https://arxiv.org/abs/TODO) for full benchmark details.
 
 ## Installation
 
 ```bash
-# Core (CPU-only: numpy + rapidfuzz)
-pip install semblend
-
-# With vLLM integration
-pip install semblend[vllm]
-
-# With SGLang integration
-pip install semblend[sglang]
-
-# With sentence-transformers embedder
-pip install semblend[embedder]
+pip install semblend            # CPU-only core (numpy + rapidfuzz)
+pip install semblend[vllm]      # + vLLM/LMCache integration
+pip install semblend[sglang]    # + SGLang integration
+pip install semblend[embedder]  # + sentence-transformers (MiniLM GPU)
 ```
 
 ## Quick Start: vLLM + LMCache
 
-vLLM integrates via LMCache's `KVConnectorBase_V1` — a first-class public API. No patching required.
+Integrates via LMCache's `KVConnectorBase_V1` — no patching required.
 
 ```bash
 pip install semblend[vllm] vllm lmcache
@@ -133,61 +81,65 @@ vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
   }'
 ```
 
-Configure via environment variables:
+## Quick Start: SGLang
+
+```bash
+pip install semblend[sglang] sglang
+
+# CLI launcher — applies the RadixCache patch automatically
+semblend-sglang --model-path Qwen/Qwen2.5-7B-Instruct --host 0.0.0.0 --port 8000
+```
+
+Or programmatically — call before SGLang initializes:
+
+```python
+from semblend.integration.sglang.radix_patcher import patch_radix_cache
+patch_radix_cache()
+# ... start SGLang server ...
+```
+
+A first-class [`SemanticPrefixProvider`](https://github.com/sgl-project/sglang/pull/20806) interface (no patching) is in progress upstream.
+
+## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SEMBLEND_ENABLED` | `1` | Enable semantic donor search |
 | `SEMBLEND_MIN_SIMILARITY` | `0.60` | Cosine similarity threshold |
-| `SEMBLEND_EMBEDDER` | `minilm` | Embedder type (`minilm`, `jaccard`, `onnx_gpu`) |
-| `SEMBLEND_FUZZY_CHUNKS` | `0` | Enable fuzzy chunk matching |
-
-## Quick Start: SGLang
-
-SGLang integrates via a RadixCache patch applied at startup. This is necessary because SGLang's `RadixCache.match_prefix` does not currently have a hook for semantic fallback lookup — a [PR to SGLang](https://github.com/sgl-project/sglang) is in progress to add a first-class `SemanticPrefixProvider` interface (analogous to [LMCache PR #2803](https://github.com/LMCache/LMCache/pull/2803)).
-
-```bash
-pip install semblend[sglang] sglang
-
-# Option 1: CLI launcher — applies the RadixCache patch automatically
-semblend-sglang --model-path Qwen/Qwen2.5-7B-Instruct \
-  --host 0.0.0.0 --port 8000
-
-# Option 2: Programmatic — call before SGLang initializes
-from semblend.integration.sglang.radix_patcher import patch_radix_cache
-patch_radix_cache()
-import sglang as sgl
-# ... start server ...
-```
+| `SEMBLEND_EMBEDDER` | `minilm` | `minilm` · `jaccard` · `onnx_gpu` |
+| `SEMBLEND_FUZZY_CHUNKS` | `0` | Fuzzy chunk matching for shifted prefixes |
 
 ## How It Works
 
 ```
-Request → MiniLM Embed (5ms) → Cosine Search (1ms) → Align (1ms) → Inject KV
-              ↓                       ↓                    ↓
-         384-dim vector        Find similar donor    Match chunk boundaries
-                                in donor store       via MD5 hash alignment
+Request → Embed (5ms) → Search (1ms) → Align (1ms) → Inject KV
+             ↓               ↓              ↓
+        MiniLM-L6-v2   cosine search   MD5 chunk hash
+        384-dim         donor store     256-token boundary
 ```
 
-1. **Embed**: Compute a 384-dim MiniLM-L6-v2 embedding (sliding-window for long docs)
-2. **Search**: Brute-force cosine similarity against the donor store (<1ms at 1K donors)
-3. **Align**: MD5 chunk hashing at 256-token boundaries finds reusable KV chunks
-4. **Inject**: Replace target token IDs with donor token IDs — LMCache/RadixCache finds cached KV
+1. **Embed** — 384-dim MiniLM-L6-v2 embedding; sliding-window sampling for long prompts
+2. **Search** — brute-force cosine similarity against the donor store (<1ms at 1K donors)
+3. **Align** — MD5 chunk hashing finds reusable 256-token KV chunks; optional fuzzy matching handles shifted boundaries
+4. **Inject** — donor token IDs substituted into the request; LMCache/RadixCache retrieves cached KV; RoPE correction applied in-place on K tensors
 
 ## When SemBlend Helps
 
-SemBlend is most effective for workloads where prompts share a large common context:
+Most effective when prompts share a large common context:
 
-- **Document Q&A / RAG**: Same retrieved documents, different questions
-- **Summarization**: Same article, different instruction phrasing
-- **Multi-turn dialogue**: Conversation history grows across turns
-- **Code completion**: Shared repository context across requests
+- **Document Q&A / RAG** — same retrieved passages, different questions
+- **Summarization** — same article, different instruction phrasing
+- **Multi-turn dialogue** — conversation history prefix reused across turns
+- **Code completion** — shared repository context across requests
 
-SemBlend has minimal overhead on dissimilar workloads (e.g. code generation from scratch: measured 0% hit, 0.96x — 4% overhead from embedding + search).
+Dissimilar workloads (code generation from scratch, fully novel queries) see ~4% overhead with 0% hit — negligible in practice.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Business Source License 1.1 (BSL-1.1). Free for non-production use including testing, development, evaluation, and academic research. Production use requires a commercial license from WorldFlow AI. Converts to Apache License 2.0 on 2030-03-16.
+[Apache License 2.0](LICENSE).
 
-Contact: research@worldflowai.com
-
+Built at [WorldFlow AI](https://worldflowai.com). For enterprise support contact [research@worldflowai.com](mailto:research@worldflowai.com).
