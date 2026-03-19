@@ -81,6 +81,12 @@ vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
   }'
 ```
 
+> **CacheBlend support:** For selective layer recomputation (CacheBlend), vLLM must expose
+> the loaded model to KV connectors via `initialize_worker_connector()`. This is available
+> in vLLM builds that include [PR #37339](https://github.com/vllm-project/vllm/pull/37339).
+> Without it, SemBlend's semantic matching and KV injection still work — only CacheBlend's
+> per-layer recomputation is unavailable.
+
 ## Quick Start: SGLang
 
 ```bash
