@@ -27,7 +27,7 @@ from semblend_core.backend import SemBlendBackend
 logger = logging.getLogger(__name__)
 
 
-def _order_invariant_text(text: str, max_chars: int = 8000) -> str:
+def _order_invariant_text(text: str, max_chars: int = 200_000) -> str:
     """Produce order-invariant text representation for embedding.
 
     Splits text into sentences, sorts them, and joins. This makes the
@@ -37,6 +37,9 @@ def _order_invariant_text(text: str, max_chars: int = 8000) -> str:
     IMPORTANT: Sort ALL sentences first, then truncate. Truncating before
     sorting captures different paragraphs for different orderings, breaking
     order invariance at long context lengths.
+
+    The max_chars limit is set high (200K) to accommodate full-document
+    embedding; the embedder handles segmentation internally.
     """
     parts = [s.strip() for s in text.replace('\n', '. ').split('. ') if s.strip()]
     parts.sort()

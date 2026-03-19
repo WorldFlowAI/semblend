@@ -385,6 +385,25 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
                     file=sys.stderr, flush=True,
                 )
 
+        # Local GPU embedder — always initialized for both pipeline and legacy paths.
+        # Prefers ONNX GPU (co-located on inference GPU), falls back to MiniLM GPU/CPU.
+        self._local_embedder = None
+        try:
+            from synapse_kv_connector.embedder import create_embedder
+            self._local_embedder = create_embedder(
+                os.environ.get("SEMBLEND_EMBEDDER", "minilm")
+            )
+            print(
+                f"[SemBlend] local embedder: {type(self._local_embedder).__name__}, "
+                f"available={self._local_embedder.available}",
+                file=sys.stderr, flush=True,
+            )
+        except Exception as e:
+            print(
+                f"[SemBlend] local embedder init failed: {e}",
+                file=sys.stderr, flush=True,
+            )
+
         # Legacy donor store (fallback when pipeline unavailable)
         self._donor_store = SemBlendDonorStore(
             max_entries=int(os.environ.get("SEMBLEND_MAX_DONORS", "1000")),
@@ -1078,17 +1097,30 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         else:
             embedding = None
             if prompt:
-                embedding = self._donor_store.get_embedding(prompt[:2000])
+                # Use the local GPU embedder (ONNX preferred) with full text.
+                # The embedder handles segmentation internally for long prompts
+                # (overlapping windows + mean pooling for full-document coverage).
+                if self._local_embedder is not None and self._local_embedder.available:
+                    raw = self._local_embedder.embed(prompt)
+                    if raw is not None:
+                        embedding = raw.tolist() if hasattr(raw, 'tolist') else list(raw)
+                        print(
+                            f"[SemBlend] embedding OK (local GPU): "
+                            f"prompt={len(prompt)}ch",
+                            file=sys.stderr, flush=True,
+                        )
                 if embedding is None:
-                    print(
-                        f"[SemBlend] embedding fetch returned None for "
-                        f"req={request.request_id}, prompt_len={len(prompt)}ch",
-                        file=sys.stderr, flush=True,
-                    )
+                    # Fallback to legacy jina/gateway embedding
+                    embedding = self._donor_store.get_embedding(prompt)
+                    if embedding is None:
+                        print(
+                            f"[SemBlend] embedding fetch returned None for "
+                            f"req={request.request_id}, prompt_len={len(prompt)}ch",
+                            file=sys.stderr, flush=True,
+                        )
             else:
                 print(
-                    f"[SemBlend] no prompt text for req={request.request_id}, "
-                    f"falling back to Jaccard",
+                    f"[SemBlend] no prompt text for req={request.request_id}",
                     file=sys.stderr, flush=True,
                 )
 
@@ -1686,37 +1718,21 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         if prompt:
             return prompt
 
-        # Decode from token IDs using cached tokenizer
+        # Decode full prompt from token IDs — the embedder handles
+        # segmentation internally for long prompts (overlapping windows
+        # with mean pooling for full-document coverage).
         try:
             token_ids = list(request.all_token_ids)
             tokenizer = self._get_tokenizer()
             if tokenizer is not None:
                 t0 = time.monotonic()
                 n = len(token_ids)
-                # For long prompts, sample beginning + middle + end so the
-                # MiniLM embedding (512-token window) sees representative content
-                # from the full document rather than just the first 24% at 8K.
-                _MAX_DECODE = 2000
-                if n <= _MAX_DECODE:
-                    sample = token_ids
-                else:
-                    # 40% beginning (instruction + doc start), 30% middle, 30% end
-                    head = int(_MAX_DECODE * 0.40)
-                    mid_w = int(_MAX_DECODE * 0.30)
-                    tail = _MAX_DECODE - head - mid_w
-                    mid_start = (n - mid_w) // 2
-                    sample = (
-                        token_ids[:head]
-                        + token_ids[mid_start: mid_start + mid_w]
-                        + token_ids[n - tail:]
-                    )
-                prompt = tokenizer.decode(sample, skip_special_tokens=True)
+                prompt = tokenizer.decode(token_ids, skip_special_tokens=True)
                 elapsed = (time.monotonic() - t0) * 1000
                 if prompt:
                     print(
                         f"[SemBlend] decoded prompt: "
-                        f"{len(prompt)}ch from {n}tok "
-                        f"(sample={len(sample)}) in {elapsed:.0f}ms",
+                        f"{len(prompt)}ch from {n}tok in {elapsed:.0f}ms",
                         file=sys.stderr, flush=True,
                     )
                     return prompt
@@ -1781,28 +1797,14 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
 
         self._stats["total_saves"] += 1
 
-        # Decode prompt-only tokens for embedding (skip output tokens).
-        # Use sliding window sampling for long prompts so MiniLM sees
-        # representative content from beginning + middle + end of document.
+        # Decode full prompt tokens for embedding (skip output tokens).
+        # The embedder handles segmentation internally for long prompts
+        # (overlapping windows with mean pooling for full-document coverage).
         prompt = ""
         try:
             tokenizer = self._get_tokenizer()
             if tokenizer is not None:
-                n = len(token_ids)
-                _MAX_DECODE = 2000
-                if n <= _MAX_DECODE:
-                    sample = token_ids
-                else:
-                    head = int(_MAX_DECODE * 0.40)
-                    mid_w = int(_MAX_DECODE * 0.30)
-                    tail = _MAX_DECODE - head - mid_w
-                    mid_start = (n - mid_w) // 2
-                    sample = (
-                        token_ids[:head]
-                        + token_ids[mid_start: mid_start + mid_w]
-                        + token_ids[n - tail:]
-                    )
-                prompt = tokenizer.decode(sample, skip_special_tokens=True)
+                prompt = tokenizer.decode(token_ids, skip_special_tokens=True)
         except Exception:
             pass
         if not prompt:
@@ -1826,7 +1828,13 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         # Legacy path
         embedding = None
         if prompt:
-            embedding = self._donor_store.get_embedding(prompt[:2000])
+            # Use local GPU embedder with full text (segmented for long prompts)
+            if self._local_embedder is not None and self._local_embedder.available:
+                raw = self._local_embedder.embed(prompt)
+                if raw is not None:
+                    embedding = raw.tolist() if hasattr(raw, 'tolist') else list(raw)
+            if embedding is None:
+                embedding = self._donor_store.get_embedding(prompt)
 
         kv_fp = self._build_kv_fingerprint() if self._fingerprint_enabled else None
 

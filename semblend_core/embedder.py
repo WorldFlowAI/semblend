@@ -27,7 +27,10 @@ class EmbedderType(Enum):
 
 
 class MiniLMEmbedder:
-    """In-process CPU embedder using all-MiniLM-L6-v2.
+    """In-process embedder using all-MiniLM-L6-v2.
+
+    Auto-detects GPU — MiniLM is tiny (22M params, ~88MB) so it coexists
+    with inference models on the same GPU easily. Falls back to CPU.
 
     Thread-safe: model is read-only after initialization.
     """
@@ -46,7 +49,17 @@ class MiniLMEmbedder:
             from sentence_transformers import SentenceTransformer
 
             t0 = time.monotonic()
-            self._model = SentenceTransformer(self.MODEL_NAME, device="cpu")
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    # Use last available GPU to avoid contending with inference model
+                    gpu_count = torch.cuda.device_count()
+                    device = f"cuda:{gpu_count - 1}" if gpu_count > 1 else "cuda:0"
+                else:
+                    device = "cpu"
+            except ImportError:
+                device = "cpu"
+            self._model = SentenceTransformer(self.MODEL_NAME, device=device)
             self._load_time_ms = (time.monotonic() - t0) * 1000
             self._available = True
             logger.info(
@@ -66,31 +79,85 @@ class MiniLMEmbedder:
     def dimension(self) -> int:
         return self.DIMENSION
 
-    def embed(self, text: str) -> np.ndarray | None:
-        """Embed text to a 384-dim vector.
+    # Segmented embedding parameters
+    MAX_TOKENS = 512       # MiniLM native context window
+    OVERLAP_TOKENS = 64    # overlap between adjacent segments
+    MIN_SEGMENT_TOKENS = 32  # skip trailing segments shorter than this
 
-        Args:
-            text: Input text (truncated to first 512 tokens by model).
+    def embed(self, text: str) -> np.ndarray | None:
+        """Embed text with full-document coverage via segmented mean pooling.
+
+        For short texts (≤512 tokens): single-pass embedding (~5ms).
+        For long texts: segments into overlapping windows, batch-embeds
+        all segments, and mean-pools into a single vector.
 
         Returns:
-            Normalized embedding vector [384], or None if unavailable.
+            Normalized embedding vector, or None if unavailable.
         """
         if not self._available or not text.strip():
             return None
 
         t0 = time.monotonic()
-        embedding = self._model.encode(
-            text,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-        elapsed_ms = (time.monotonic() - t0) * 1000
 
+        # Estimate token count (~4 chars/token) to decide segmentation
+        est_tokens = len(text) // 4
+        if est_tokens <= self.MAX_TOKENS:
+            # Short text: single pass
+            embedding = self._model.encode(
+                text,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+        else:
+            # Long text: segment and batch embed
+            embedding = self._embed_segmented(text)
+
+        elapsed_ms = (time.monotonic() - t0) * 1000
         if elapsed_ms > 10:
             logger.debug("MiniLM embed took %.1fms (text=%d chars)", elapsed_ms, len(text))
 
         return embedding
+
+    def _embed_segmented(self, text: str) -> np.ndarray:
+        """Segment long text and batch-embed with mean pooling."""
+        tokenizer = self._model.tokenizer
+        full_ids = tokenizer.encode(text, add_special_tokens=False)
+
+        usable = self.MAX_TOKENS - 2  # reserve [CLS] and [SEP]
+        stride = usable - self.OVERLAP_TOKENS
+
+        segments = []
+        for start in range(0, len(full_ids), stride):
+            chunk_ids = full_ids[start:start + usable]
+            if len(chunk_ids) < self.MIN_SEGMENT_TOKENS:
+                break
+            chunk_text = tokenizer.decode(chunk_ids, skip_special_tokens=True)
+            segments.append(chunk_text)
+
+        if not segments:
+            return self._model.encode(
+                text,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+
+        # Batch encode all segments at once
+        embeddings = self._model.encode(
+            segments,
+            batch_size=len(segments),
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )  # [N, 384]
+
+        # Mean pool across segments
+        pooled = embeddings.mean(axis=0)
+
+        # L2 normalize the pooled vector
+        norm = np.linalg.norm(pooled)
+        return pooled / max(norm, 1e-12)
 
 
 class JinaEmbedder:
@@ -192,12 +259,19 @@ class OnnxGpuEmbedder:
         except Exception:
             logger.warning("ONNX GPU embedder init failed", exc_info=True)
 
+    # Version tag for ONNX cache invalidation — bump when export config changes.
+    _ONNX_VERSION = "v2-dynbatch"
+
     def _get_onnx_model_path(self):
-        """Get path to ONNX model, exporting from PyTorch if needed."""
+        """Get path to ONNX model, exporting from PyTorch if needed.
+
+        Uses a versioned filename so stale exports (e.g., without
+        dynamic batch axes) are automatically re-exported.
+        """
         from pathlib import Path
 
         cache_dir = Path.home() / ".cache" / "semblend_onnx"
-        onnx_path = cache_dir / f"{self.MODEL_NAME}.onnx"
+        onnx_path = cache_dir / f"{self.MODEL_NAME}-{self._ONNX_VERSION}.onnx"
 
         if onnx_path.exists():
             return onnx_path
@@ -245,40 +319,128 @@ class OnnxGpuEmbedder:
     def dimension(self) -> int:
         return self.DIMENSION
 
+    # Segmented embedding parameters
+    MAX_TOKENS = 256       # model context window per segment
+    OVERLAP_TOKENS = 64    # overlap between adjacent segments
+    MIN_SEGMENT_TOKENS = 32  # skip trailing segments shorter than this
+
     def embed(self, text: str) -> np.ndarray | None:
-        """Embed text using ONNX Runtime GPU — ~2ms."""
+        """Embed text using ONNX Runtime GPU with full-document coverage.
+
+        For short texts (≤MAX_TOKENS): single-pass embedding (~2ms).
+        For long texts: segments the text into overlapping windows,
+        embeds all segments in a single batched forward pass, and
+        mean-pools the segment embeddings into one vector (~10-15ms
+        for 32K-token prompts on A10G).
+        """
         if not self._available or not text.strip():
             return None
 
         t0 = time.monotonic()
+
+        # Tokenize full text to determine if segmentation is needed
+        full_ids = self._tokenizer.encode(text, add_special_tokens=False)
+        usable = self.MAX_TOKENS - 2  # reserve [CLS] and [SEP]
+
+        if len(full_ids) <= usable:
+            # Short text: single pass
+            embedding = self._embed_single(text)
+        else:
+            # Long text: segment with overlap, batch embed, mean pool
+            embedding = self._embed_segmented(full_ids)
+
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        if elapsed_ms > 5:
+            n_seg = max(1, (len(full_ids) - usable) // (usable - self.OVERLAP_TOKENS) + 2)
+            logger.debug(
+                "ONNX GPU embed took %.1fms (%d tokens, %d segments)",
+                elapsed_ms, len(full_ids), n_seg,
+            )
+
+        return embedding
+
+    def _embed_single(self, text: str) -> np.ndarray:
+        """Single-pass embedding for short texts."""
         inputs = self._tokenizer(
             text,
             return_tensors="np",
             padding=True,
             truncation=True,
-            max_length=256,
+            max_length=self.MAX_TOKENS,
         )
+        return self._run_and_pool(inputs)
 
-        feed = {"input_ids": inputs["input_ids"], "attention_mask": inputs["attention_mask"]}
+    def _embed_segmented(self, full_ids: list[int]) -> np.ndarray:
+        """Segment long token sequences and embed on GPU with mean pooling.
+
+        Attempts batched ONNX inference (single forward pass for all
+        segments). Falls back to sequential per-segment inference if the
+        ONNX model was cached without dynamic batch support.
+        """
+        usable = self.MAX_TOKENS - 2
+        stride = usable - self.OVERLAP_TOKENS
+
+        segments = []
+        for start in range(0, len(full_ids), stride):
+            chunk_ids = full_ids[start:start + usable]
+            if len(chunk_ids) < self.MIN_SEGMENT_TOKENS:
+                break
+            chunk_text = self._tokenizer.decode(chunk_ids, skip_special_tokens=True)
+            segments.append(chunk_text)
+
+        if not segments:
+            text = self._tokenizer.decode(full_ids[:usable], skip_special_tokens=True)
+            return self._embed_single(text)
+
+        # Try batched inference first (fastest — single GPU kernel launch)
+        try:
+            inputs = self._tokenizer(
+                segments,
+                return_tensors="np",
+                padding=True,
+                truncation=True,
+                max_length=self.MAX_TOKENS,
+            )
+            per_segment = self._run_and_pool(inputs)  # [N, 384]
+        except Exception:
+            # Fallback: loop over segments individually
+            logger.debug(
+                "Batched ONNX failed (%d segments), falling back to sequential",
+                len(segments),
+            )
+            embeddings = []
+            for seg_text in segments:
+                emb = self._embed_single(seg_text)
+                if emb.ndim == 2:
+                    emb = emb[0]
+                embeddings.append(emb)
+            per_segment = np.stack(embeddings)
+
+        pooled = per_segment.mean(axis=0) if per_segment.ndim == 2 else per_segment
+
+        norm = np.linalg.norm(pooled)
+        return pooled / max(norm, 1e-12)
+
+    def _run_and_pool(self, inputs: dict) -> np.ndarray:
+        """Run ONNX inference and apply mean pooling."""
+        feed = {
+            "input_ids": inputs["input_ids"],
+            "attention_mask": inputs["attention_mask"],
+        }
         if "token_type_ids" in inputs:
             feed["token_type_ids"] = inputs["token_type_ids"]
 
         outputs = self._session.run(None, feed)
-        # Mean pooling over token dimension
-        hidden = outputs[0]  # [1, seq_len, 384]
+        hidden = outputs[0]  # [batch, seq_len, 384]
         mask = inputs["attention_mask"].astype(np.float32)
         masked = hidden * mask[:, :, np.newaxis]
         pooled = masked.sum(axis=1) / mask.sum(axis=1, keepdims=True)
 
-        # L2 normalize
-        norm = np.linalg.norm(pooled, axis=1, keepdims=True)
-        embedding = (pooled / np.maximum(norm, 1e-12))[0]
+        # L2 normalize each segment embedding
+        norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+        normalized = pooled / np.maximum(norms, 1e-12)
 
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        if elapsed_ms > 5:
-            logger.debug("ONNX GPU embed took %.1fms (text=%d chars)", elapsed_ms, len(text))
-
-        return embedding
+        return normalized  # [batch, 384] or [1, 384]
 
 
 class E5SmallEmbedder:

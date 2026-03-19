@@ -1,14 +1,14 @@
 [project]
 name = "semblend"
-version = "0.1.1"
-description = "Semantic KV cache reuse for LLM inference engines (vLLM, SGLang)"
+version = "0.2.0"
+description = "Semantic KV cache reuse for LLM inference engines (vLLM, SGLang, TRT-LLM)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [
     { name = "WorldFlow AI" },
 ]
-keywords = ["llm", "inference", "kv-cache", "vllm", "sglang", "semantic-cache"]
+keywords = ["llm", "inference", "kv-cache", "vllm", "sglang", "trt-llm", "semantic-cache"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -35,6 +35,7 @@ Documentation = "https://docs.worldflow.ai/semblend"
 
 [project.scripts]
 semblend-sglang = "semblend.integration.sglang.launch_semblend_sglang:main"
+semblend-trtllm = "semblend.integration.trtllm.launch_semblend_trtllm:main"
 
 [project.optional-dependencies]
 embedder = [
@@ -54,6 +55,15 @@ sglang = [
     "sglang>=0.4.0",
     "torch>=2.0",
     "sentence-transformers>=3.0",
+]
+trtllm = [
+    "tensorrt_llm>=0.14",
+    "torch>=2.0",
+    "sentence-transformers>=3.0",
+]
+dynamo = [
+    "sentence-transformers>=3.0",
+    "nats-py>=2.0",
 ]
 dev = [
     "pytest>=8.0",
