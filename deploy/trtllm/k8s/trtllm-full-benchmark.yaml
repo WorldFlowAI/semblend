@@ -1,0 +1,119 @@
+---
+# Full-scale TRT-LLM benchmark — matches vLLM/SGLang final benchmark sizes
+# Runs all 5 datasets with n=100-200 per dataset (~700 total samples)
+# Executes from the bench-runner pod in autoresearch namespace
+apiVersion: v1
+kind: Pod
+metadata:
+  name: trtllm-full-benchmark
+  namespace: semblend-trtllm
+  labels:
+    app: semblend
+    component: benchmark-runner
+spec:
+  restartPolicy: Never
+  containers:
+    - name: runner
+      image: python:3.12-slim
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -euo pipefail
+          echo "=== TRT-LLM Full Benchmark Suite ==="
+          echo "Matching vLLM/SGLang final benchmark sizes"
+
+          # Install benchmark dependencies
+          pip install --no-cache-dir semblend aiohttp tqdm rich datasets transformers httpx 2>&1 | tail -5
+
+          # Clone autoresearch-semblend for the benchmark suite
+          apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1
+          git clone --depth 1 https://github.com/worldflowai/autoresearch-semblend.git /bench 2>&1 | tail -3
+          cd /bench
+
+          ENDPOINT="http://trtllm-a100-server.semblend-trtllm.svc.cluster.local:8000"
+          MODEL="Qwen/Qwen2.5-7B-Instruct"
+
+          # Wait for server to be ready (using Python since curl not in slim image)
+          echo "Waiting for TRT-LLM server..."
+          python3 -c "
+          import time, urllib.request
+          for i in range(120):
+              try:
+                  r = urllib.request.urlopen('$ENDPOINT/health', timeout=5)
+                  if r.status == 200:
+                      print(f'Server ready after {i*5}s')
+                      break
+              except Exception:
+                  pass
+              print(f'  Waiting... ({i+1}/120)')
+              time.sleep(5)
+          "
+
+          # Verify connectivity
+          python3 -c "import urllib.request, json; r = urllib.request.urlopen('$ENDPOINT/v1/models'); print(json.dumps(json.loads(r.read()), indent=2))"
+
+          # Run each dataset individually (matching final benchmark sizes)
+          for dataset in triviaqa narrativeqa longeval wikitext103 scbench; do
+            case $dataset in
+              triviaqa) N=120 ;;
+              narrativeqa) N=140 ;;
+              longeval) N=140 ;;
+              wikitext103) N=140 ;;
+              scbench) N=200 ;;
+            esac
+
+            echo ""
+            echo "=== Running $dataset (n=$N) ==="
+            PYTHONPATH=/bench python3 -m benchmarks.suite run \
+              --endpoint "$ENDPOINT" \
+              --model "$MODEL" \
+              --datasets "$dataset" \
+              --n "$N" \
+              --max-tokens 50 \
+              --temperature 0.0 \
+              --concurrency 2 \
+              --output-dir /results \
+              --run-name "trtllm_final_${dataset}" \
+              --api-key EMPTY \
+              --timeout 120 \
+              -v 2>&1 | tail -20
+
+            echo "=== $dataset complete ==="
+          done
+
+          echo ""
+          echo "=== ALL BENCHMARKS COMPLETE ==="
+          echo "Results:"
+          ls -la /results/
+          for f in /results/summary_*.json; do
+            echo ""
+            echo "--- $(basename $f) ---"
+            cat "$f" | python3 -c "
+          import json,sys,statistics
+          d=json.load(sys.stdin)
+          for r in d.get('results',[]):
+            ds=r['dataset']
+            n=r['n_samples']
+            hr=r['hit_rate']
+            cold=r.get('cold_ttft_ms',[])
+            warm=r.get('warm_ttft_ms',[])
+            cp50=statistics.median(cold) if cold else 0
+            wp50=statistics.median(warm) if warm else 0
+            print(f'{ds}: n={n} hit_rate={hr:.1%} cold_p50={cp50:.0f}ms warm_p50={wp50:.0f}ms')
+          "
+          done
+
+          sleep 7200
+      resources:
+        requests:
+          memory: "4Gi"
+          cpu: "2"
+        limits:
+          memory: "8Gi"
+          cpu: "4"
+      volumeMounts:
+        - name: results
+          mountPath: /results
+  volumes:
+    - name: results
+      emptyDir: {}

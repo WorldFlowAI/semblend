@@ -1,0 +1,84 @@
+---
+# TRT-LLM server on A100 80GB — full-scale benchmarking
+# p4d.24xlarge has 8x A100 80GB, we use 1 GPU
+apiVersion: v1
+kind: Pod
+metadata:
+  name: trtllm-a100-server
+  namespace: semblend-trtllm
+  labels:
+    app: semblend
+    component: trtllm-a100
+spec:
+  restartPolicy: Never
+  containers:
+    - name: server
+      image: nvcr.io/nvidia/tensorrt-llm/release:0.20.0
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -euo pipefail
+          echo "=== TRT-LLM A100 Server ==="
+          nvidia-smi
+          # C++ executor with TP=2 to split across 2 GPUs (7B FP16 needs ~15GB + overhead)
+          trtllm-serve serve Qwen/Qwen2.5-7B-Instruct \
+            --host 0.0.0.0 \
+            --port 8000 \
+            --tp_size 2
+      env:
+        - name: HF_HOME
+          value: "/cache/huggingface"
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "0"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0,1"
+      ports:
+        - containerPort: 8000
+          name: http
+      resources:
+        limits:
+          nvidia.com/gpu: "2"
+          memory: "96Gi"
+          cpu: "16"
+        requests:
+          nvidia.com/gpu: "2"
+          memory: "48Gi"
+          cpu: "8"
+      volumeMounts:
+        - name: cache
+          mountPath: /cache
+        - name: dshm
+          mountPath: /dev/shm
+      readinessProbe:
+        httpGet:
+          path: /health
+          port: 8000
+        initialDelaySeconds: 300
+        periodSeconds: 10
+  volumes:
+    - name: cache
+      emptyDir:
+        sizeLimit: 100Gi
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 16Gi
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: trtllm-a100-alt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trtllm-a100-server
+  namespace: semblend-trtllm
+spec:
+  selector:
+    component: trtllm-a100
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP
