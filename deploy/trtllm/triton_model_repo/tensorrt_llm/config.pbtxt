@@ -1,0 +1,99 @@
+# Triton TRT-LLM backend config
+#
+# Configured for SemBlend-compatible KV cache settings:
+#   - enable_block_reuse: true (required for prefix cache)
+#   - tokens_per_block: 128 (SemBlend default)
+#   - enable_kv_cache_reuse: true
+
+name: "tensorrt_llm"
+backend: "tensorrtllm"
+max_batch_size: 64
+
+model_transaction_policy {
+  decoupled: true
+}
+
+input [
+  {
+    name: "input_ids"
+    data_type: TYPE_INT32
+    dims: [ -1 ]
+  },
+  {
+    name: "max_new_tokens"
+    data_type: TYPE_INT32
+    dims: [ 1 ]
+  },
+  {
+    name: "temperature"
+    data_type: TYPE_FP32
+    dims: [ 1 ]
+    optional: true
+  },
+  {
+    name: "top_p"
+    data_type: TYPE_FP32
+    dims: [ 1 ]
+    optional: true
+  },
+  {
+    name: "streaming"
+    data_type: TYPE_BOOL
+    dims: [ 1 ]
+    optional: true
+  }
+]
+
+output [
+  {
+    name: "output_ids"
+    data_type: TYPE_INT32
+    dims: [ -1 ]
+  },
+  {
+    name: "cum_log_probs"
+    data_type: TYPE_FP32
+    dims: [ -1 ]
+    optional: true
+  }
+]
+
+parameters: {
+  key: "gpt_model_type"
+  value: { string_value: "inflight_fused_batching" }
+}
+
+parameters: {
+  key: "gpt_model_path"
+  value: { string_value: "/engines/qwen2.5-7b" }
+}
+
+parameters: {
+  key: "enable_kv_cache_reuse"
+  value: { string_value: "true" }
+}
+
+parameters: {
+  key: "kv_cache_free_gpu_mem_fraction"
+  value: { string_value: "0.90" }
+}
+
+parameters: {
+  key: "max_tokens_in_paged_kv_cache"
+  value: { string_value: "auto" }
+}
+
+parameters: {
+  key: "tokens_per_block"
+  value: { string_value: "128" }
+}
+
+parameters: {
+  key: "enable_block_reuse"
+  value: { string_value: "true" }
+}
+
+parameters: {
+  key: "max_num_sequences"
+  value: { string_value: "64" }
+}

@@ -1,0 +1,132 @@
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: trtllm-benchmark
+  namespace: semblend-trtllm
+  labels:
+    app: semblend
+    component: benchmark
+spec:
+  restartPolicy: Never
+  containers:
+    - name: benchmark
+      image: nvcr.io/nvidia/tensorrt-llm/release:0.20.0
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -euo pipefail
+          echo "=== Phase 1.1: Setup ==="
+          nvidia-smi
+          python3 -c "import tensorrt_llm; print(f'TRT-LLM: {tensorrt_llm.__version__}')"
+          pip install --no-cache-dir semblend sentence-transformers 2>&1 | tail -5
+          python3 -c "import semblend; print(f'SemBlend: {semblend.__version__}')"
+
+          cat > /tmp/benchmark.py << 'PYEOF'
+          import json, statistics, time
+
+          def main():
+              from tensorrt_llm import LLM, SamplingParams
+              MODEL = "Qwen/Qwen2.5-7B-Instruct"
+              print(f"Loading model: {MODEL}")
+              t0 = time.monotonic()
+              llm = LLM(model=MODEL, enable_prefix_caching=True, max_batch_size=32)
+              print(f"Model loaded in {time.monotonic() - t0:.1f}s")
+              sp = SamplingParams(max_tokens=1)
+              for _ in range(5):
+                  llm.generate(["warmup"], sp)
+              print("Warmup complete")
+              topics = ["cloud computing","machine learning","NLP","computer vision",
+                        "distributed systems","database optimization","network security",
+                        "microservices","container orchestration","neural networks",
+                        "reinforcement learning","data pipelines","API design",
+                        "caching strategies","load balancing","consensus algorithms",
+                        "stream processing","graph databases","vector search","quantization"]
+              prompts = [f"Topic {i}: Explain {t} in detail with examples." for i, t in enumerate(topics * 5)]
+              print(f"\n--- Cold TTFT (n={len(prompts)}) ---")
+              cold = []
+              for i, p in enumerate(prompts):
+                  t0 = time.monotonic()
+                  llm.generate([p], sp)
+                  ms = (time.monotonic() - t0) * 1000
+                  cold.append(ms)
+                  if (i+1) % 25 == 0: print(f"  {i+1}/{len(prompts)}: {ms:.1f}ms (avg={statistics.mean(cold):.1f})")
+              print(f"\n--- Prefix Cache TTFT (n={len(prompts)}) ---")
+              cached = []
+              for i, p in enumerate(prompts):
+                  t0 = time.monotonic()
+                  llm.generate([p], sp)
+                  ms = (time.monotonic() - t0) * 1000
+                  cached.append(ms)
+                  if (i+1) % 25 == 0: print(f"  {i+1}/{len(prompts)}: {ms:.1f}ms (avg={statistics.mean(cached):.1f})")
+              result = {"engine":"trtllm","model":MODEL,
+                  "cold":{"n":len(cold),"p50":round(statistics.median(cold),2),"p95":round(sorted(cold)[int(.95*len(cold))],2),"mean":round(statistics.mean(cold),2)},
+                  "cached":{"n":len(cached),"p50":round(statistics.median(cached),2),"p95":round(sorted(cached)[int(.95*len(cached))],2),"mean":round(statistics.mean(cached),2)},
+                  "speedup":round(statistics.median(cold)/max(statistics.median(cached),.01),2)}
+              print(f"\n=== Results ===\n{json.dumps(result, indent=2)}")
+              with open("/results/baseline.json","w") as f: json.dump(result, f, indent=2)
+              print("\n=== Probing TRT-LLM Internals ===")
+              info = {"type": type(llm).__name__, "public": [a for a in dir(llm) if not a.startswith("_")]}
+              for a in ("_engine","engine","_executor","executor","_model_engine","model_engine","_backend","backend"):
+                  v = getattr(llm, a, None)
+                  if v is not None:
+                      info[f"llm.{a}"] = {"type": type(v).__name__, "attrs": [x for x in dir(v) if not x.startswith("__")][:30]}
+                      print(f"  llm.{a} = {type(v).__name__}")
+                      for m in ("kv_cache_manager","_kv_cache_manager","kv_mgr","block_manager"):
+                          mv = getattr(v, m, None)
+                          if mv is not None:
+                              info[f"llm.{a}.{m}"] = {"type": type(mv).__name__, "attrs": [x for x in dir(mv) if not x.startswith("__")][:30]}
+                              print(f"    .{m} = {type(mv).__name__}")
+              with open("/results/internals.json","w") as f: json.dump(info, f, indent=2)
+              print("Done!")
+
+          if __name__ == "__main__":
+              main()
+          PYEOF
+
+          echo "=== Running Benchmark ==="
+          python3 /tmp/benchmark.py
+          echo "=== Results ==="
+          cat /results/baseline.json
+          echo ""
+          cat /results/internals.json
+          echo ""
+          echo "=== Complete ==="
+          sleep 7200
+      env:
+        - name: HF_HOME
+          value: "/cache/huggingface"
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+      resources:
+        limits:
+          nvidia.com/gpu: "1"
+          memory: "48Gi"
+          cpu: "8"
+        requests:
+          nvidia.com/gpu: "1"
+          memory: "16Gi"
+          cpu: "2"
+      volumeMounts:
+        - name: cache
+          mountPath: /cache
+        - name: results
+          mountPath: /results
+        - name: dshm
+          mountPath: /dev/shm
+  volumes:
+    - name: cache
+      emptyDir:
+        sizeLimit: 50Gi
+    - name: results
+      emptyDir: {}
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 8Gi
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: trtllm-benchmark-200gb

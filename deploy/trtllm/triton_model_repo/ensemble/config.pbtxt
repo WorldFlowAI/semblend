@@ -1,0 +1,83 @@
+# Triton ensemble model config for SemBlend + TRT-LLM
+#
+# This ensemble chains preprocessing -> TRT-LLM -> postprocessing
+# for an end-to-end chat completions pipeline.
+
+name: "ensemble"
+platform: "ensemble"
+max_batch_size: 64
+
+input [
+  {
+    name: "text_input"
+    data_type: TYPE_STRING
+    dims: [ -1 ]
+  },
+  {
+    name: "max_tokens"
+    data_type: TYPE_INT32
+    dims: [ 1 ]
+  },
+  {
+    name: "temperature"
+    data_type: TYPE_FP32
+    dims: [ 1 ]
+  }
+]
+
+output [
+  {
+    name: "text_output"
+    data_type: TYPE_STRING
+    dims: [ -1 ]
+  }
+]
+
+ensemble_scheduling {
+  step [
+    {
+      model_name: "preprocessing"
+      model_version: -1
+      input_map {
+        key: "text_input"
+        value: "text_input"
+      }
+      output_map {
+        key: "input_ids"
+        value: "input_ids"
+      }
+    },
+    {
+      model_name: "tensorrt_llm"
+      model_version: -1
+      input_map {
+        key: "input_ids"
+        value: "input_ids"
+      }
+      input_map {
+        key: "max_new_tokens"
+        value: "max_tokens"
+      }
+      input_map {
+        key: "temperature"
+        value: "temperature"
+      }
+      output_map {
+        key: "output_ids"
+        value: "output_ids"
+      }
+    },
+    {
+      model_name: "postprocessing"
+      model_version: -1
+      input_map {
+        key: "output_ids"
+        value: "output_ids"
+      }
+      output_map {
+        key: "text_output"
+        value: "text_output"
+      }
+    }
+  ]
+}

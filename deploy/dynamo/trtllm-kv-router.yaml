@@ -1,0 +1,67 @@
+# Dynamo + TRT-LLM with KV-aware routing
+# Aggregated deployment: 1 frontend + 2 workers
+apiVersion: nvidia.com/v1alpha1
+kind: DynamoGraphDeployment
+metadata:
+  name: semblend-trtllm-kv
+  namespace: semblend-trtllm
+spec:
+  pvcs:
+    - create: false
+      name: model-cache
+  services:
+    Frontend:
+      componentType: frontend
+      replicas: 1
+      envs:
+        - name: DYN_ROUTER_MODE
+          value: kv
+        - name: DYN_KV_OVERLAP_SCORE_WEIGHT
+          value: "1.0"
+      extraPodSpec:
+        mainContainer:
+          image: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.0.0
+          command:
+            - python
+            - -m
+            - dynamo.frontend
+          args:
+            - --router-mode
+            - kv
+          workingDir: /workspace
+        nodeSelector:
+          eks.amazonaws.com/nodegroup: trtllm-a100-alt
+      resources:
+        requests:
+          cpu: "4"
+        limits:
+          cpu: "8"
+    TRTLLMWorker:
+      componentType: worker
+      replicas: 2
+      envFromSecret: hf-token-secret
+      envs:
+        - name: HF_HOME
+          value: /home/dynamo/.cache/huggingface
+      extraPodSpec:
+        mainContainer:
+          image: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.0.0
+          command:
+            - python3
+            - -m
+            - dynamo.trtllm
+          args:
+            - --model-path
+            - Qwen/Qwen2.5-7B-Instruct
+            - --served-model-name
+            - Qwen/Qwen2.5-7B-Instruct
+            - --publish-events-and-metrics
+          workingDir: /workspace
+        nodeSelector:
+          eks.amazonaws.com/nodegroup: trtllm-a100-alt
+      resources:
+        limits:
+          gpu: "1"
+        requests:
+          custom:
+            ephemeral-storage: "10Gi"

@@ -1,0 +1,109 @@
+version: "3.8"
+
+# SemBlend + TRT-LLM deployment via Docker Compose.
+#
+# Usage:
+#   # Build engine first (requires GPU):
+#   docker compose -f deploy/trtllm/docker-compose.trtllm.yaml run --rm builder
+#
+#   # Start server with SemBlend:
+#   docker compose -f deploy/trtllm/docker-compose.trtllm.yaml up server
+#
+#   # Start baseline (no SemBlend) for comparison:
+#   docker compose -f deploy/trtllm/docker-compose.trtllm.yaml up baseline
+
+services:
+  # Engine builder (run once, then stop)
+  builder:
+    image: nvcr.io/nvidia/tritonserver:24.12-trtllm-python-py3
+    runtime: nvidia
+    volumes:
+      - ./engines:/engines
+      - ./build_engine.sh:/build_engine.sh:ro
+      - ../../:/semblend:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_HOME=/engines/.cache/huggingface
+    command: bash /build_engine.sh Qwen/Qwen2.5-7B-Instruct-AWQ /engines/qwen2.5-7b
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # SemBlend + TRT-LLM server
+  server:
+    image: nvcr.io/nvidia/tritonserver:24.12-trtllm-python-py3
+    runtime: nvidia
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./engines:/engines:ro
+      - ../../:/semblend:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - SEMBLEND_ENABLED=1
+      - SEMBLEND_MIN_SIMILARITY=0.60
+      - SEMBLEND_EMBEDDER=minilm
+      - SEMBLEND_MAX_DONORS=1000
+      - SEMBLEND_MODEL_NAME=Qwen/Qwen2.5-7B-Instruct-AWQ
+    command: >
+      bash -c "
+        pip install -e /semblend &&
+        python -m semblend.integration.trtllm.launch_semblend_trtllm
+          --engine-dir /engines/qwen2.5-7b
+          --model Qwen/Qwen2.5-7B-Instruct-AWQ
+          --host 0.0.0.0
+          --port 8000
+      "
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # Baseline server (no SemBlend, for A/B comparison)
+  baseline:
+    image: nvcr.io/nvidia/tritonserver:24.12-trtllm-python-py3
+    runtime: nvidia
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./engines:/engines:ro
+      - ../../:/semblend:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - SEMBLEND_ENABLED=0
+    command: >
+      bash -c "
+        pip install -e /semblend &&
+        python -m semblend.integration.trtllm.launch_semblend_trtllm
+          --engine-dir /engines/qwen2.5-7b
+          --model Qwen/Qwen2.5-7B-Instruct-AWQ
+          --host 0.0.0.0
+          --port 8000
+          --no-semblend
+      "
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s

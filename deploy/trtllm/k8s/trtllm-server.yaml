@@ -1,0 +1,85 @@
+---
+# TRT-LLM server pod — OpenAI-compatible endpoint for benchmarking
+# Uses trtllm-serve CLI from the TRT-LLM release image
+apiVersion: v1
+kind: Pod
+metadata:
+  name: trtllm-server
+  namespace: semblend-trtllm
+  labels:
+    app: semblend
+    component: trtllm-server
+spec:
+  restartPolicy: Never
+  containers:
+    - name: server
+      image: nvcr.io/nvidia/tensorrt-llm/release:0.20.0
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -euo pipefail
+          echo "=== Starting TRT-LLM Server ==="
+          nvidia-smi
+
+          # Use PyTorch backend — single process, no MPI, exposes KVCacheManager
+          # PyTorch backend is the path relevant for SemBlend integration
+          trtllm-serve serve Qwen/Qwen2.5-7B-Instruct \
+            --host 0.0.0.0 \
+            --port 8000 \
+            --backend pytorch
+      env:
+        - name: HF_HOME
+          value: "/cache/huggingface"
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+      ports:
+        - containerPort: 8000
+          name: http
+      resources:
+        limits:
+          nvidia.com/gpu: "1"
+          memory: "48Gi"
+          cpu: "8"
+        requests:
+          nvidia.com/gpu: "1"
+          memory: "16Gi"
+          cpu: "2"
+      volumeMounts:
+        - name: cache
+          mountPath: /cache
+        - name: dshm
+          mountPath: /dev/shm
+      readinessProbe:
+        httpGet:
+          path: /health
+          port: 8000
+        initialDelaySeconds: 300
+        periodSeconds: 10
+  volumes:
+    - name: cache
+      emptyDir:
+        sizeLimit: 50Gi
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 8Gi
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: trtllm-benchmark-200gb
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trtllm-server
+  namespace: semblend-trtllm
+spec:
+  selector:
+    component: trtllm-server
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  type: ClusterIP

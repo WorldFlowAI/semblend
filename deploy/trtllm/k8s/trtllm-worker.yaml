@@ -1,0 +1,104 @@
+---
+# TRT-LLM + SemBlend worker deployment
+# Uses NVIDIA's TRT-LLM Python API with SemBlend hooks
+#
+# The TRT-LLM high-level Python API (tensorrt_llm.LLM) handles:
+#   - Engine building (auto-builds on first run if needed)
+#   - Model serving with paged KV cache
+#   - OpenAI-compatible API via tensorrt_llm.serve
+#
+# SemBlend hooks attach after engine initialization to intercept
+# prefix matching and inject semantic KV reuse.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: trtllm-semblend-worker
+  namespace: semblend-trtllm
+  labels:
+    app: semblend
+    component: trtllm-worker
+spec:
+  restartPolicy: Never
+  containers:
+    - name: trtllm
+      image: nvidia/cuda:12.6.3-devel-ubuntu22.04
+      command:
+        - bash
+        - -c
+        - |
+          set -euo pipefail
+
+          echo "=== Installing TRT-LLM + SemBlend ==="
+          apt-get update && apt-get install -y python3-pip python3-dev git curl && rm -rf /var/lib/apt/lists/*
+
+          # Install TRT-LLM (includes torch, triton, etc.)
+          pip3 install --no-cache-dir tensorrt_llm==0.17.0.post1
+
+          # Install SemBlend from source
+          pip3 install --no-cache-dir -e /semblend
+
+          # Install sentence-transformers for MiniLM embedder
+          pip3 install --no-cache-dir sentence-transformers
+
+          echo "=== Launching TRT-LLM with SemBlend ==="
+          python3 -m semblend.integration.trtllm.launch_semblend_trtllm \
+            --engine-dir /engines \
+            --model Qwen/Qwen2.5-7B-Instruct-AWQ \
+            --host 0.0.0.0 \
+            --port 8000 \
+            --tokens-per-block 128
+      env:
+        - name: SEMBLEND_ENABLED
+          value: "1"
+        - name: SEMBLEND_MIN_SIMILARITY
+          value: "0.60"
+        - name: SEMBLEND_MODEL_NAME
+          value: "Qwen/Qwen2.5-7B-Instruct-AWQ"
+        - name: SEMBLEND_MAX_DONORS
+          value: "1000"
+        - name: HF_HOME
+          value: "/cache/huggingface"
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+      resources:
+        limits:
+          nvidia.com/gpu: "1"
+          memory: "32Gi"
+          cpu: "8"
+        requests:
+          nvidia.com/gpu: "1"
+          memory: "16Gi"
+          cpu: "4"
+      ports:
+        - containerPort: 8000
+          name: http
+      volumeMounts:
+        - name: semblend-src
+          mountPath: /semblend
+        - name: cache
+          mountPath: /cache
+        - name: engines
+          mountPath: /engines
+        - name: dshm
+          mountPath: /dev/shm
+  volumes:
+    - name: semblend-src
+      hostPath:
+        path: /tmp/semblend-release
+        type: DirectoryOrCreate
+    - name: cache
+      emptyDir:
+        sizeLimit: 30Gi
+    - name: engines
+      emptyDir:
+        sizeLimit: 20Gi
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 8Gi
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  nodeSelector:
+    node.kubernetes.io/instance-type: g5.2xlarge

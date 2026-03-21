@@ -1,0 +1,65 @@
+---
+# SemBlend proxy — sits in front of Dynamo KV Router
+# Adds semantic donor discovery to improve KV cache hit rates
+apiVersion: v1
+kind: Pod
+metadata:
+  name: semblend-proxy
+  namespace: semblend-trtllm
+  labels:
+    app: semblend-proxy
+spec:
+  restartPolicy: Never
+  containers:
+    - name: proxy
+      image: python:3.12-slim
+      command: ["bash", "-c"]
+      args:
+        - |
+          pip install semblend sentence-transformers aiohttp 2>&1 | tail -3
+
+          # Copy the updated semblend_core files with parallel embedding
+          # (These will be injected via kubectl cp)
+
+          python3 /app/semblend_proxy.py \
+            --backend http://semblend-trtllm-kv-frontend:8000 \
+            --port 8080
+      env:
+        - name: SEMBLEND_ENABLED
+          value: "1"
+        - name: SEMBLEND_MODEL_NAME
+          value: "Qwen/Qwen2.5-7B-Instruct"
+        - name: SEMBLEND_MIN_SIMILARITY
+          value: "0.60"
+        - name: SEMBLEND_MAX_DONORS
+          value: "10000"
+        - name: SEMBLEND_CHUNK_SIZE
+          value: "32"
+      ports:
+        - containerPort: 8080
+      resources:
+        requests:
+          memory: "4Gi"
+          cpu: "2"
+        limits:
+          memory: "8Gi"
+          cpu: "4"
+      volumeMounts:
+        - name: app
+          mountPath: /app
+  volumes:
+    - name: app
+      emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: semblend-proxy
+  namespace: semblend-trtllm
+spec:
+  selector:
+    app: semblend-proxy
+  ports:
+    - port: 8080
+      targetPort: 8080
+  type: ClusterIP
