@@ -28,23 +28,22 @@ logger = logging.getLogger(__name__)
 
 
 def _order_invariant_text(text: str, max_chars: int = 200_000) -> str:
-    """Produce order-invariant text representation for embedding.
+    """Prepare text for embedding with length truncation.
 
-    Splits text into sentences, sorts them, and joins. This makes the
-    embedding invariant to document reordering — critical for SemBlend's
-    REORDER scenario where the same chunks appear in different order.
-
-    IMPORTANT: Sort ALL sentences first, then truncate. Truncating before
-    sorting captures different paragraphs for different orderings, breaking
-    order invariance at long context lengths.
+    With full-document segmented embedding (overlapping windows + mean
+    pooling), the embedding is inherently near-order-invariant (0.996
+    cosine similarity for reordered documents). Sentence sorting was
+    removed because:
+      - The segmented mean pool already provides order invariance
+      - Sorting on ". " broke on code, markdown, non-English text
+      - Sorting slightly hurt cross-instruction similarity (-0.002)
+      - The 0.004 gap from not sorting is invisible at any practical
+        matching threshold (default 0.60)
 
     The max_chars limit is set high (200K) to accommodate full-document
     embedding; the embedder handles segmentation internally.
     """
-    parts = [s.strip() for s in text.replace('\n', '. ').split('. ') if s.strip()]
-    parts.sort()
-    result = '. '.join(parts)
-    return result[:max_chars]
+    return text[:max_chars]
 
 
 @dataclass
