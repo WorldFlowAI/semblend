@@ -304,12 +304,24 @@ class SemBlendPipeline:
                 rejection_reason="no_donor_match",
             )
 
+        # Guard: reject fuzzy-only matches with low reuse (false positive prevention)
+        alignment = match.alignment
+        fuzzy_chunks = getattr(alignment, "fuzzy_chunks", 0)
+        exact_chunks = getattr(alignment, "exact_chunks", 0)
+        if fuzzy_chunks > 0 and exact_chunks == 0 and alignment.reuse_ratio < 0.30:
+            timings.total_ms = (time.monotonic() - t_start) * 1000
+            return PipelineResult(
+                found=False,
+                timings=timings,
+                rejection_reason="fuzzy_low_reuse",
+            )
+
         # Stage 4: Bathtub curve layer deviations (fuzzy-aware)
         t0 = time.monotonic()
         from semblend_core.bathtub import compute_layer_deviations
 
         num_layers = self._detect_num_layers()
-        mismatch = 1.0 - match.alignment.reuse_ratio
+        mismatch = 1.0 - alignment.reuse_ratio
 
         # Extract fuzzy metadata from alignment
         alignment = match.alignment
