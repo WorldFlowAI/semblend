@@ -1,0 +1,213 @@
+{
+  "timestamp": "20260321_221332",
+  "results": [
+    {
+      "sample_id": "tier1_exact_replay",
+      "tier": 1,
+      "scenario": "exact_replay",
+      "seed_ttft_ms": 583.852041978389,
+      "variant_ttft_ms": 254.01187501847744,
+      "speedup": 2.2985226259044707,
+      "is_hit": true,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier1_cross_instr_1",
+      "tier": 1,
+      "scenario": "cross_instruction",
+      "seed_ttft_ms": 919.7589579853229,
+      "variant_ttft_ms": 522.2847919794731,
+      "speedup": 1.7610295610933113,
+      "is_hit": true,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier1_cross_instr_2",
+      "tier": 1,
+      "scenario": "cross_instruction",
+      "seed_ttft_ms": 240.91529101133347,
+      "variant_ttft_ms": 425.71445798967034,
+      "speedup": 0.5659081726963079,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier1_cross_instr_3",
+      "tier": 1,
+      "scenario": "cross_instruction",
+      "seed_ttft_ms": 273.0224169790745,
+      "variant_ttft_ms": 435.2635410032235,
+      "speedup": 0.6272577214939592,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier1_reorder",
+      "tier": 1,
+      "scenario": "reorder",
+      "seed_ttft_ms": 435.9819579985924,
+      "variant_ttft_ms": 414.7517500096001,
+      "speedup": 1.0511877478238512,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_0",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 406.1144170118496,
+      "variant_ttft_ms": 243.7818329781294,
+      "speedup": 1.6658928684332424,
+      "is_hit": true,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_1",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 270.31549997627735,
+      "variant_ttft_ms": 240.92974996892735,
+      "speedup": 1.1219681256098089,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_2",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 268.70191702619195,
+      "variant_ttft_ms": 270.6112089799717,
+      "speedup": 0.9929445200700424,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_3",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 268.1724999565631,
+      "variant_ttft_ms": 257.665541023016,
+      "speedup": 1.0407775090601215,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_4",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 267.3110840260051,
+      "variant_ttft_ms": 262.50545802759007,
+      "speedup": 1.0183067660174516,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_0",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 440.33079204382375,
+      "variant_ttft_ms": 278.3267499762587,
+      "speedup": 1.5820642179789903,
+      "is_hit": true,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_1",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 271.65445795981213,
+      "variant_ttft_ms": 846.0849580005743,
+      "speedup": 0.3210723171367712,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_2",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 1643.9979579881765,
+      "variant_ttft_ms": 1001.4451250317506,
+      "speedup": 1.6416256037354555,
+      "is_hit": true,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_3",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 1888.1856660009362,
+      "variant_ttft_ms": 1187.1035830117762,
+      "speedup": 1.590582062948929,
+      "is_hit": true,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_4",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 1760.3101669810712,
+      "variant_ttft_ms": 1099.9957080348395,
+      "speedup": 1.6002882139657566,
+      "is_hit": true,
+      "context_length_tokens": 0
+    }
+  ],
+  "summaries": [
+    {
+      "tier": 1,
+      "scenarios": {
+        "exact_replay": {
+          "n_samples": 1,
+          "hit_rate": 1.0,
+          "mean_speedup": 2.2985226259044707,
+          "median_speedup": 2.2985226259044707,
+          "hit_only_speedup": 2.2985226259044707,
+          "min_speedup": 2.2985226259044707
+        },
+        "cross_instruction": {
+          "n_samples": 3,
+          "hit_rate": 0.3333333333333333,
+          "mean_speedup": 0.9847318184278595,
+          "median_speedup": 0.6272577214939592,
+          "hit_only_speedup": 1.7610295610933113,
+          "min_speedup": 0.5659081726963079
+        },
+        "reorder": {
+          "n_samples": 1,
+          "hit_rate": 0.0,
+          "mean_speedup": 1.0511877478238512,
+          "median_speedup": 1.0511877478238512,
+          "hit_only_speedup": 0,
+          "min_speedup": 1.0511877478238512
+        }
+      },
+      "passed": true,
+      "notes": [
+        "WARN: cross_instruction hit rate 33% < 50% \u2014 expected high hit rate for same-document variants"
+      ]
+    },
+    {
+      "tier": 2,
+      "scenarios": {
+        "multi_turn": {
+          "n_samples": 5,
+          "hit_rate": 0.2,
+          "mean_speedup": 1.1679779578381333,
+          "median_speedup": 1.0407775090601215,
+          "hit_only_speedup": 1.6658928684332424,
+          "min_speedup": 0.9929445200700424
+        },
+        "rag_template": {
+          "n_samples": 5,
+          "hit_rate": 0.8,
+          "mean_speedup": 1.3471264831531804,
+          "median_speedup": 1.590582062948929,
+          "hit_only_speedup": 1.6036400246572828,
+          "min_speedup": 0.3210723171367712
+        }
+      },
+      "passed": true,
+      "notes": []
+    }
+  ]
+}

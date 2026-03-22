@@ -13,3 +13,6 @@ venv/
 .DS_Store
 .pytest_cache/
 .ruff_cache/
+
+# Agent prompt files
+CLAUDE.md

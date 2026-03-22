@@ -1,0 +1,213 @@
+{
+  "timestamp": "20260321_223505",
+  "results": [
+    {
+      "sample_id": "tier1_exact_replay",
+      "tier": 1,
+      "scenario": "exact_replay",
+      "seed_ttft_ms": 1436.7109590093605,
+      "variant_ttft_ms": 443.7779159634374,
+      "speedup": 3.2374548334390987,
+      "is_hit": true,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier1_cross_instr_1",
+      "tier": 1,
+      "scenario": "cross_instruction",
+      "seed_ttft_ms": 563.6006669956259,
+      "variant_ttft_ms": 587.1594169875607,
+      "speedup": 0.9598767399272865,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier1_cross_instr_2",
+      "tier": 1,
+      "scenario": "cross_instruction",
+      "seed_ttft_ms": 560.76804199256,
+      "variant_ttft_ms": 571.2090419838205,
+      "speedup": 0.9817212277400255,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier1_cross_instr_3",
+      "tier": 1,
+      "scenario": "cross_instruction",
+      "seed_ttft_ms": 565.7263330067508,
+      "variant_ttft_ms": 590.0772919994779,
+      "speedup": 0.9587325943179175,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier1_reorder",
+      "tier": 1,
+      "scenario": "reorder",
+      "seed_ttft_ms": 671.8667920213193,
+      "variant_ttft_ms": 674.0376249654219,
+      "speedup": 0.9967793593952357,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_0",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 674.5501669938676,
+      "variant_ttft_ms": 258.8444580323994,
+      "speedup": 2.6060058311522147,
+      "is_hit": true,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_1",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 353.55850000632927,
+      "variant_ttft_ms": 471.8055420089513,
+      "speedup": 0.7493733509379197,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_2",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 563.971915980801,
+      "variant_ttft_ms": 460.5922920163721,
+      "speedup": 1.2244493139732227,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_3",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 565.2479580021463,
+      "variant_ttft_ms": 474.83829100383446,
+      "speedup": 1.1904009611507549,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_4",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 556.04116700124,
+      "variant_ttft_ms": 463.88749999459833,
+      "speedup": 1.1986552062897031,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_0",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 688.196417002473,
+      "variant_ttft_ms": 482.68004099372774,
+      "speedup": 1.425781798612667,
+      "is_hit": true,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_1",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 568.7438750173897,
+      "variant_ttft_ms": 578.7027920014225,
+      "speedup": 0.9827909643401057,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_2",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 567.7401660359465,
+      "variant_ttft_ms": 579.6071669901721,
+      "speedup": 0.979525786377264,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_3",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 601.6705840011127,
+      "variant_ttft_ms": 589.1237079631537,
+      "speedup": 1.0212975235393917,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_4",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 567.8684170125052,
+      "variant_ttft_ms": 601.5725410543382,
+      "speedup": 0.9439733004056969,
+      "is_hit": false,
+      "context_length_tokens": 0
+    }
+  ],
+  "summaries": [
+    {
+      "tier": 1,
+      "scenarios": {
+        "exact_replay": {
+          "n_samples": 1,
+          "hit_rate": 1.0,
+          "mean_speedup": 3.2374548334390987,
+          "median_speedup": 3.2374548334390987,
+          "hit_only_speedup": 3.2374548334390987,
+          "min_speedup": 3.2374548334390987
+        },
+        "cross_instruction": {
+          "n_samples": 3,
+          "hit_rate": 0.0,
+          "mean_speedup": 0.9667768539950765,
+          "median_speedup": 0.9598767399272865,
+          "hit_only_speedup": 0,
+          "min_speedup": 0.9587325943179175
+        },
+        "reorder": {
+          "n_samples": 1,
+          "hit_rate": 0.0,
+          "mean_speedup": 0.9967793593952357,
+          "median_speedup": 0.9967793593952357,
+          "hit_only_speedup": 0,
+          "min_speedup": 0.9967793593952357
+        }
+      },
+      "passed": true,
+      "notes": [
+        "WARN: cross_instruction hit rate 0% < 50% \u2014 expected high hit rate for same-document variants"
+      ]
+    },
+    {
+      "tier": 2,
+      "scenarios": {
+        "multi_turn": {
+          "n_samples": 5,
+          "hit_rate": 0.2,
+          "mean_speedup": 1.393776932700763,
+          "median_speedup": 1.1986552062897031,
+          "hit_only_speedup": 2.6060058311522147,
+          "min_speedup": 0.7493733509379197
+        },
+        "rag_template": {
+          "n_samples": 5,
+          "hit_rate": 0.2,
+          "mean_speedup": 1.070673874655025,
+          "median_speedup": 0.9827909643401057,
+          "hit_only_speedup": 1.425781798612667,
+          "min_speedup": 0.9439733004056969
+        }
+      },
+      "passed": true,
+      "notes": []
+    }
+  ]
+}

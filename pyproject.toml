@@ -1,6 +1,6 @@
 [project]
 name = "semblend"
-version = "0.2.0"
+version = "0.3.0"
 description = "Semantic KV cache reuse for LLM inference engines (vLLM, SGLang, TRT-LLM)"
 readme = "README.md"
 requires-python = ">=3.10"

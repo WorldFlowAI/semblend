@@ -1,0 +1,213 @@
+{
+  "timestamp": "20260321_221507",
+  "results": [
+    {
+      "sample_id": "tier1_exact_replay",
+      "tier": 1,
+      "scenario": "exact_replay",
+      "seed_ttft_ms": 456.50925004156306,
+      "variant_ttft_ms": 276.557374978438,
+      "speedup": 1.650685504507537,
+      "is_hit": true,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier1_cross_instr_1",
+      "tier": 1,
+      "scenario": "cross_instruction",
+      "seed_ttft_ms": 975.5797919933684,
+      "variant_ttft_ms": 447.111249959562,
+      "speedup": 2.1819620778533366,
+      "is_hit": true,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier1_cross_instr_2",
+      "tier": 1,
+      "scenario": "cross_instruction",
+      "seed_ttft_ms": 258.1023329985328,
+      "variant_ttft_ms": 458.0119160236791,
+      "speedup": 0.5635275501984734,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier1_cross_instr_3",
+      "tier": 1,
+      "scenario": "cross_instruction",
+      "seed_ttft_ms": 263.6300420272164,
+      "variant_ttft_ms": 422.21108300145715,
+      "speedup": 0.6244034148821871,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier1_reorder",
+      "tier": 1,
+      "scenario": "reorder",
+      "seed_ttft_ms": 434.2295000096783,
+      "variant_ttft_ms": 405.78124998137355,
+      "speedup": 1.070107354712941,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_0",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 438.17037501139566,
+      "variant_ttft_ms": 257.7667500008829,
+      "speedup": 1.6998715893725427,
+      "is_hit": true,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_1",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 272.4322080030106,
+      "variant_ttft_ms": 258.14391701715067,
+      "speedup": 1.055350097538462,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_2",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 272.72387500852346,
+      "variant_ttft_ms": 247.48375004855916,
+      "speedup": 1.1019869989646265,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_3",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 266.15487498929724,
+      "variant_ttft_ms": 250.18858298426494,
+      "speedup": 1.0638170287971793,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_multiturn_4",
+      "tier": 2,
+      "scenario": "multi_turn",
+      "seed_ttft_ms": 265.16841602278873,
+      "variant_ttft_ms": 259.02566697914153,
+      "speedup": 1.0237148276280352,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_0",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 440.069250005763,
+      "variant_ttft_ms": 252.73445900529623,
+      "speedup": 1.741231693286989,
+      "is_hit": true,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_1",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 274.65545799350366,
+      "variant_ttft_ms": 426.22591700637713,
+      "speedup": 0.6443893884317557,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_2",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 265.1155830244534,
+      "variant_ttft_ms": 496.1094169993885,
+      "speedup": 0.5343893381987147,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_3",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 284.2436249484308,
+      "variant_ttft_ms": 426.0012090089731,
+      "speedup": 0.6672366625664755,
+      "is_hit": false,
+      "context_length_tokens": 0
+    },
+    {
+      "sample_id": "tier2_rag_template_4",
+      "tier": 2,
+      "scenario": "rag_template",
+      "seed_ttft_ms": 268.5142080299556,
+      "variant_ttft_ms": 487.4497079872526,
+      "speedup": 0.5508552033781864,
+      "is_hit": false,
+      "context_length_tokens": 0
+    }
+  ],
+  "summaries": [
+    {
+      "tier": 1,
+      "scenarios": {
+        "exact_replay": {
+          "n_samples": 1,
+          "hit_rate": 1.0,
+          "mean_speedup": 1.650685504507537,
+          "median_speedup": 1.650685504507537,
+          "hit_only_speedup": 1.650685504507537,
+          "min_speedup": 1.650685504507537
+        },
+        "cross_instruction": {
+          "n_samples": 3,
+          "hit_rate": 0.3333333333333333,
+          "mean_speedup": 1.123297680977999,
+          "median_speedup": 0.6244034148821871,
+          "hit_only_speedup": 2.1819620778533366,
+          "min_speedup": 0.5635275501984734
+        },
+        "reorder": {
+          "n_samples": 1,
+          "hit_rate": 0.0,
+          "mean_speedup": 1.070107354712941,
+          "median_speedup": 1.070107354712941,
+          "hit_only_speedup": 0,
+          "min_speedup": 1.070107354712941
+        }
+      },
+      "passed": true,
+      "notes": [
+        "WARN: cross_instruction hit rate 33% < 50% \u2014 expected high hit rate for same-document variants"
+      ]
+    },
+    {
+      "tier": 2,
+      "scenarios": {
+        "multi_turn": {
+          "n_samples": 5,
+          "hit_rate": 0.2,
+          "mean_speedup": 1.1889481084601692,
+          "median_speedup": 1.0638170287971793,
+          "hit_only_speedup": 1.6998715893725427,
+          "min_speedup": 1.0237148276280352
+        },
+        "rag_template": {
+          "n_samples": 5,
+          "hit_rate": 0.2,
+          "mean_speedup": 0.8276204571724243,
+          "median_speedup": 0.6443893884317557,
+          "hit_only_speedup": 1.741231693286989,
+          "min_speedup": 0.5343893381987147
+        }
+      },
+      "passed": true,
+      "notes": []
+    }
+  ]
+}

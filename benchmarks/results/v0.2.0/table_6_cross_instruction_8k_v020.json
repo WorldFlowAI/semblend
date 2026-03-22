@@ -1,0 +1,44 @@
+{
+  "cold_p50_ms": 5257.050541986246,
+  "cold_mean_ms": 4775.608562493289,
+  "n_articles": 8,
+  "token_length": 8192,
+  "variants": {
+    "variant_B": {
+      "variant_instr": "You are an expert summarizer. Provide concise summaries.",
+      "char_diff_from_donor": -9,
+      "p50_ms": 6055.70433405228,
+      "speedup_vs_cold": 0.8423935538817613,
+      "est_hit_pct": 0.0,
+      "lmcache_only_expected_hit_pct": 0,
+      "n": 8
+    },
+    "variant_C": {
+      "variant_instr": "You assist users by accurately summarizing documents.",
+      "char_diff_from_donor": -12,
+      "p50_ms": 5668.718582950532,
+      "speedup_vs_cold": 0.8329490094166612,
+      "est_hit_pct": 0.0,
+      "lmcache_only_expected_hit_pct": 0,
+      "n": 8
+    },
+    "variant_D": {
+      "variant_instr": "Summarize documents accurately and helpfully.",
+      "char_diff_from_donor": -20,
+      "p50_ms": 5646.394208015408,
+      "speedup_vs_cold": 0.9029634198289972,
+      "est_hit_pct": 0.0,
+      "lmcache_only_expected_hit_pct": 0,
+      "n": 8
+    },
+    "variant_E": {
+      "variant_instr": "You provide accurate document summaries.",
+      "char_diff_from_donor": -25,
+      "p50_ms": 5956.936166970991,
+      "speedup_vs_cold": 0.7709831236967892,
+      "est_hit_pct": 0.0,
+      "lmcache_only_expected_hit_pct": 0,
+      "n": 8
+    }
+  }
+}
