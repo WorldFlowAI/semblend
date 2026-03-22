@@ -93,6 +93,9 @@ class PipelineResult:
     position_map: PositionMapping = field(default_factory=PositionMapping)
     timings: PipelineTimings = field(default_factory=PipelineTimings)
     rejection_reason: str | None = None
+    fuzzy_confidence: float = 1.0
+    force_verify_layers: list[int] = field(default_factory=list)
+    confidence_tier: str = "exact"
 
 
 class SemBlendPipeline:
@@ -126,11 +129,17 @@ class SemBlendPipeline:
         backend: SemBlendBackend | None = None,
         chunk_size: int | None = None,
         donor_store: object | None = None,
+        fuzzy_config: object | None = None,
+        recompute_config: object | None = None,
+        enable_pq_segments: bool = True,
     ) -> None:
         self._min_similarity = min_similarity
         self._min_reuse_ratio = min_reuse_ratio
         self._model_name = model_name
         self._backend = backend
+        self._fuzzy_config = fuzzy_config
+        self._recompute_config = recompute_config
+        self._pq_store = None
 
         # FM1 ablation: set SEMBLEND_USE_ALIGNMENT=0 to disable RoPE delta correction
         self._use_alignment = os.environ.get(
@@ -167,9 +176,22 @@ class SemBlendPipeline:
                 chunk_size=self._chunk_size,
             )
 
+        # Initialize PQ segment store for fuzzy matching verification
+        if enable_pq_segments and os.environ.get("SEMBLEND_SEGMENT_EMBEDDINGS", "1") == "1":
+            try:
+                from semblend_core.pq_segment_store import PQSegmentStore
+                pq_train = int(os.environ.get("SEMBLEND_PQ_TRAIN_THRESHOLD", "500"))
+                self._pq_store = PQSegmentStore(
+                    max_entries=max_donors,
+                    train_threshold=pq_train,
+                )
+            except Exception:
+                logger.warning("PQ segment store init failed", exc_info=True)
+
         logger.info(
             "SemBlend pipeline initialized: embedder=%s (dim=%d), "
-            "store=%s, max_donors=%d, min_sim=%.2f, min_reuse=%.2f, chunk_size=%d",
+            "store=%s, max_donors=%d, min_sim=%.2f, min_reuse=%.2f, "
+            "chunk_size=%d, pq_segments=%s",
             type(self._embedder).__name__,
             self._embedder.dimension,
             type(self._donor_store).__name__,
@@ -177,6 +199,7 @@ class SemBlendPipeline:
             min_similarity,
             min_reuse_ratio,
             self._chunk_size,
+            self._pq_store is not None,
         )
 
     @property
@@ -281,18 +304,45 @@ class SemBlendPipeline:
                 rejection_reason="no_donor_match",
             )
 
-        # Stage 4: Bathtub curve layer deviations
+        # Stage 4: Bathtub curve layer deviations (fuzzy-aware)
         t0 = time.monotonic()
         from semblend_core.bathtub import compute_layer_deviations
 
         num_layers = self._detect_num_layers()
         mismatch = 1.0 - match.alignment.reuse_ratio
+
+        # Extract fuzzy metadata from alignment
+        alignment = match.alignment
+        fuzzy_chunks = getattr(alignment, "fuzzy_chunks", 0)
+        exact_chunks = getattr(alignment, "exact_chunks", 0)
+        total_chunks = fuzzy_chunks + exact_chunks
+        fuzzy_fraction = fuzzy_chunks / max(total_chunks, 1) if total_chunks > 0 else 0.0
+        mean_fuzzy_conf = getattr(alignment, "mean_fuzzy_confidence", 1.0)
+
         layer_devs = compute_layer_deviations(
             num_layers=num_layers,
             mismatch_fraction=mismatch,
             model_name=self._model_name,
+            similarity=match.similarity,
+            fuzzy_fraction=fuzzy_fraction,
+            mean_fuzzy_confidence=mean_fuzzy_conf,
+            recompute_config=self._recompute_config,
         )
         timings.bathtub_ms = (time.monotonic() - t0) * 1000
+
+        # Determine confidence tier and force-verify layers
+        force_verify = [d.layer_idx for d in layer_devs if d.should_recompute]
+        if fuzzy_chunks > 0:
+            confidences = getattr(alignment, "chunk_confidences", ())
+            tiers = [c.tier for c in confidences] if confidences else []
+            if any(t == "verified_reuse" for t in tiers):
+                confidence_tier = "verified_reuse"
+            elif any(t == "fast_reuse" for t in tiers):
+                confidence_tier = "fast_reuse"
+            else:
+                confidence_tier = "exact"
+        else:
+            confidence_tier = "exact"
 
         timings.total_ms = (time.monotonic() - t_start) * 1000
 
@@ -354,6 +404,9 @@ class SemBlendPipeline:
             layer_deviations=layer_dev_dicts,
             position_map=position_map,
             timings=timings,
+            fuzzy_confidence=mean_fuzzy_conf,
+            force_verify_layers=force_verify,
+            confidence_tier=confidence_tier,
         )
 
     def find_donor_candidates(
@@ -471,6 +524,9 @@ class SemBlendPipeline:
     ) -> None:
         """Register a completed request as a potential donor.
 
+        Uses embed_with_segments when PQ segment store is available,
+        falling back to standard embed() otherwise.
+
         Args:
             request_id: Unique request identifier.
             token_ids: Token IDs of the completed request.
@@ -479,10 +535,25 @@ class SemBlendPipeline:
         from semblend_core.donor_store import DonorNode
 
         embedding = None
+        segment_embeddings = None
+
         if prompt_text:
-            raw = self._embedder.embed(_order_invariant_text(prompt_text))
-            if raw is not None:
-                embedding = np.asarray(raw, dtype=np.float32)
+            text = _order_invariant_text(prompt_text)
+
+            # Try embed_with_segments for PQ store integration
+            if self._pq_store and hasattr(self._embedder, "embed_with_segments"):
+                result = self._embedder.embed_with_segments(
+                    text, chunk_size=self._chunk_size,
+                )
+                if result is not None:
+                    embedding = np.asarray(result.pooled, dtype=np.float32)
+                    segment_embeddings = result.segments
+
+            # Fallback to standard embed
+            if embedding is None:
+                raw = self._embedder.embed(text)
+                if raw is not None:
+                    embedding = np.asarray(raw, dtype=np.float32)
 
         node = DonorNode(
             request_id=request_id,
@@ -492,6 +563,10 @@ class SemBlendPipeline:
             prompt_text=prompt_text[:200],
         )
         self._donor_store.add_donor(node)
+
+        # Store segment embeddings in PQ store
+        if self._pq_store and segment_embeddings is not None:
+            self._pq_store.add_segments(request_id, segment_embeddings.matrix)
 
     # ------------------------------------------------------------------
     # PartialAttention plan building

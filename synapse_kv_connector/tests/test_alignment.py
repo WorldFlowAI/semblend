@@ -510,8 +510,15 @@ def test_fuzzy_low_overlap_threshold():
     donor = chunk_a + chunk_b
     target = chunk_a_prime + chunk_b
 
+    # Use a permissive fuzzy config to test overlap-only matching
+    # (bag-cosine gate would reject 90% overlap with sequential tokens)
+    from synapse_kv_connector.alignment import FuzzyMatchConfig
+    permissive_config = FuzzyMatchConfig(
+        bag_cosine_min=0.50, confidence_low=0.10,
+    )
     result = compute_fuzzy_chunk_alignment(
         donor, target, min_overlap=0.85, context_gate=False,
+        fuzzy_config=permissive_config,
     )
     # chunk_b matches exactly, chunk_a' should fuzzy-match chunk_a
     assert result.exact_chunks >= 1, "chunk_b should match exactly"

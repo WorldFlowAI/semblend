@@ -41,6 +41,7 @@ class DonorNode:
     embedding: np.ndarray | None  # [dim] normalized
     timestamp: float
     prompt_text: str = ""
+    segment_embeddings: object | None = None  # SegmentEmbeddings (transient, pre-PQ)
 
 
 @dataclass(frozen=True)

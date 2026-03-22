@@ -159,6 +159,84 @@ class MiniLMEmbedder:
         norm = np.linalg.norm(pooled)
         return pooled / max(norm, 1e-12)
 
+    def embed_with_segments(
+        self, text: str, chunk_size: int = 256,
+    ) -> "EmbedResult | None":
+        """Embed text with per-segment embeddings aligned to KV block boundaries.
+
+        Tokenizes the full text, splits into non-overlapping chunk_size-token
+        windows (matching the KV cache block size), and batch-embeds all chunks
+        in a single forward pass.
+
+        Args:
+            text: Input text to embed.
+            chunk_size: Tokens per segment, aligned to KV block boundaries.
+                Defaults to 256 (LMCache block size). Use 128 for TRT-LLM.
+
+        Returns:
+            EmbedResult with pooled embedding and optional per-segment detail,
+            or None if the embedder is unavailable.
+        """
+        if not self._available or not text.strip():
+            return None
+
+        # Lazy import to avoid circular dependency
+        from semblend_core.segment_embeddings import EmbedResult, SegmentEmbeddings
+
+        tokenizer = self._model.tokenizer
+        full_ids = tokenizer.encode(text, add_special_tokens=False)
+
+        usable = chunk_size  # no overlap — aligned to KV block boundaries
+        n_chunks = max(1, (len(full_ids) + usable - 1) // usable)
+
+        # Single-chunk fast path: no per-segment detail needed
+        if n_chunks == 1:
+            embedding = self._model.encode(
+                text,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+            pooled = embedding.flatten()
+            return EmbedResult(pooled=pooled, segments=None)
+
+        # Build non-overlapping chunk texts and token ranges
+        chunk_texts: list[str] = []
+        token_ranges: list[tuple[int, int]] = []
+
+        for i in range(n_chunks):
+            start = i * usable
+            end = min(start + usable, len(full_ids))
+            chunk_ids = full_ids[start:end]
+            if not chunk_ids:
+                break
+            chunk_texts.append(
+                tokenizer.decode(chunk_ids, skip_special_tokens=True),
+            )
+            token_ranges.append((start, end))
+
+        # Batch-embed all chunks in a single forward pass
+        segment_matrix = self._model.encode(
+            chunk_texts,
+            batch_size=len(chunk_texts),
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )  # [n_chunks, 384]
+
+        # Mean-pool across segments for the pooled prompt embedding
+        pooled = segment_matrix.mean(axis=0)
+        norm = np.linalg.norm(pooled)
+        pooled = pooled / max(norm, 1e-12)
+
+        segments = SegmentEmbeddings(
+            matrix=segment_matrix,
+            chunk_token_ranges=tuple(token_ranges),
+            chunk_size=chunk_size,
+        )
+
+        return EmbedResult(pooled=pooled, segments=segments)
+
 
 class JinaEmbedder:
     """HTTP-based jina-v4 embedder (kept for benchmarks and fallback)."""

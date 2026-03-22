@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -42,10 +43,42 @@ _CONTEXT_GATE_ENABLED = os.environ.get("SEMBLEND_CONTEXT_GATE", "1") != "0"
 
 # Fuzzy chunk matching: when exact hash fails, check token overlap.
 # Enable with SEMBLEND_FUZZY_CHUNKS=1. Default threshold 0.90 (90% overlap).
-_FUZZY_CHUNKS_ENABLED = os.environ.get("SEMBLEND_FUZZY_CHUNKS", "0") == "1"
+_FUZZY_CHUNKS_ENABLED = os.environ.get("SEMBLEND_FUZZY_CHUNKS", "1") == "1"
 _FUZZY_CHUNK_MIN_OVERLAP = float(
     os.environ.get("SEMBLEND_FUZZY_CHUNK_OVERLAP", "0.90")
 )
+
+
+@dataclass(frozen=True)
+class FuzzyMatchConfig:
+    """Fully configurable fuzzy matching parameters for any model/engine."""
+    min_overlap: float = float(os.environ.get("SEMBLEND_FUZZY_CHUNK_OVERLAP", "0.90"))
+    decay_function: str = os.environ.get("SEMBLEND_FUZZY_DECAY_FN", "exponential")
+    position_tau: float = float(os.environ.get("SEMBLEND_FUZZY_POSITION_TAU", "128"))
+    confidence_high: float = float(os.environ.get("SEMBLEND_FUZZY_CONFIDENCE_HIGH", "0.92"))
+    confidence_low: float = float(os.environ.get("SEMBLEND_FUZZY_CONFIDENCE_LOW", "0.80"))
+    bag_cosine_min: float = float(os.environ.get("SEMBLEND_FUZZY_BAG_COSINE_MIN", "0.94"))
+    bag_cosine_adaptive: bool = os.environ.get("SEMBLEND_FUZZY_BAG_COSINE_ADAPTIVE", "1") == "1"
+    segment_verify: bool = os.environ.get("SEMBLEND_FUZZY_SEGMENT_VERIFY", "1") == "1"
+    segment_similarity_min: float = float(os.environ.get("SEMBLEND_FUZZY_SEGMENT_SIM_MIN", "0.85"))
+
+
+@dataclass(frozen=True)
+class ChunkConfidence:
+    """Per-chunk confidence metadata for fuzzy matches."""
+    chunk_idx: int
+    overlap_ratio: float
+    positional_coherence: float
+    mean_abs_delta: float
+    bag_cosine: float
+    segment_similarity: float
+    confidence: float
+    tier: str  # "fast_reuse" | "verified_reuse" | "recompute"
+
+
+# Default fuzzy config (auto-populates from env vars)
+_DEFAULT_FUZZY_CONFIG = FuzzyMatchConfig()
+
 
 try:
     from rapidfuzz.distance import Opcodes  # noqa: F401
@@ -75,8 +108,11 @@ class AlignmentResult:
     edit_distance: int
     donor_len: int
     target_len: int
-    fuzzy_chunks: int = 0  # number of fuzzy-matched (non-exact) chunks
-    exact_chunks: int = 0  # number of exact-matched chunks
+    fuzzy_chunks: int = 0
+    exact_chunks: int = 0
+    chunk_confidences: tuple[ChunkConfidence, ...] = ()
+    mean_fuzzy_confidence: float = 1.0
+    fuzzy_recompute_chunks: int = 0
 
 
 def _chunk_hash(tokens: list[int]) -> str:
@@ -226,6 +262,94 @@ def compute_chunk_alignment(
     )
 
 
+def chunk_bag_cosine(donor_chunk: list[int], target_chunk: list[int]) -> float:
+    """Token-frequency weighted cosine similarity between two chunks.
+
+    Uses Counter-based token frequency vectors. Fast (~0.01ms per chunk)
+    and captures distribution shape beyond simple overlap ratio.
+    """
+    from collections import Counter
+    d_counts = Counter(donor_chunk)
+    t_counts = Counter(target_chunk)
+    vocab = set(d_counts.keys()) | set(t_counts.keys())
+    dot = sum(d_counts.get(v, 0) * t_counts.get(v, 0) for v in vocab)
+    d_norm = sum(c * c for c in d_counts.values()) ** 0.5
+    t_norm = sum(c * c for c in t_counts.values()) ** 0.5
+    return dot / max(d_norm * t_norm, 1e-12)
+
+
+def _compute_position_decay(mean_abs_delta: float, tau: float, decay_fn: str) -> float:
+    """Compute position decay for confidence scoring."""
+    if decay_fn == "exponential":
+        return math.exp(-mean_abs_delta / max(tau, 1e-6))
+    elif decay_fn == "linear":
+        return max(0.0, 1.0 - mean_abs_delta / (2.0 * max(tau, 1e-6)))
+    elif decay_fn == "step":
+        return 1.0 if mean_abs_delta < tau else 0.0
+    return math.exp(-mean_abs_delta / max(tau, 1e-6))
+
+
+def _compute_chunk_confidence(
+    pairs: list[tuple[int, int]],
+    overlap_ratio: float,
+    donor_chunk: list[int],
+    target_chunk: list[int],
+    chunk_idx: int,
+    config: FuzzyMatchConfig,
+    global_similarity: float = 0.0,
+) -> ChunkConfidence:
+    """Compute confidence score and tier for a fuzzy-matched chunk."""
+    from collections import Counter
+
+    # Positional coherence: fraction of pairs sharing the mode delta
+    if pairs:
+        deltas = [t_off - d_off for (t_off, d_off) in pairs]
+        delta_counts = Counter(deltas)
+        mode_delta_count = delta_counts.most_common(1)[0][1]
+        positional_coherence = mode_delta_count / len(pairs)
+        abs_deltas = [abs(d) for d in deltas]
+        mean_abs_delta = sum(abs_deltas) / len(abs_deltas)
+    else:
+        positional_coherence = 0.0
+        mean_abs_delta = 0.0
+
+    # Position decay
+    decay = _compute_position_decay(mean_abs_delta, config.position_tau, config.decay_function)
+
+    # Bag-cosine verification
+    bag_cos = chunk_bag_cosine(donor_chunk, target_chunk)
+
+    # Composite confidence
+    confidence = overlap_ratio * positional_coherence * decay
+
+    # Bag-cosine threshold (adaptive if enabled)
+    bag_threshold = config.bag_cosine_min
+    if config.bag_cosine_adaptive and global_similarity > 0:
+        bag_threshold = config.bag_cosine_min + 0.04 * global_similarity
+
+    # Tier classification
+    if bag_cos < bag_threshold:
+        tier = "recompute"
+        confidence = 0.0  # Force recompute if bag-cosine fails
+    elif confidence >= config.confidence_high:
+        tier = "fast_reuse"
+    elif confidence >= config.confidence_low:
+        tier = "verified_reuse"
+    else:
+        tier = "recompute"
+
+    return ChunkConfidence(
+        chunk_idx=chunk_idx,
+        overlap_ratio=overlap_ratio,
+        positional_coherence=positional_coherence,
+        mean_abs_delta=mean_abs_delta,
+        bag_cosine=bag_cos,
+        segment_similarity=0.0,  # Set later by PQ store if available
+        confidence=confidence,
+        tier=tier,
+    )
+
+
 def _fuzzy_match_chunk(
     target_chunk: list[int],
     donor_chunks: list[list[int]],
@@ -324,6 +448,8 @@ def compute_fuzzy_chunk_alignment(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     context_gate: bool | None = None,
     min_overlap: float | None = None,
+    fuzzy_config: FuzzyMatchConfig | None = None,
+    global_similarity: float = 0.0,
 ) -> AlignmentResult:
     """Chunk-level alignment with fuzzy matching for non-exact chunks.
 
@@ -437,6 +563,53 @@ def compute_fuzzy_chunk_alignment(
         exact_matches = validated_exact
         fuzzy_matches = validated_fuzzy
 
+    # Phase 3.5: confidence gating for fuzzy matches
+    config = fuzzy_config or _DEFAULT_FUZZY_CONFIG
+    chunk_confidences: list[ChunkConfidence] = []
+    downgraded_fuzzy: set[int] = set()
+
+    for t_idx in list(fuzzy_matches.keys()):
+        pairs = fuzzy_matches[t_idx]
+        d_idx = fuzzy_donor_idx[t_idx]
+        t_chunk = target_chunks[t_idx]
+        d_chunk = donor_chunks[d_idx]
+
+        # Compute overlap ratio for this specific chunk
+        from collections import Counter
+        t_counts = Counter(t_chunk)
+        d_counts = Counter(d_chunk)
+        overlap_count = sum(
+            min(t_counts[tok], d_counts[tok])
+            for tok in t_counts if tok in d_counts
+        )
+        overlap = overlap_count / max(len(t_chunk), 1)
+
+        conf = _compute_chunk_confidence(
+            pairs=pairs,
+            overlap_ratio=overlap,
+            donor_chunk=d_chunk,
+            target_chunk=t_chunk,
+            chunk_idx=t_idx,
+            config=config,
+            global_similarity=global_similarity,
+        )
+        chunk_confidences.append(conf)
+
+        if conf.tier == "recompute":
+            downgraded_fuzzy.add(t_idx)
+
+    # Remove downgraded chunks from fuzzy matches
+    for t_idx in downgraded_fuzzy:
+        del fuzzy_matches[t_idx]
+        del fuzzy_donor_idx[t_idx]
+
+    num_downgraded = len(downgraded_fuzzy)
+    if num_downgraded > 0:
+        logger.info(
+            "confidence_gate: downgraded %d fuzzy chunks to recompute",
+            num_downgraded,
+        )
+
     # Phase 4: build slot actions
     slot_actions: list[SlotAction] = []
     num_reused = 0
@@ -502,6 +675,13 @@ def compute_fuzzy_chunk_alignment(
         reuse_ratio, len(donor_chunks), len(target_chunks),
     )
 
+    # Compute mean fuzzy confidence (only for non-downgraded chunks)
+    active_confidences = [c for c in chunk_confidences if c.tier != "recompute"]
+    mean_conf = (
+        sum(c.confidence for c in active_confidences) / len(active_confidences)
+        if active_confidences else 1.0
+    )
+
     return AlignmentResult(
         reuse_ratio=reuse_ratio,
         slot_actions=slot_actions,
@@ -510,6 +690,9 @@ def compute_fuzzy_chunk_alignment(
         target_len=target_len,
         fuzzy_chunks=num_fuzzy_chunks,
         exact_chunks=num_exact_chunks,
+        chunk_confidences=tuple(chunk_confidences),
+        mean_fuzzy_confidence=mean_conf,
+        fuzzy_recompute_chunks=num_downgraded,
     )
 
 

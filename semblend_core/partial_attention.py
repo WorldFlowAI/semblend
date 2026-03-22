@@ -67,6 +67,7 @@ class LayerMask:
     recompute_all: bool
     deviation_score: float
     position_masks: list[PositionMask] = field(default_factory=list)
+    verification_source: str = "bathtub"  # "bathtub" | "confidence_gate" | "force_verify"
 
 
 @dataclass(frozen=True)

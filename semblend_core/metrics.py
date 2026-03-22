@@ -51,6 +51,27 @@ class _NoopMetrics:
     def record_rope_correction(self, n_positions: int, layer: int) -> None:
         pass
 
+    def record_fuzzy_confidence(self, confidence: float) -> None:
+        pass
+
+    def record_fuzzy_tier(self, tier: str) -> None:
+        pass
+
+    def record_force_verify_layers(self, n: int = 1) -> None:
+        pass
+
+    def record_segment_compare_latency(self, ms: float) -> None:
+        pass
+
+    def record_fuzzy_bag_cosine_reject(self) -> None:
+        pass
+
+    def record_pq_codebook_trained(self, trained: bool) -> None:
+        pass
+
+    def record_pq_segment_store_entries(self, n: int) -> None:
+        pass
+
 
 class _PrometheusMetrics:
     """Real Prometheus metrics using prometheus_client."""
@@ -113,6 +134,37 @@ class _PrometheusMetrics:
             f"{prefix}rope_corrections_total",
             "Total RoPE corrections applied",
         )
+        self._fuzzy_confidence = Histogram(
+            f"{prefix}fuzzy_confidence",
+            "Per-match confidence scores for fuzzy matching",
+            buckets=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0],
+        )
+        self._fuzzy_tier_total = Counter(
+            f"{prefix}fuzzy_tier_total",
+            "Fuzzy matching tier outcomes",
+            ["tier"],  # fast_reuse, verified_reuse, recompute
+        )
+        self._force_verify_layers_total = Counter(
+            f"{prefix}force_verify_layers_total",
+            "Layers force-verified during fuzzy matching",
+        )
+        self._segment_compare_latency = Histogram(
+            f"{prefix}segment_compare_latency_ms",
+            "Segment comparison overhead in ms",
+            buckets=[0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10],
+        )
+        self._fuzzy_bag_cosine_rejects = Counter(
+            f"{prefix}fuzzy_bag_cosine_rejects",
+            "Chunks rejected by bag-cosine pre-filter",
+        )
+        self._pq_codebook_trained = Gauge(
+            f"{prefix}pq_codebook_trained",
+            "Whether the PQ codebook is trained (1=yes, 0=no)",
+        )
+        self._pq_segment_store_entries = Gauge(
+            f"{prefix}pq_segment_store_entries",
+            "Number of donors with PQ segments in store",
+        )
 
     def record_pipeline_result(
         self,
@@ -151,6 +203,27 @@ class _PrometheusMetrics:
 
     def record_rope_correction(self, n_positions: int, layer: int) -> None:
         self._rope_corrections.inc()
+
+    def record_fuzzy_confidence(self, confidence: float) -> None:
+        self._fuzzy_confidence.observe(confidence)
+
+    def record_fuzzy_tier(self, tier: str) -> None:
+        self._fuzzy_tier_total.labels(tier=tier).inc()
+
+    def record_force_verify_layers(self, n: int = 1) -> None:
+        self._force_verify_layers_total.inc(n)
+
+    def record_segment_compare_latency(self, ms: float) -> None:
+        self._segment_compare_latency.observe(ms)
+
+    def record_fuzzy_bag_cosine_reject(self) -> None:
+        self._fuzzy_bag_cosine_rejects.inc()
+
+    def record_pq_codebook_trained(self, trained: bool) -> None:
+        self._pq_codebook_trained.set(1 if trained else 0)
+
+    def record_pq_segment_store_entries(self, n: int) -> None:
+        self._pq_segment_store_entries.set(n)
 
 
 def _create_metrics() -> _NoopMetrics | _PrometheusMetrics:
