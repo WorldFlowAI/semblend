@@ -311,10 +311,21 @@ class OnnxGpuEmbedder:
                 logger.warning("ONNX model not available, skipping GPU embedder")
                 return
 
-            # Create ONNX session with CUDA EP
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            # Create ONNX session with CUDA EP + memory limit
+            # MiniLM is 22M params (~88MB). Limit GPU arena to 256MB to prevent
+            # workspace buffer growth from starving the inference model's KV cache.
+            cuda_ep_opts = {
+                "device_id": 0,
+                "gpu_mem_limit": 256 * 1024 * 1024,  # 256MB max
+                "arena_extend_strategy": "kSameAsRequested",  # don't over-allocate
+            }
+            providers = [
+                ("CUDAExecutionProvider", cuda_ep_opts),
+                "CPUExecutionProvider",
+            ]
             sess_opts = ort.SessionOptions()
             sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            sess_opts.enable_mem_pattern = False  # prevent memory pattern caching growth
             self._session = ort.InferenceSession(
                 str(model_path), sess_options=sess_opts, providers=providers
             )
