@@ -169,7 +169,6 @@ def run_benchmark(
 
     pipeline_single = SemBlendPipeline(
         max_donors=10_000,
-        embedder_type="jaccard",
         chunk_size=256,
     )
 
@@ -210,7 +209,6 @@ def run_benchmark(
 
     pipeline_multi = SemBlendPipeline(
         max_donors=10_000,
-        embedder_type="jaccard",
         chunk_size=256,
     )
 

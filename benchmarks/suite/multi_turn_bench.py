@@ -308,7 +308,6 @@ def run_benchmark(
 
         pipeline = SemBlendPipeline(
             max_donors=10_000,
-            embedder_type="jaccard",  # Fast embedder for local benchmarks
             chunk_size=256,
         )
 
