@@ -87,6 +87,8 @@ class PartialAttentionPlan:
         num_partial_positions: Count of positions needing partial computation.
         num_full_layers: Count of layers needing full recomputation.
         computation_ratio: Fraction of total work compared to full prefill.
+        donor_map: Per-position donor_id for multi-donor scatter.
+            Maps target_pos → donor_id for positions in REUSE mode.
     """
 
     target_len: int
@@ -97,6 +99,7 @@ class PartialAttentionPlan:
     num_partial_positions: int
     num_full_layers: int
     computation_ratio: float
+    donor_map: tuple[tuple[int, str], ...] = ()
 
 
 def build_attention_plan(
@@ -304,3 +307,137 @@ def compute_donor_kv_indices(
             pairs.append((pm.donor_pos, pm.target_pos))
 
     return pairs
+
+
+def build_multi_donor_attention_plan(
+    target_len: int,
+    slot_actions: list[dict],
+    layer_hints: list[dict] | None = None,
+    num_layers: int = 32,
+) -> PartialAttentionPlan:
+    """Build a PartialAttentionPlan from multi-donor slot actions.
+
+    Similar to build_attention_plan but handles slot actions with
+    per-position donor_id mappings for scatter-gather KV assembly.
+
+    Args:
+        target_len: Number of tokens in the target sequence.
+        slot_actions: Per-position actions with donorId fields.
+        layer_hints: Optional per-layer recomputation hints.
+        num_layers: Number of transformer layers.
+
+    Returns:
+        PartialAttentionPlan with donor_map for multi-donor scatter.
+    """
+    # Build per-position masks and donor map
+    position_masks = []
+    donor_map: dict[int, str] = {}
+    copy_positions = []
+    placeholder_positions = []
+
+    for sa in slot_actions:
+        action = sa.get("action", "")
+        target_pos = sa.get("targetPos", sa.get("target_pos", 0))
+        donor_id = sa.get("donorId", sa.get("donor_id"))
+
+        if action == "copy_from_donor":
+            donor_pos = sa.get("donorPos", sa.get("donor_pos"))
+            position_masks.append(
+                PositionMask(
+                    target_pos=target_pos,
+                    mode=AttentionMode.REUSE,
+                    donor_pos=donor_pos,
+                )
+            )
+            copy_positions.append(target_pos)
+            if donor_id:
+                donor_map[target_pos] = donor_id
+        elif action == "recompute":
+            position_masks.append(
+                PositionMask(
+                    target_pos=target_pos,
+                    mode=AttentionMode.PARTIAL,
+                    donor_pos=None,
+                )
+            )
+            placeholder_positions.append(target_pos)
+
+    # Build per-layer masks
+    layer_masks = []
+    num_full_layers = 0
+
+    for layer_idx in range(num_layers):
+        recompute_all = False
+        deviation_score = 0.0
+
+        if layer_hints and layer_idx < len(layer_hints):
+            hint = layer_hints[layer_idx]
+            recompute_all = hint.get(
+                "recomputeAll", hint.get("recompute_all", False)
+            )
+            deviation_score = hint.get(
+                "deviationScore", hint.get("deviation_score", 0.0)
+            )
+
+        if recompute_all:
+            num_full_layers += 1
+            full_masks = [
+                PositionMask(target_pos=i, mode=AttentionMode.FULL)
+                for i in range(target_len)
+            ]
+            layer_masks.append(LayerMask(
+                layer_idx=layer_idx,
+                recompute_all=True,
+                deviation_score=deviation_score,
+                position_masks=full_masks,
+            ))
+        else:
+            layer_masks.append(LayerMask(
+                layer_idx=layer_idx,
+                recompute_all=False,
+                deviation_score=deviation_score,
+                position_masks=list(position_masks),
+            ))
+
+    num_reuse = len(copy_positions)
+    num_partial = len(placeholder_positions)
+
+    # Compute donor_len as max donor_pos + 1 across all donors
+    donor_len = 0
+    for sa in slot_actions:
+        dp = sa.get("donorPos", sa.get("donor_pos"))
+        if dp is not None and dp >= donor_len:
+            donor_len = dp + 1
+
+    # Primary donor_id from donor_map (most frequent)
+    if donor_map:
+        from collections import Counter
+        donor_counts = Counter(donor_map.values())
+        primary_donor_id = donor_counts.most_common(1)[0][0]
+    else:
+        primary_donor_id = ""
+
+    partial_layers = num_layers - num_full_layers
+    if num_layers > 0 and target_len > 0:
+        partial_work = partial_layers * num_partial
+        full_work = num_full_layers * target_len
+        total_possible = num_layers * target_len
+        computation_ratio = (
+            (partial_work + full_work) / total_possible
+            if total_possible > 0
+            else 1.0
+        )
+    else:
+        computation_ratio = 1.0
+
+    return PartialAttentionPlan(
+        target_len=target_len,
+        donor_len=donor_len,
+        donor_id=primary_donor_id,
+        layer_masks=layer_masks,
+        num_reuse_positions=num_reuse,
+        num_partial_positions=num_partial,
+        num_full_layers=num_full_layers,
+        computation_ratio=computation_ratio,
+        donor_map=tuple(donor_map.items()),
+    )

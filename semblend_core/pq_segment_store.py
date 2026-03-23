@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -374,6 +374,69 @@ class PQSegmentStore:
         oldest_id = min(self._donor_offsets, key=self._donor_offsets.get)
         del self._donor_offsets[oldest_id]
         del self._segment_counts[oldest_id]
+
+    def extend_segments(self, donor_id: str, new_segments: np.ndarray) -> None:
+        """Append new segments to an existing donor entry.
+
+        Used when a donor is extended with new chunks (e.g., multi-turn
+        conversation where Turn N+1 shares prefix with Turn N but adds
+        new content). Appends without re-encoding existing segments.
+
+        Args:
+            donor_id: Existing donor ID.
+            new_segments: [n_new, dim] L2-normalized float32 embeddings.
+        """
+        n_new = min(new_segments.shape[0], self._max_segments)
+        new_segments = new_segments[:n_new]
+
+        with self._lock:
+            if self.codebook_trained:
+                existing_count = self._segment_counts.get(donor_id, 0)
+                total = existing_count + n_new
+                if total > self._max_segments:
+                    n_new = self._max_segments - existing_count
+                    if n_new <= 0:
+                        return
+                    new_segments = new_segments[:n_new]
+
+                new_codes = pq_encode_batch(new_segments, self._codebook)
+
+                if donor_id in self._donor_offsets:
+                    offset = self._donor_offsets[donor_id]
+                    append_start = offset + existing_count
+                    append_end = append_start + n_new
+
+                    if append_end <= self._codes.shape[0]:
+                        self._codes[append_start:append_end] = new_codes
+                    else:
+                        new_size = max(self._codes.shape[0] * 2, append_end)
+                        resized = np.zeros(
+                            (new_size, self._n_subquantizers), dtype=np.uint8,
+                        )
+                        resized[:self._codes.shape[0]] = self._codes
+                        self._codes = resized
+                        self._codes[append_start:append_end] = new_codes
+
+                    self._segment_counts[donor_id] = existing_count + n_new
+                else:
+                    self._store_pq(donor_id, new_segments)
+            else:
+                if donor_id in self._buffer:
+                    existing = self._buffer[donor_id]
+                    total = existing.shape[0] + n_new
+                    if total > self._max_segments:
+                        n_new = self._max_segments - existing.shape[0]
+                        if n_new <= 0:
+                            return
+                        new_segments = new_segments[:n_new]
+                    self._buffer[donor_id] = np.vstack([existing, new_segments])
+                    self._buffer_total_segments += n_new
+                else:
+                    self._buffer[donor_id] = new_segments.copy()
+                    self._buffer_total_segments += n_new
+
+                if len(self._buffer) >= self._train_threshold:
+                    self._train_and_encode()
 
     def evict(self, donor_id: str) -> None:
         """Remove a donor's segments from the store."""

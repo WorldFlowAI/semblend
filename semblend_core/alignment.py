@@ -119,11 +119,12 @@ def _chunk_hash(tokens: list[int]) -> str:
     """Hash a chunk of token IDs for matching.
 
     Uses full 4-byte representation of each token ID to avoid collisions
-    with large vocabularies (e.g., Qwen 152K vocab).
+    with large vocabularies (e.g., Qwen 152K vocab). SHA-256 truncated
+    to 32 hex chars (128 bits) for FIPS compliance.
     """
     import struct
     data = struct.pack(f"<{len(tokens)}I", *tokens)
-    return hashlib.md5(data).hexdigest()
+    return hashlib.sha256(data).hexdigest()[:32]
 
 
 def compute_chunk_alignment(
@@ -717,7 +718,7 @@ def estimate_reuse_ratio(
         chunk = donor_tokens[i:i + chunk_size]
         if len(chunk) == chunk_size:
             data = struct.pack(f"<{len(chunk)}I", *chunk)
-            h = hashlib.md5(data).hexdigest()
+            h = hashlib.sha256(data).hexdigest()[:32]
             donor_hashes[h] = donor_hashes.get(h, 0) + 1
 
     matched_tokens = 0
@@ -725,7 +726,7 @@ def estimate_reuse_ratio(
         chunk = target_tokens[i:i + chunk_size]
         if len(chunk) == chunk_size:
             data = struct.pack(f"<{len(chunk)}I", *chunk)
-            h = hashlib.md5(data).hexdigest()
+            h = hashlib.sha256(data).hexdigest()[:32]
             if donor_hashes.get(h, 0) > 0:
                 donor_hashes[h] -= 1
                 matched_tokens += chunk_size

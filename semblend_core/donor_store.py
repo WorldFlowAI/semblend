@@ -11,7 +11,7 @@ embeddings or CAGRA ANN — NOT token-level hashing (SimHash).
 Performance targets:
   - Lookup at N=1000: <3ms (cosine + alignment)
   - Lookup at N=10000: <5ms
-  - Add donor: O(1) append
+  - Add donor: O(1) append + O(chunks) ChunkIndex indexing
   - LRU eviction at capacity
 """
 from __future__ import annotations
@@ -29,6 +29,7 @@ from semblend_core.alignment import (
     compute_alignment,
     estimate_reuse_ratio,
 )
+from semblend_core.chunk_index import ChunkIndex
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +60,15 @@ class DonorStore:
     At N=10K with 384-dim embeddings, a single matrix multiply takes ~2ms.
     For N>10K, replace with LSH on embeddings or CAGRA ANN index.
 
+    Integrates ChunkIndex for O(1) cross-donor chunk lookup, enabling
+    multi-turn fast path and multi-donor composite KV assembly.
+
     Args:
         max_entries: Maximum number of donors to store.
         embedding_dim: Dimension of embeddings (384 for MiniLM, 1024 for jina).
         min_similarity: Minimum cosine similarity for donor candidates.
         chunk_size: KV block size for alignment (from backend).
+        chunk_index: Optional pre-configured ChunkIndex. If None, creates one.
     """
 
     def __init__(
@@ -72,6 +77,7 @@ class DonorStore:
         embedding_dim: int = 384,
         min_similarity: float = 0.60,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
+        chunk_index: ChunkIndex | None = None,
     ) -> None:
         self._max_entries = max_entries
         self._embedding_dim = embedding_dim
@@ -87,6 +93,12 @@ class DonorStore:
         self._id_to_idx: dict[str, int] = {}
         self._next_idx = 0
 
+        # ChunkIndex for O(1) cross-donor chunk lookup
+        self._chunk_index = chunk_index or ChunkIndex(
+            max_donors=max_entries,
+            chunk_size=chunk_size,
+        )
+
     @property
     def size(self) -> int:
         return len(self._entries)
@@ -95,10 +107,17 @@ class DonorStore:
     def embedding_dim(self) -> int:
         return self._embedding_dim
 
+    @property
+    def chunk_index(self) -> ChunkIndex:
+        """Access the ChunkIndex for cross-donor chunk lookup."""
+        return self._chunk_index
+
     def add_donor(self, node: DonorNode) -> None:
-        """Add a donor to the store with O(1) append.
+        """Add a donor to the store with O(1) append + O(chunks) indexing.
 
         If at capacity, evicts the least recently used entry.
+        Also indexes the donor's chunks in the ChunkIndex for O(1)
+        cross-donor lookup.
         """
         if node.request_id in self._entries:
             self._entries.move_to_end(node.request_id)
@@ -110,6 +129,8 @@ class DonorStore:
             evicted_idx = self._id_to_idx.pop(evicted_id, None)
             if evicted_idx is not None:
                 self._valid_mask[evicted_idx] = False
+            # Remove from ChunkIndex
+            self._chunk_index.remove_donor(evicted_id)
 
         # Assign storage index (reuse evicted slots or append)
         idx = self._next_idx % self._max_entries
@@ -124,6 +145,10 @@ class DonorStore:
         self._valid_mask[idx] = True
         self._id_to_idx[node.request_id] = idx
         self._entries[node.request_id] = node
+
+        # Index chunks in ChunkIndex for cross-donor lookup
+        if node.token_ids:
+            self._chunk_index.add_donor_chunks(node.request_id, node.token_ids)
 
     def find_donor(
         self,
@@ -407,3 +432,66 @@ class DonorStore:
 
         matches.sort(key=lambda x: x[0], reverse=True)
         return [m for _, m in matches[:top_k]]
+
+    def get_donor_tokens(self, donor_id: str) -> list[int] | None:
+        """Get a donor's token IDs by request_id.
+
+        Used by multi_donor_alignment for fuzzy fallback.
+        """
+        node = self._entries.get(donor_id)
+        return node.token_ids if node is not None else None
+
+    def get_all_donor_tokens(self) -> dict[str, list[int]]:
+        """Get token IDs for all donors in the store.
+
+        Used by multi_donor_alignment to build the donor_token_store.
+        Returns defensive copies to prevent mutation of internal state.
+        """
+        return {
+            did: list(node.token_ids)
+            for did, node in self._entries.items()
+        }
+
+    def find_multi_donor(
+        self,
+        query_tokens: list[int],
+        min_reuse_ratio: float = 0.5,
+        context_gate: bool | None = None,
+        min_fuzzy_overlap: float = 0.90,
+        pq_store: object | None = None,
+    ) -> object | None:
+        """Find multi-donor composite alignment using ChunkIndex.
+
+        Delegates to multi_donor_alignment.compute_multi_donor_alignment()
+        for cross-donor chunk matching.
+
+        Args:
+            query_tokens: Target token sequence.
+            min_reuse_ratio: Minimum combined reuse ratio.
+            context_gate: Override for context gate.
+            min_fuzzy_overlap: Minimum token overlap for fuzzy match.
+            pq_store: Optional PQSegmentStore for fuzzy verification.
+
+        Returns:
+            MultiDonorAlignmentResult or None.
+        """
+        from semblend_core.multi_donor_alignment import (
+            compute_multi_donor_alignment,
+        )
+
+        donor_token_store = self.get_all_donor_tokens()
+
+        result = compute_multi_donor_alignment(
+            target_tokens=query_tokens,
+            chunk_index=self._chunk_index,
+            donor_token_store=donor_token_store,
+            chunk_size=self._chunk_size,
+            context_gate=context_gate,
+            min_fuzzy_overlap=min_fuzzy_overlap,
+            pq_store=pq_store,
+        )
+
+        if result is not None and result.reuse_ratio < min_reuse_ratio:
+            return None
+
+        return result

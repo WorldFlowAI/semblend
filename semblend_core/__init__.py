@@ -33,6 +33,7 @@ from semblend_core.bathtub import (
     get_preset,
     sigma,
 )
+from semblend_core.chunk_index import ChunkIndex, ChunkLocation, chunk_hash_sequence
 from semblend_core.donor_store import DonorMatch, DonorNode, DonorStore
 from semblend_core.embedder import (
     EmbedderType,
@@ -42,10 +43,20 @@ from semblend_core.embedder import (
     OnnxGpuEmbedder,
     create_embedder,
 )
+from semblend_core.multi_donor_alignment import compute_multi_donor_alignment
+from semblend_core.multi_donor_types import (
+    ChunkAssignment,
+    CompositeKVPlan,
+    MatchType,
+    MultiDonorAlignmentResult,
+    MultiDonorPositionMapping,
+    MultiDonorSlotAction,
+)
 from semblend_core.partial_attention import (
     AttentionMode,
     PartialAttentionPlan,
     build_attention_plan,
+    build_multi_donor_attention_plan,
     compute_attention_mask,
     compute_donor_kv_indices,
 )
@@ -127,8 +138,21 @@ __all__ = [
     "AttentionMode",
     "PartialAttentionPlan",
     "build_attention_plan",
+    "build_multi_donor_attention_plan",
     "compute_attention_mask",
     "compute_donor_kv_indices",
+    # ChunkIndex
+    "ChunkIndex",
+    "ChunkLocation",
+    "chunk_hash_sequence",
+    # Multi-donor
+    "ChunkAssignment",
+    "CompositeKVPlan",
+    "MatchType",
+    "MultiDonorAlignmentResult",
+    "MultiDonorPositionMapping",
+    "MultiDonorSlotAction",
+    "compute_multi_donor_alignment",
     # SimHash
     "bulk_hamming_distance",
     "compute_simhash",

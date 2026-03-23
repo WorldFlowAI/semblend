@@ -96,6 +96,11 @@ class PipelineResult:
     fuzzy_confidence: float = 1.0
     force_verify_layers: list[int] = field(default_factory=list)
     confidence_tier: str = "exact"
+    # Multi-donor fields
+    donor_ids: list[str] = field(default_factory=list)
+    composite_plan: object | None = None  # CompositeKVPlan when multi-donor
+    multi_donor_position_map: object | None = None  # MultiDonorPositionMapping
+    chunk_fast_path_used: bool = False
 
 
 class SemBlendPipeline:
@@ -151,6 +156,25 @@ class SemBlendPipeline:
                 "RoPE delta correction DISABLED (FM1 ablation mode)"
             )
 
+        # Chunk fast path: skip MiniLM when ChunkIndex finds >=3 matching chunks
+        self._chunk_fast_path = os.environ.get(
+            "SEMBLEND_CHUNK_FAST_PATH", "1"
+        ).strip() not in ("0", "false", "False")
+
+        # Multi-donor composite KV injection
+        self._multi_donor = os.environ.get(
+            "SEMBLEND_MULTI_DONOR", "0"
+        ).strip() in ("1", "true", "True")
+
+        # Minimum ChunkIndex hits to trigger fast path (skip embedding)
+        try:
+            self._fast_path_min_hits = int(
+                os.environ.get("SEMBLEND_FAST_PATH_MIN_HITS", "3")
+            )
+        except ValueError:
+            logger.warning("Invalid SEMBLEND_FAST_PATH_MIN_HITS, defaulting to 3")
+            self._fast_path_min_hits = 3
+
         # Determine chunk size: explicit > backend > default
         if chunk_size is not None:
             self._chunk_size = chunk_size
@@ -191,7 +215,8 @@ class SemBlendPipeline:
         logger.info(
             "SemBlend pipeline initialized: embedder=%s (dim=%d), "
             "store=%s, max_donors=%d, min_sim=%.2f, min_reuse=%.2f, "
-            "chunk_size=%d, pq_segments=%s",
+            "chunk_size=%d, pq_segments=%s, chunk_fast_path=%s, "
+            "multi_donor=%s",
             type(self._embedder).__name__,
             self._embedder.dimension,
             type(self._donor_store).__name__,
@@ -200,6 +225,8 @@ class SemBlendPipeline:
             min_reuse_ratio,
             self._chunk_size,
             self._pq_store is not None,
+            self._chunk_fast_path,
+            self._multi_donor,
         )
 
     @property
@@ -267,6 +294,22 @@ class SemBlendPipeline:
         t_start: float,
     ) -> PipelineResult:
         """Inner pipeline logic (may raise exceptions)."""
+        # Stage 0: ChunkIndex fast path — skip embedding if >=N chunks match
+        if self._chunk_fast_path and hasattr(self._donor_store, 'chunk_index'):
+            chunk_index = self._donor_store.chunk_index
+            if chunk_index.num_donors > 0:
+                chunk_matches = chunk_index.find_matching_chunks(
+                    token_ids, min_matches=1,
+                )
+                if len(chunk_matches) >= self._fast_path_min_hits:
+                    # Fast path: try multi-donor alignment directly
+                    fast_result = self._try_chunk_fast_path(
+                        token_ids, chunk_matches, timings, t_start,
+                    )
+                    if fast_result is not None:
+                        return fast_result
+                    # Attempted fast path but fell through to full pipeline
+
         # Stage 1: Embedding (order-invariant via sentence sorting)
         t0 = time.monotonic()
         query_embedding = None
@@ -280,6 +323,14 @@ class SemBlendPipeline:
             METRICS.record_embedding_latency(timings.embed_ms)
         except Exception:
             pass
+
+        # Stage 1.5: Multi-donor path (if enabled)
+        if self._multi_donor:
+            multi_result = self._try_multi_donor(
+                token_ids, timings, t_start,
+            )
+            if multi_result is not None:
+                return multi_result
 
         # Stage 2: Donor lookup (cosine similarity + alignment)
         t0 = time.monotonic()
@@ -656,6 +707,170 @@ class SemBlendPipeline:
                 "Failed to build PartialAttention plan", exc_info=True
             )
             return None
+
+    # ------------------------------------------------------------------
+    # Multi-turn fast path + multi-donor
+    # ------------------------------------------------------------------
+
+    def _try_chunk_fast_path(
+        self,
+        token_ids: list[int],
+        chunk_matches: dict[int, list],
+        timings: PipelineTimings,
+        t_start: float,
+    ) -> PipelineResult | None:
+        """Attempt fast path using ChunkIndex matches (skip embedding).
+
+        When >=3 chunks match via ChunkIndex, we can go directly to
+        multi-donor alignment, bypassing MiniLM embedding (~3ms savings).
+        """
+        t0 = time.monotonic()
+        result = self._donor_store.find_multi_donor(
+            query_tokens=token_ids,
+            min_reuse_ratio=self._min_reuse_ratio,
+            pq_store=self._pq_store,
+        )
+        timings.lookup_ms = (time.monotonic() - t0) * 1000
+
+        if result is None or result.reuse_ratio < self._min_reuse_ratio:
+            return None
+
+        timings.embed_ms = 0.0  # Skipped embedding!
+        return self._build_multi_donor_result(
+            result, timings, t_start,
+            similarity=1.0, chunk_fast_path_used=True,
+        )
+
+    def _try_multi_donor(
+        self,
+        token_ids: list[int],
+        timings: PipelineTimings,
+        t_start: float,
+    ) -> PipelineResult | None:
+        """Attempt multi-donor composite alignment.
+
+        Falls back to single-donor path if multi-donor finds nothing better.
+        """
+        t0 = time.monotonic()
+        result = self._donor_store.find_multi_donor(
+            query_tokens=token_ids,
+            min_reuse_ratio=self._min_reuse_ratio,
+            pq_store=self._pq_store,
+        )
+        lookup_ms = (time.monotonic() - t0) * 1000
+
+        if result is None:
+            return None
+        if result.donors_per_composite <= 1 and result.reuse_ratio < 0.80:
+            return None  # Single-donor path will handle this
+
+        timings.lookup_ms = lookup_ms
+
+        fuzzy_fraction = result.fuzzy_chunks / max(
+            result.exact_chunks + result.fuzzy_chunks, 1,
+        )
+        return self._build_multi_donor_result(
+            result, timings, t_start,
+            similarity=0.0, fuzzy_fraction=fuzzy_fraction,
+        )
+
+    def _build_multi_donor_result(
+        self,
+        result: object,
+        timings: PipelineTimings,
+        t_start: float,
+        similarity: float = 0.0,
+        fuzzy_fraction: float = 0.0,
+        chunk_fast_path_used: bool = False,
+    ) -> PipelineResult:
+        """Build PipelineResult from a MultiDonorAlignmentResult."""
+        from semblend_core.bathtub import compute_layer_deviations
+
+        t0 = time.monotonic()
+        num_layers = self._detect_num_layers()
+        layer_devs = compute_layer_deviations(
+            num_layers=num_layers,
+            mismatch_fraction=1.0 - result.reuse_ratio,
+            model_name=self._model_name,
+            fuzzy_fraction=fuzzy_fraction,
+            recompute_config=self._recompute_config,
+        )
+        timings.bathtub_ms = (time.monotonic() - t0) * 1000
+        timings.total_ms = (time.monotonic() - t_start) * 1000
+
+        force_verify = [d.layer_idx for d in layer_devs if d.should_recompute]
+        layer_dev_dicts = [
+            {
+                "layerIdx": ld.layer_idx,
+                "deviationScore": ld.deviation_score,
+                "shouldRecompute": ld.should_recompute,
+            }
+            for ld in layer_devs
+        ]
+
+        composite = result.composite_plan
+        slot_actions = [
+            {
+                "action": sa.action,
+                "targetPos": sa.target_pos,
+                "donorPos": sa.donor_pos,
+                "donorId": sa.donor_id,
+            }
+            for sa in composite.slot_actions
+        ]
+
+        position_map = PositionMapping()
+        if self._use_alignment and composite.position_map:
+            for i in range(composite.position_map.num_pairs):
+                position_map.donor_positions.append(
+                    composite.position_map.donor_positions[i]
+                )
+                position_map.target_positions.append(
+                    composite.position_map.target_positions[i]
+                )
+
+        try:
+            from semblend_core.metrics import METRICS
+            METRICS.record_pipeline_result(hit=True, reuse_ratio=result.reuse_ratio)
+            if chunk_fast_path_used:
+                METRICS.record_chunk_fast_path_hit()
+            if result.donors_per_composite > 1:
+                METRICS.record_multi_donor_hit(result.donors_per_composite)
+            METRICS.record_chunk_index_size(
+                self._donor_store.chunk_index.num_entries
+                if hasattr(self._donor_store, 'chunk_index') else 0
+            )
+        except Exception:
+            pass
+
+        primary_donor_id = result.donor_ids[0] if result.donor_ids else None
+        donor_tokens = []
+        if primary_donor_id:
+            dt = self._donor_store.get_donor_tokens(primary_donor_id)
+            if dt is not None:
+                donor_tokens = dt
+
+        confidence_tier = "exact"
+        if result.fuzzy_chunks > 0:
+            confidence_tier = "verified_reuse"
+
+        return PipelineResult(
+            found=True,
+            donor_id=primary_donor_id,
+            similarity=similarity,
+            reuse_ratio=result.reuse_ratio,
+            donor_tokens=donor_tokens,
+            slot_actions=slot_actions,
+            layer_deviations=layer_dev_dicts,
+            position_map=position_map,
+            timings=timings,
+            confidence_tier=confidence_tier,
+            force_verify_layers=force_verify,
+            donor_ids=list(result.donor_ids),
+            composite_plan=composite,
+            multi_donor_position_map=composite.position_map,
+            chunk_fast_path_used=chunk_fast_path_used,
+        )
 
     # ------------------------------------------------------------------
     # Internals

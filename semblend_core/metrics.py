@@ -72,6 +72,15 @@ class _NoopMetrics:
     def record_pq_segment_store_entries(self, n: int) -> None:
         pass
 
+    def record_chunk_fast_path_hit(self) -> None:
+        pass
+
+    def record_multi_donor_hit(self, n_donors: int = 1) -> None:
+        pass
+
+    def record_chunk_index_size(self, n: int) -> None:
+        pass
+
 
 class _PrometheusMetrics:
     """Real Prometheus metrics using prometheus_client."""
@@ -165,6 +174,23 @@ class _PrometheusMetrics:
             f"{prefix}pq_segment_store_entries",
             "Number of donors with PQ segments in store",
         )
+        self._chunk_fast_path_hits = Counter(
+            f"{prefix}chunk_fast_path_hits_total",
+            "Requests that used ChunkIndex fast path (skipped embedding)",
+        )
+        self._multi_donor_hits = Counter(
+            f"{prefix}multi_donor_hits_total",
+            "Requests that used multi-donor composite KV injection",
+        )
+        self._donors_per_composite = Histogram(
+            f"{prefix}donors_per_composite",
+            "Number of distinct donors per composite KV plan",
+            buckets=[1, 2, 3, 4, 5, 8, 10],
+        )
+        self._chunk_index_size = Gauge(
+            f"{prefix}chunk_index_entries",
+            "Number of chunk entries in the ChunkIndex",
+        )
 
     def record_pipeline_result(
         self,
@@ -224,6 +250,16 @@ class _PrometheusMetrics:
 
     def record_pq_segment_store_entries(self, n: int) -> None:
         self._pq_segment_store_entries.set(n)
+
+    def record_chunk_fast_path_hit(self) -> None:
+        self._chunk_fast_path_hits.inc()
+
+    def record_multi_donor_hit(self, n_donors: int = 1) -> None:
+        self._multi_donor_hits.inc()
+        self._donors_per_composite.observe(n_donors)
+
+    def record_chunk_index_size(self, n: int) -> None:
+        self._chunk_index_size.set(n)
 
 
 def _create_metrics() -> _NoopMetrics | _PrometheusMetrics:
