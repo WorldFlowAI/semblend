@@ -1627,7 +1627,10 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         if total_aligned <= 0:
             return (num_matched or 0, False)
 
-        # Register the composite result with the LMCache lookup client
+        # Use the primary donor for the standard single-donor injection path.
+        # LMCache will load the primary donor's KV for the overlapping chunks.
+        # Additional donors' KV will be loaded after start_load_kv via
+        # the connector's post-load composite scatter.
         engine_impl = self._get_lmcache_engine_impl()
         if engine_impl is None:
             return (num_matched or 0, False)
@@ -1636,28 +1639,62 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         if lookup_client is None:
             return (num_matched or 0, False)
 
-        # Create the SemanticLookupResult with composite sources
-        result = SemanticLookupResult(
-            alternate_token_ids=primary.donor_token_ids,
-            num_cached_tokens=total_aligned,
-            skip_save=True,
-            provider_metadata={
-                "composite": True,
-                "donor_ids": donor_ids,
-                "total_covered": total_covered,
-            },
-            source_id=f"composite({len(composite_sources)} donors)",
-            composite_sources=composite_sources,
-        )
+        # Verify the primary donor's KV is in LMCache
+        reqs_status = getattr(lookup_client, "reqs_status", {})
+        reqs_status.pop(request.request_id, None)
+        try:
+            primary_hit = lookup_client.lookup(
+                primary.donor_token_ids,
+                lookup_id=request.request_id,
+            )
+        except Exception:
+            primary_hit = None
 
-        # Inject via the lookup client's pending substitutions
-        # (mimics what on_lookup_miss does internally)
-        lookup_client.reqs_status[request.request_id] = total_aligned
-        lookup_client._pending_substitutions[request.request_id] = result
+        if primary_hit is None or primary_hit <= 0:
+            print(
+                f"[SemBlend] COMPOSITE: primary donor KV evicted, "
+                f"falling back to single-donor",
+                file=sys.stderr, flush=True,
+            )
+            return (num_matched or 0, False)
 
-        # Store donor tokens for build_connector_meta token swap
+        # Cap to chunk boundary and prompt length
+        from semblend_core.alignment import LMCACHE_CHUNK_SIZE as _cs
+        min_fresh = _cs
+        max_usable = max(_cs, prompt_len - min_fresh)
+        primary_hit = min(primary_hit, max_usable)
+        primary_hit = (primary_hit // _cs) * _cs
+        if primary_hit <= 0:
+            return (num_matched or 0, False)
+
+        # Store primary donor tokens for build_connector_meta token swap
         self._donor_token_map[request.request_id] = primary.donor_token_ids
         self._donor_matched_reqs.add(request.request_id)
+
+        # Store the composite sources for post-load scatter
+        # (additional donors beyond the primary)
+        secondary_sources = [
+            s for s in composite_sources if s.donor_id != primary.donor_id
+        ]
+        if secondary_sources:
+            self._pending_composite_sources = getattr(
+                self, "_pending_composite_sources", {},
+            )
+            self._pending_composite_sources[request.request_id] = secondary_sources
+
+        # Set LoadSpec for the primary donor
+        load_specs = getattr(engine_impl, "load_specs", None)
+        if load_specs is not None:
+            try:
+                from lmcache.integration.vllm.vllm_v1_adapter import LoadSpec
+            except ImportError:
+                LoadSpec = type(next(iter(load_specs.values()))) if load_specs else None
+            if LoadSpec is not None:
+                load_specs[request.request_id] = LoadSpec(
+                    vllm_cached_tokens=num_computed_tokens or 0,
+                    lmcache_cached_tokens=primary_hit,
+                    can_load=False,
+                )
 
         self._stats["semblend_hits"] += 1
 
