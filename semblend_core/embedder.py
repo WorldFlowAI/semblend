@@ -531,6 +531,83 @@ class OnnxGpuEmbedder:
 
         return normalized  # [batch, 384] or [1, 384]
 
+    def embed_with_segments(
+        self, text: str, chunk_size: int = 256,
+    ) -> "EmbedResult | None":
+        """Embed text with per-segment embeddings aligned to KV block boundaries.
+
+        Same as MiniLMEmbedder.embed_with_segments but uses ONNX GPU inference.
+        Produces per-chunk embeddings that can be stored in the PQ segment store
+        for semantic cross-donor chunk matching.
+        """
+        if not self._available or not text.strip():
+            return None
+
+        from semblend_core.segment_embeddings import EmbedResult, SegmentEmbeddings
+
+        full_ids = self._tokenizer.encode(text, add_special_tokens=False)
+        usable = chunk_size
+        n_chunks = max(1, (len(full_ids) + usable - 1) // usable)
+
+        # Single-chunk fast path
+        if n_chunks == 1:
+            pooled = self._embed_single(text)
+            if pooled is None:
+                return None
+            return EmbedResult(pooled=pooled.flatten(), segments=None)
+
+        # Build non-overlapping chunk texts aligned to KV block boundaries
+        chunk_texts: list[str] = []
+        token_ranges: list[tuple[int, int]] = []
+
+        for i in range(n_chunks):
+            start = i * usable
+            end = min(start + usable, len(full_ids))
+            chunk_ids = full_ids[start:end]
+            if not chunk_ids:
+                break
+            chunk_texts.append(
+                self._tokenizer.decode(chunk_ids, skip_special_tokens=True),
+            )
+            token_ranges.append((start, end))
+
+        if not chunk_texts:
+            return None
+
+        # Batch-embed all chunks via ONNX GPU
+        try:
+            inputs = self._tokenizer(
+                chunk_texts,
+                return_tensors="np",
+                padding=True,
+                truncation=True,
+                max_length=self.MAX_TOKENS,
+            )
+            segment_matrix = self._run_and_pool(inputs)
+        except Exception:
+            # Fallback to sequential if batched fails
+            segment_list = []
+            for ct in chunk_texts:
+                vec = self._embed_single(ct)
+                if vec is not None:
+                    segment_list.append(vec.flatten())
+            if not segment_list:
+                return None
+            segment_matrix = np.stack(segment_list, axis=0)
+
+        # Mean-pool for the pooled embedding
+        pooled = segment_matrix.mean(axis=0)
+        norm = np.linalg.norm(pooled)
+        pooled = pooled / max(norm, 1e-12)
+
+        segments = SegmentEmbeddings(
+            matrix=segment_matrix,
+            chunk_token_ranges=tuple(token_ranges),
+            chunk_size=chunk_size,
+        )
+
+        return EmbedResult(pooled=pooled, segments=segments)
+
 
 class E5SmallEmbedder:
     """In-process CPU embedder using intfloat/e5-small-v2.
