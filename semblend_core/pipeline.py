@@ -327,7 +327,7 @@ class SemBlendPipeline:
         # Stage 1.5: Multi-donor path (if enabled)
         if self._multi_donor:
             multi_result = self._try_multi_donor(
-                token_ids, timings, t_start,
+                token_ids, timings, t_start, prompt_text=prompt_text,
             )
             if multi_result is not None:
                 return multi_result
@@ -746,8 +746,9 @@ class SemBlendPipeline:
         token_ids: list[int],
         timings: PipelineTimings,
         t_start: float,
+        prompt_text: str = "",
     ) -> PipelineResult | None:
-        """Attempt multi-donor composite alignment.
+        """Attempt multi-donor composite alignment with semantic chunk matching.
 
         Falls back to single-donor path if multi-donor finds nothing better.
         """
@@ -756,6 +757,8 @@ class SemBlendPipeline:
             query_tokens=token_ids,
             min_reuse_ratio=self._min_reuse_ratio,
             pq_store=self._pq_store,
+            target_text=prompt_text,
+            embedder=self._embedder,
         )
         lookup_ms = (time.monotonic() - t0) * 1000
 

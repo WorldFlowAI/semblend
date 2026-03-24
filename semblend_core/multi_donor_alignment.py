@@ -35,6 +35,62 @@ logger = logging.getLogger(__name__)
 _CONTEXT_GATE_ENABLED = os.environ.get("SEMBLEND_CONTEXT_GATE", "1") != "0"
 
 
+def _get_chunk_embeddings(
+    target_text: str,
+    unmatched_indices: list[int],
+    chunk_size: int,
+    embedder: object | None,
+) -> object | None:
+    """Get per-chunk embeddings for PQ semantic matching.
+
+    Splits the target text into ~chunk-sized text segments and embeds each
+    one with MiniLM. Returns [N, dim] L2-normalized embeddings for the
+    unmatched chunk positions.
+
+    The text segmentation is approximate (by character count) since we
+    don't have a tokenizer here. Each chunk ≈ chunk_size tokens ≈
+    chunk_size * 4 characters.
+    """
+    if not target_text or embedder is None:
+        return None
+
+    try:
+        import numpy as np
+
+        chars_per_chunk = chunk_size * 4  # ~4 chars per token
+        embeddings = []
+
+        for t_idx in unmatched_indices:
+            char_start = t_idx * chars_per_chunk
+            char_end = char_start + chars_per_chunk
+            chunk_text = target_text[char_start:char_end]
+
+            if not chunk_text.strip():
+                dim = getattr(embedder, "dimension", 384)
+                embeddings.append(np.zeros(dim, dtype=np.float32))
+                continue
+
+            raw = embedder.embed(chunk_text)
+            if raw is not None:
+                vec = np.asarray(raw, dtype=np.float32)
+                norm = np.linalg.norm(vec)
+                if norm > 0:
+                    vec = vec / norm
+                embeddings.append(vec)
+            else:
+                dim = getattr(embedder, "dimension", 384)
+                embeddings.append(np.zeros(dim, dtype=np.float32))
+
+        if not embeddings:
+            return None
+
+        return np.stack(embeddings, axis=0)
+
+    except Exception as e:
+        logger.debug("Failed to get chunk embeddings: %s", e)
+        return None
+
+
 def compute_multi_donor_alignment(
     target_tokens: list[int],
     chunk_index: ChunkIndex,
@@ -43,6 +99,8 @@ def compute_multi_donor_alignment(
     context_gate: bool | None = None,
     min_fuzzy_overlap: float = 0.90,
     pq_store: object | None = None,
+    target_text: str = "",
+    embedder: object | None = None,
 ) -> MultiDonorAlignmentResult | None:
     """Compute multi-donor chunk alignment using ChunkIndex.
 
@@ -104,28 +162,82 @@ def compute_multi_donor_alignment(
                 chunk_index_hits += 1
                 break
 
-    # Phase 2: Fuzzy matching for unmatched chunks
-    fuzzy_assignments: dict[int, ChunkAssignment] = {}
+    # Phase 1.5: PQ semantic chunk matching for unmatched chunks
+    # Uses per-chunk embeddings to find semantically similar chunks across
+    # ALL donors, not just exact hash or token-overlap matches.
+    semantic_assignments: dict[int, ChunkAssignment] = {}
+    semantic_chunk_hits = 0
 
     unmatched_indices = [
         t_idx for t_idx in range(num_target_chunks)
         if t_idx not in assignments and len(target_chunks[t_idx]) == chunk_size
     ]
 
-    if unmatched_indices:
-        # Collect candidate donors (those with at least one exact match,
-        # plus any donor whose chunks might fuzzy-match)
-        candidate_donor_ids = set(used_donor_chunks.keys())
+    if unmatched_indices and pq_store is not None:
+        # Get query segment embeddings for unmatched chunks
+        # We need the embedder to produce per-chunk embeddings
+        try:
+            from semblend_core.pq_segment_store import PQSegmentStore
+            if isinstance(pq_store, PQSegmentStore) and pq_store.size > 0:
+                # Try to get pre-computed segment embeddings for target chunks
+                # If not available, we need to embed them on the fly
+                if hasattr(pq_store, 'find_best_donor_per_chunk'):
+                    # Build query segment embeddings from target text chunks
+                    # We need the embedder — check if one is available via pipeline
+                    query_seg_embeddings = _get_chunk_embeddings(
+                        target_text, unmatched_indices, chunk_size, embedder,
+                    )
+                    if query_seg_embeddings is not None:
+                        matches = pq_store.find_best_donor_per_chunk(
+                            query_seg_embeddings,
+                            min_similarity=0.85,
+                        )
+                        for i, match in enumerate(matches):
+                            if match is not None:
+                                donor_id, donor_chunk_idx, sim = match
+                                t_idx = unmatched_indices[i]
+                                semantic_assignments[t_idx] = ChunkAssignment(
+                                    target_chunk_idx=t_idx,
+                                    donor_id=donor_id,
+                                    donor_chunk_idx=donor_chunk_idx,
+                                    match_type=MatchType.FUZZY,
+                                    confidence=sim,
+                                )
+                                used_donor_chunks.setdefault(
+                                    donor_id, set()
+                                ).add(donor_chunk_idx)
+                                semantic_chunk_hits += 1
 
-        # Also include donors that had ChunkIndex hits for adjacent chunks
+                        if semantic_chunk_hits > 0:
+                            logger.info(
+                                "PQ semantic matching: %d/%d chunks matched "
+                                "across donors",
+                                semantic_chunk_hits, len(unmatched_indices),
+                            )
+        except Exception as e:
+            logger.debug("PQ semantic matching failed: %s", e)
+
+    # Update unmatched indices after semantic matching
+    unmatched_indices = [
+        t_idx for t_idx in range(num_target_chunks)
+        if t_idx not in assignments
+        and t_idx not in semantic_assignments
+        and len(target_chunks[t_idx]) == chunk_size
+    ]
+
+    # Phase 2: Fuzzy token-overlap matching for remaining unmatched chunks
+    fuzzy_assignments: dict[int, ChunkAssignment] = {}
+
+    if unmatched_indices:
+        # Collect candidate donors
+        candidate_donor_ids = set(used_donor_chunks.keys())
         for t_idx in unmatched_indices:
             for neighbor in (t_idx - 1, t_idx + 1):
-                if neighbor in assignments:
-                    asgn = assignments[neighbor]
-                    if asgn.donor_id:
+                if neighbor in assignments or neighbor in semantic_assignments:
+                    asgn = assignments.get(neighbor) or semantic_assignments.get(neighbor)
+                    if asgn and asgn.donor_id:
                         candidate_donor_ids.add(asgn.donor_id)
 
-        # Pre-compute donor chunks once per candidate (not per unmatched chunk)
         donor_chunk_cache: dict[str, tuple[list[list[int]], list[int]]] = {}
         for donor_id in candidate_donor_ids:
             donor_tokens = donor_token_store.get(donor_id)
@@ -140,20 +252,17 @@ def compute_multi_donor_alignment(
 
         for t_idx in unmatched_indices:
             t_chunk = target_chunks[t_idx]
-
             best_match: ChunkAssignment | None = None
             best_overlap = 0.0
 
             for donor_id, (donor_chunks, donor_chunk_starts) in donor_chunk_cache.items():
                 used = used_donor_chunks.get(donor_id, set())
-
                 result = _fuzzy_match_chunk(
                     t_chunk, donor_chunks, donor_chunk_starts,
                     used, min_fuzzy_overlap,
                 )
                 if result is not None:
                     d_idx, pairs = result
-                    # Compute overlap ratio
                     t_counts = Counter(t_chunk)
                     d_counts = Counter(donor_chunks[d_idx])
                     overlap_count = sum(
@@ -161,7 +270,6 @@ def compute_multi_donor_alignment(
                         for tok in t_counts if tok in d_counts
                     )
                     overlap = overlap_count / max(len(t_chunk), 1)
-
                     if overlap > best_overlap:
                         best_overlap = overlap
                         best_match = ChunkAssignment(
@@ -178,8 +286,8 @@ def compute_multi_donor_alignment(
                     best_match.donor_id, set()
                 ).add(best_match.donor_chunk_idx)
 
-    # Merge assignments
-    all_assignments = {**assignments, **fuzzy_assignments}
+    # Merge assignments (exact > semantic > fuzzy priority)
+    all_assignments = {**fuzzy_assignments, **semantic_assignments, **assignments}
 
     # Phase 3: Context gate — reject isolated matches
     if use_context_gate and all_assignments:

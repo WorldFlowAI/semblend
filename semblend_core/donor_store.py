@@ -459,18 +459,23 @@ class DonorStore:
         context_gate: bool | None = None,
         min_fuzzy_overlap: float = 0.90,
         pq_store: object | None = None,
+        target_text: str = "",
+        embedder: object | None = None,
     ) -> object | None:
-        """Find multi-donor composite alignment using ChunkIndex.
+        """Find multi-donor composite alignment using ChunkIndex + PQ semantics.
 
         Delegates to multi_donor_alignment.compute_multi_donor_alignment()
-        for cross-donor chunk matching.
+        for cross-donor chunk matching. When pq_store and embedder are
+        provided, also performs semantic per-chunk matching via PQ ADC.
 
         Args:
             query_tokens: Target token sequence.
             min_reuse_ratio: Minimum combined reuse ratio.
             context_gate: Override for context gate.
             min_fuzzy_overlap: Minimum token overlap for fuzzy match.
-            pq_store: Optional PQSegmentStore for fuzzy verification.
+            pq_store: Optional PQSegmentStore for semantic chunk matching.
+            target_text: Decoded prompt text for per-chunk embedding.
+            embedder: Embedder instance for per-chunk embedding.
 
         Returns:
             MultiDonorAlignmentResult or None.
@@ -489,6 +494,8 @@ class DonorStore:
             context_gate=context_gate,
             min_fuzzy_overlap=min_fuzzy_overlap,
             pq_store=pq_store,
+            target_text=target_text,
+            embedder=embedder,
         )
 
         if result is not None and result.reuse_ratio < min_reuse_ratio:

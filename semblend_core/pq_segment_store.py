@@ -516,6 +516,79 @@ class PQSegmentStore:
             return self._codes[offset:offset + n_seg].copy()
         return None
 
+    def find_best_donor_per_chunk(
+        self,
+        query_segments: np.ndarray,
+        min_similarity: float = 0.85,
+    ) -> list[tuple[str, int, float] | None]:
+        """Find the best donor chunk for each query segment across ALL donors.
+
+        For each query segment embedding, searches all stored donor segments
+        via ADC to find the most similar chunk from any donor.
+
+        Args:
+            query_segments: [Q, dim] float32 L2-normalized query segment embeddings.
+            min_similarity: Minimum cosine similarity threshold.
+
+        Returns:
+            List of (donor_id, donor_chunk_idx, similarity) per query segment,
+            or None for segments with no match above threshold.
+        """
+        n_query = query_segments.shape[0]
+        results: list[tuple[str, int, float] | None] = [None] * n_query
+
+        if self.codebook_trained and self._codebook is not None:
+            # PQ ADC path: search across all donors' PQ codes
+            for q_idx in range(n_query):
+                best_sim = min_similarity
+                best_donor: tuple[str, int, float] | None = None
+
+                query_vec = query_segments[q_idx]
+                table = adc_distance_table(query_vec, self._codebook)
+
+                for donor_id, offset in self._donor_offsets.items():
+                    n_seg = self._segment_counts.get(donor_id, 0)
+                    if n_seg == 0:
+                        continue
+
+                    donor_codes = self._codes[offset:offset + n_seg]
+                    sq_dists = adc_distances(table, donor_codes)
+                    # Convert to cosine similarity (assumes L2-normalized)
+                    sims = 1.0 - sq_dists / 2.0
+
+                    max_idx = int(np.argmax(sims))
+                    max_sim = float(sims[max_idx])
+
+                    if max_sim > best_sim:
+                        best_sim = max_sim
+                        best_donor = (donor_id, max_idx, max_sim)
+
+                results[q_idx] = best_donor
+        else:
+            # Pre-training buffer path: exact cosine
+            for q_idx in range(n_query):
+                best_sim = min_similarity
+                best_donor = None
+                query_vec = query_segments[q_idx]
+
+                for donor_id, donor_segs in self._buffer.items():
+                    sims = donor_segs @ query_vec  # [n_seg]
+                    max_idx = int(np.argmax(sims))
+                    max_sim = float(sims[max_idx])
+
+                    if max_sim > best_sim:
+                        best_sim = max_sim
+                        best_donor = (donor_id, max_idx, max_sim)
+
+                results[q_idx] = best_donor
+
+        matched = sum(1 for r in results if r is not None)
+        logger.debug(
+            "find_best_donor_per_chunk: %d/%d chunks matched (threshold=%.2f)",
+            matched, n_query, min_similarity,
+        )
+        return results
+
     def get_segment_similarity(
         self,
         query_segment: np.ndarray,
