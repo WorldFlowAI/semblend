@@ -917,6 +917,26 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         # Get prompt text for embedding
         prompt = self._get_prompt_text(request)
 
+        # --- Multi-donor composite path (Phase 3) ---
+        # When SEMBLEND_MULTI_DONOR=1 and the pipeline finds chunks from
+        # multiple donors, build a CompositeChunkSource list for LMCache's
+        # composite retrieval API.
+        if self._pipeline is not None and os.environ.get("SEMBLEND_MULTI_DONOR", "0") == "1":
+            multi_result = self._pipeline.find_donor(
+                token_ids=token_ids,
+                prompt_text=prompt,
+            )
+            if (
+                multi_result is not None
+                and multi_result.found
+                and getattr(multi_result, "composite_plan", None) is not None
+                and len(getattr(multi_result, "donor_ids", [])) > 1
+            ):
+                return self._inject_composite_kv(
+                    request, multi_result, token_ids, prompt_len,
+                    num_computed_tokens, num_matched,
+                )
+
         # --- New pipeline path (Phase 2) ---
         # Uses multi-candidate approach: get ranked candidates from pipeline,
         # try each one's KV in LMCache until we find one that's available.
@@ -1518,6 +1538,155 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
             means[idx] = data["mean_k"]
 
         return KVFingerprint(layer_norms=norms, layer_mean_keys=means)
+
+    def _inject_composite_kv(
+        self,
+        request: "Request",
+        pipeline_result: object,
+        token_ids: list[int],
+        prompt_len: int,
+        num_computed_tokens: int,
+        num_matched: int | None,
+    ) -> tuple[int | None, bool]:
+        """Inject KV from multiple donors via LMCache composite retrieval.
+
+        Builds CompositeChunkSource entries from the pipeline's CompositeKVPlan
+        and registers them with LMCache's SemanticLookupProvider for composite
+        retrieval during start_load_kv.
+        """
+        composite = pipeline_result.composite_plan
+        donor_ids = list(pipeline_result.donor_ids)
+
+        print(
+            f"[SemBlend] COMPOSITE HIT req={request.request_id} → "
+            f"{len(donor_ids)} donors ({', '.join(donor_ids[:5])}), "
+            f"reuse={pipeline_result.reuse_ratio:.2f}, "
+            f"timings={pipeline_result.timings.total_ms:.1f}ms",
+            file=sys.stderr, flush=True,
+        )
+
+        # Build CompositeChunkSource list from the plan's chunk assignments
+        try:
+            from lmcache.v1.lookup_client.semantic_provider import (
+                CompositeChunkSource,
+                SemanticLookupResult,
+            )
+        except ImportError:
+            print(
+                "[SemBlend] LMCache composite API not available, "
+                "falling back to single-donor",
+                file=sys.stderr, flush=True,
+            )
+            return (num_matched or 0, False)
+
+        chunk_size = self._pipeline.chunk_size if hasattr(self._pipeline, 'chunk_size') else 256
+
+        # Group chunk assignments by donor to create contiguous ranges
+        donor_ranges: dict[str, list[tuple[int, int]]] = {}
+        for asgn in composite.chunk_assignments:
+            if asgn.donor_id and asgn.match_type.value != "recompute":
+                did = asgn.donor_id
+                start = asgn.target_chunk_idx * chunk_size
+                end = start + chunk_size
+                donor_ranges.setdefault(did, []).append((start, end))
+
+        if not donor_ranges:
+            return (num_matched or 0, False)
+
+        # Build CompositeChunkSource per donor
+        composite_sources = []
+        for did, ranges in donor_ranges.items():
+            # Get donor's full token sequence
+            donor_tokens = self._pipeline._donor_store.get_donor_tokens(did)
+            if donor_tokens is None:
+                continue
+
+            # Find contiguous range (min start, max end) for this donor
+            min_start = min(r[0] for r in ranges)
+            max_end = min(max(r[1] for r in ranges), len(donor_tokens))
+
+            composite_sources.append(CompositeChunkSource(
+                donor_token_ids=donor_tokens,
+                target_start=min_start,
+                target_end=max_end,
+                donor_id=did,
+            ))
+
+        if not composite_sources:
+            return (num_matched or 0, False)
+
+        # Find the primary donor (most chunks) for the alternate_token_ids
+        primary = max(composite_sources, key=lambda s: s.target_end - s.target_start)
+
+        # Total covered tokens (across all donors)
+        total_covered = sum(s.target_end - s.target_start for s in composite_sources)
+        # Align to chunk boundary
+        from semblend_core.alignment import LMCACHE_CHUNK_SIZE
+        total_aligned = (total_covered // LMCACHE_CHUNK_SIZE) * LMCACHE_CHUNK_SIZE
+
+        if total_aligned <= 0:
+            return (num_matched or 0, False)
+
+        # Register the composite result with the LMCache lookup client
+        engine_impl = self._get_lmcache_engine_impl()
+        if engine_impl is None:
+            return (num_matched or 0, False)
+
+        lookup_client = getattr(engine_impl, "lookup_client", None)
+        if lookup_client is None:
+            return (num_matched or 0, False)
+
+        # Create the SemanticLookupResult with composite sources
+        result = SemanticLookupResult(
+            alternate_token_ids=primary.donor_token_ids,
+            num_cached_tokens=total_aligned,
+            skip_save=True,
+            provider_metadata={
+                "composite": True,
+                "donor_ids": donor_ids,
+                "total_covered": total_covered,
+            },
+            source_id=f"composite({len(composite_sources)} donors)",
+            composite_sources=composite_sources,
+        )
+
+        # Inject via the lookup client's pending substitutions
+        # (mimics what on_lookup_miss does internally)
+        lookup_client.reqs_status[request.request_id] = total_aligned
+        lookup_client._pending_substitutions[request.request_id] = result
+
+        # Store donor tokens for build_connector_meta token swap
+        self._donor_token_map[request.request_id] = primary.donor_token_ids
+        self._donor_matched_reqs.add(request.request_id)
+
+        self._stats["semblend_hits"] += 1
+
+        # Store position map for RoPE correction
+        if hasattr(pipeline_result, 'multi_donor_position_map'):
+            pos_map = pipeline_result.multi_donor_position_map
+            if pos_map and pos_map.needs_correction and not self._disable_rope_correction:
+                self._position_maps[request.request_id] = pipeline_result.position_map
+                try:
+                    from synapse_kv_connector.model_runner_hook import RoPECorrectionHook
+                    self._active_hook = RoPECorrectionHook(
+                        position_map=pipeline_result.position_map,
+                        plan=None,
+                        request_id=request.request_id,
+                    )
+                    import synapse_kv_connector.semblend_connector as _mod
+                    _mod._semblend_active_hook = self._active_hook
+                except Exception as e:
+                    print(f"[SemBlend] Composite RoPE hook failed: {e}",
+                          file=sys.stderr, flush=True)
+
+        print(
+            f"[SemBlend] COMPOSITE INJECT req={request.request_id}: "
+            f"{len(composite_sources)} sources, "
+            f"total_covered={total_covered}, aligned={total_aligned}",
+            file=sys.stderr, flush=True,
+        )
+
+        return (total_aligned, False)
 
     def _predict_layer_deviations(
         self,
