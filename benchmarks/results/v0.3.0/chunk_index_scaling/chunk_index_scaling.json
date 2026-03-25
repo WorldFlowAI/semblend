@@ -1,0 +1,67 @@
+{
+  "_reproducibility": {
+    "semblend_version": "0.3.0",
+    "semblend_git_sha": "a4f493c9b730",
+    "semblend_git_dirty": true,
+    "timestamp_utc": "2026-03-23T18:18:19Z",
+    "engine_versions": {
+      "vllm": "",
+      "lmcache": "",
+      "sglang": "0.5.2",
+      "trtllm": ""
+    },
+    "hardware": {
+      "gpu_type": "",
+      "gpu_count": 0,
+      "gpu_memory_gb": 0.0,
+      "instance_type": "",
+      "platform": "macOS-15.5-x86_64-i386-64bit"
+    },
+    "python_version": "3.12.12",
+    "run_host": "Mac.lan"
+  },
+  "benchmark": "chunk_index_scaling",
+  "chunk_size": 256,
+  "chunks_per_donor": 30,
+  "scales": [
+    {
+      "n_donors": 10000,
+      "n_entries": 300000,
+      "n_unique_hashes": 300000,
+      "memory_mb": 94708.0,
+      "memory_estimated_mb": 26.7,
+      "add_donor_mean_us": 347.0,
+      "add_donor_p95_us": 386.2,
+      "lookup_chunk_mean_us": 8.4,
+      "lookup_chunk_p95_us": 10.0,
+      "find_matching_mean_us": 253.9,
+      "find_matching_p95_us": 268.6
+    },
+    {
+      "n_donors": 50000,
+      "n_entries": 1500000,
+      "n_unique_hashes": 1500000,
+      "memory_mb": 556720.0,
+      "memory_estimated_mb": 133.5,
+      "add_donor_mean_us": 365.4,
+      "add_donor_p95_us": 385.9,
+      "lookup_chunk_mean_us": 8.8,
+      "lookup_chunk_p95_us": 8.8,
+      "find_matching_mean_us": 257.0,
+      "find_matching_p95_us": 276.4
+    },
+    {
+      "n_donors": 100000,
+      "n_entries": 3000000,
+      "n_unique_hashes": 3000000,
+      "memory_mb": 589372.0,
+      "memory_estimated_mb": 267.0,
+      "add_donor_mean_us": 390.8,
+      "add_donor_p95_us": 444.0,
+      "lookup_chunk_mean_us": 8.9,
+      "lookup_chunk_p95_us": 8.9,
+      "find_matching_mean_us": 254.7,
+      "find_matching_p95_us": 257.8
+    }
+  ]
+}

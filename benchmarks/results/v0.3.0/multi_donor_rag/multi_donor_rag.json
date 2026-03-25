@@ -1,0 +1,35 @@
+{
+  "_reproducibility": {
+    "semblend_version": "0.3.0",
+    "semblend_git_sha": "a4f493c9b730",
+    "semblend_git_dirty": true,
+    "timestamp_utc": "2026-03-23T18:20:21Z",
+    "engine_versions": {
+      "vllm": "",
+      "lmcache": "",
+      "sglang": "0.5.2",
+      "trtllm": ""
+    },
+    "hardware": {
+      "gpu_type": "",
+      "gpu_count": 0,
+      "gpu_memory_gb": 0.0,
+      "instance_type": "",
+      "platform": "macOS-15.5-x86_64-i386-64bit"
+    },
+    "python_version": "3.12.12",
+    "run_host": "Mac.lan"
+  },
+  "benchmark": "multi_donor_rag",
+  "dataset": "EdinburghNLP/xsum",
+  "n_queries": 200,
+  "docs_per_query": 3,
+  "mean_single_reuse": 0.9201,
+  "mean_multi_reuse": 0.9201,
+  "mean_improvement": 1.0,
+  "median_improvement": 1.0,
+  "mean_single_ms": 7.289,
+  "mean_multi_ms": 6.645,
+  "mean_donor_count": 3.65,
+  "multi_better_rate": 0.0
+}

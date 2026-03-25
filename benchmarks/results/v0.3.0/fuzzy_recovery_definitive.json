@@ -1,0 +1,331 @@
+{
+  "benchmark": "fuzzy_comprehensive",
+  "timestamp": "2026-03-22 19:19:39",
+  "n_total": 22,
+  "datasets": [
+    "cnn",
+    "xsum"
+  ],
+  "scenarios": [
+    {
+      "scenario": "shifted_prefix",
+      "n_samples": 22,
+      "hit_rate": 1.0,
+      "hit_rate_ci": [
+        1.0,
+        1.0
+      ],
+      "mean_speedup": 1.848404593882495,
+      "speedup_ci": [
+        1.7480291569146478,
+        1.9580914695719338
+      ],
+      "hit_only_speedup": 1.848404593882495,
+      "p50_cold_ms": 1017.4326249980368,
+      "p50_warm_ms": 596.4076250093058,
+      "mean_ppl_ratio": 1.0
+    },
+    {
+      "scenario": "minor_edit",
+      "n_samples": 0,
+      "hit_rate": 0,
+      "hit_rate_ci": [
+        0,
+        0
+      ],
+      "mean_speedup": 0,
+      "speedup_ci": [
+        0,
+        0
+      ],
+      "hit_only_speedup": 0,
+      "p50_cold_ms": 0,
+      "p50_warm_ms": 0,
+      "mean_ppl_ratio": 1.0
+    },
+    {
+      "scenario": "negative_control",
+      "n_samples": 0,
+      "hit_rate": 0,
+      "hit_rate_ci": [
+        0,
+        0
+      ],
+      "mean_speedup": 0,
+      "speedup_ci": [
+        0,
+        0
+      ],
+      "hit_only_speedup": 0,
+      "p50_cold_ms": 0,
+      "p50_warm_ms": 0,
+      "mean_ppl_ratio": 1.0
+    }
+  ],
+  "results": [
+    {
+      "sample_id": "shifted_0",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 1402.9359169653617,
+      "variant_ttft_ms": 593.4213749715127,
+      "speedup": 2.3641479328794146,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 12,
+      "seed_text": "The main points discussed in the document include:\n\n1. **Prison Link Cymru's Work**: The charity helps ex-offenders find suitable accommodation after release, highlighting the challenges faced by men,",
+      "variant_text": "The main points discussed in the document include:\n\n1. **Prison Link Cymru's Work**: The charity helps ex-offenders find suitable accommodation after release, highlighting the challenges faced by men "
+    },
+    {
+      "sample_id": "shifted_1",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 987.8173749893904,
+      "variant_ttft_ms": 585.2280000108294,
+      "speedup": 1.6879188537990513,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 8,
+      "seed_text": "Certainly! Here\u2019s a summary of the key findings from the document:\n\n### Summary of Key Findings\n\n1. **Kareem Badr and The Hideout:**\n   - **Initial Challenge:** In 2009, Badr",
+      "variant_text": "Certainly! Here\u2019s a summary of the key findings from the document:\n\n### Summary of Key Findings\n\n1. **Kareem Badr and The Hideout:**\n   - **Initial Challenge:** In 2009, Badr"
+    },
+    {
+      "sample_id": "shifted_2",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 966.6446250048466,
+      "variant_ttft_ms": 588.8927910127677,
+      "speedup": 1.641461127996537,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 14,
+      "seed_text": "The central argument of the document appears to be multifaceted, but it primarily revolves around the concerns of scientists and researchers regarding potential restrictions on access to climate and e",
+      "variant_text": "The central argument of the document appears to be multifaceted, encompassing several distinct topics. However, if we focus on the primary narrative, the central argument seems to revolve around the p"
+    },
+    {
+      "sample_id": "shifted_3",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 985.8295419835486,
+      "variant_ttft_ms": 580.6312499917112,
+      "speedup": 1.6978582224047047,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 10,
+      "seed_text": "Here are the most important facts mentioned:\n\n1. **Doull's Olympic Gold Medal**: Doull, a Welsh cyclist, won a gold medal in the team pursuit event, helping Great Britain set a world record time. This",
+      "variant_text": "Here are the key facts mentioned in the document:\n\n1. **Doull's Olympic Gold**: Doull won a gold medal in the team pursuit event, helping Great Britain set a world record time. This victory was partic"
+    },
+    {
+      "sample_id": "shifted_4",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 1322.267749987077,
+      "variant_ttft_ms": 619.3601249833591,
+      "speedup": 2.134893249743198,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 11,
+      "seed_text": "To draw conclusions from the provided document, we need to analyze the various sections and extract key points:\n\n1. **School Incident**:\n   - A gun was reportedly heard being fired near Anfield Road P",
+      "variant_text": "To draw conclusions from the document, let's break it down into sections and analyze the key points:\n\n### 1. School Incident\n- **Incident**: A gunshot was heard near Anfield Road Primary School at 09:"
+    },
+    {
+      "sample_id": "shifted_5",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 1027.3919170140289,
+      "variant_ttft_ms": 588.4375419700518,
+      "speedup": 1.7459659585525176,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 9,
+      "seed_text": "The main points discussed in the document are:\n\n1. **Russia's Ban of Julia Samoilova from Eurovision**: Russia banned Julia Samoilova, a Ukrainian singer, from participating in Eurovision due to her p",
+      "variant_text": "The main points discussed in the document are:\n\n1. **Russia's Ban of Julia Samoilova from Eurovision**: Russia banned Julia Samoilova from participating in Eurovision due to her performance in Crimea,"
+    },
+    {
+      "sample_id": "shifted_6",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 988.8471250305884,
+      "variant_ttft_ms": 626.6569580184296,
+      "speedup": 1.5779719867109605,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 16,
+      "seed_text": "The document covers multiple topics, each requiring a summary of key findings. Here\u2019s a detailed summary:\n\n### Cricket Match Summary\n- **Match Overview**: The match took place at the Melbourne Cricket",
+      "variant_text": "The document covers multiple topics, each requiring a summary of key findings. Here\u2019s a detailed summary of the key points:\n\n### Cricket Match Summary\n- **Match Overview**: The match took place at the"
+    },
+    {
+      "sample_id": "shifted_7",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 978.9957089815289,
+      "variant_ttft_ms": 579.17812501546,
+      "speedup": 1.6903188616721265,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 10,
+      "seed_text": "The central argument of the document appears to be about the political significance of London's first Muslim mayor, Sadiq Khan, and the broader implications of his victory. The document highlights how",
+      "variant_text": "The central argument of the text appears to be about the political significance of London's first Muslim mayor, Sadiq Khan, and the broader implications of his victory in the context of rising right-w"
+    },
+    {
+      "sample_id": "shifted_8",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 1059.292791003827,
+      "variant_ttft_ms": 588.7922500260174,
+      "speedup": 1.799094317150097,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 13,
+      "seed_text": "Based on the passage, the most important facts mentioned include:\n\n1. **Release of the Second Album**: Laura's second album, \"The Dreaming Room,\" is due in June.\n2. **New Single**: Her newest track, \"",
+      "variant_text": "Based on the passage, the most important facts mentioned include:\n\n1. **Release of the Second Album**: Laura's second album, \"The Dreaming Room,\" is due in June.\n2. **New Single**: Her newest track, \""
+    },
+    {
+      "sample_id": "shifted_9",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 1255.9012499987148,
+      "variant_ttft_ms": 589.4097500131465,
+      "speedup": 2.1307778671301287,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 11,
+      "seed_text": "Based on the document provided, several conclusions can be drawn:\n\n1. **Jonas Gutierrez's Return to Play**: Gutierrez, a footballer for Newcastle United, successfully returned from a serious health co",
+      "variant_text": "Based on the document provided, several conclusions can be drawn:\n\n1. **Jonas Gutierrez's Return to Play**: Gutierrez, a 31-year-old Argentine footballer, returned to play after a serious health scare"
+    },
+    {
+      "sample_id": "shifted_10",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 991.5679160039872,
+      "variant_ttft_ms": 606.777917011641,
+      "speedup": 1.6341529383393234,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 12,
+      "seed_text": "The main points discussed in the provided text include:\n\n1. **Wellington Monument**: Details about the Wellington monument on Blackdown Hills, including its construction date, recent fencing due to fa",
+      "variant_text": "The main points discussed in the document include:\n\n1. **Wellington Monument**: Details about the Wellington monument on Blackdown Hills, including its construction date, recent fencing due to falling"
+    },
+    {
+      "sample_id": "shifted_11",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 1012.0776669937186,
+      "variant_ttft_ms": 595.258624991402,
+      "speedup": 1.7002318395778593,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 8,
+      "seed_text": "Certainly! Here\u2019s a summary of the key findings from the provided document:\n\n1. **Film Box Office Performance**:\n   - *Moana*: Debuted with $81.1m, making it the second-highest Thanksgiving debut ever",
+      "variant_text": "Certainly! Here\u2019s a summary of the key findings from the provided document:\n\n1. **Film Box Office Performance**:\n   - *Moana*: Took $81.1m on its Thanksgiving debut, ranking second behind Disney's *Fr"
+    },
+    {
+      "sample_id": "shifted_12",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 1015.1373340049759,
+      "variant_ttft_ms": 557.9220409854315,
+      "speedup": 1.8194967386697727,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 14,
+      "seed_text": "The central argument of the document appears to be the ongoing controversy and scrutiny surrounding the closure of St Joseph's Primary School in Milngavie, Scotland, and the broader implications for l",
+      "variant_text": "The central argument of the document appears to be the ongoing controversy and scrutiny surrounding the closure of St Joseph's Primary School in Milngavie, Scotland, and the broader implications for l"
+    },
+    {
+      "sample_id": "shifted_13",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 1253.0374580528587,
+      "variant_ttft_ms": 619.6709999931045,
+      "speedup": 2.0221011763771455,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 10,
+      "seed_text": "Here are the key facts mentioned:\n\n1. **Omar Khan's Case**:\n   - Omar Khan, 31, worked at The Johnson Partnership in Nottingham for five years before being arrested.\n   - He admitted to conspiracy to ",
+      "variant_text": "Here are the key facts mentioned in the document:\n\n1. **Omar Khan's Case**:\n   - Omar Khan, 31, worked at The Johnson Partnership in Nottingham for five years.\n   - He admitted to conspiracy to supply"
+    },
+    {
+      "sample_id": "shifted_14",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 1372.0749999629334,
+      "variant_ttft_ms": 607.4755420559086,
+      "speedup": 2.2586506039722263,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 11,
+      "seed_text": "Based on the provided document, several conclusions can be drawn:\n\n1. **Impact of Wealth Inequality**: The wealth gap between the richest and the rest continues to grow, with the richest 10% earning s",
+      "variant_text": "Based on the document provided, several key conclusions can be drawn:\n\n1. **Rugby Match Analysis**: The document describes a rugby match between Wasps and Worcester, detailing the scoring sequence and"
+    },
+    {
+      "sample_id": "shifted_15",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 1019.7279159910977,
+      "variant_ttft_ms": 586.8827499798499,
+      "speedup": 1.7375326094115207,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 9,
+      "seed_text": "The main points discussed in the document are:\n\n1. **Twins in Sale Rugby Club Academy**: Two 18-year-old identical twins have impressed in nine Premiership appearances and are expected to play key rol",
+      "variant_text": "The document covers several distinct topics, each with its own set of key points:\n\n1. **Twins in Sale Rugby Club Academy**:\n   - Identical twins, aged 18, have impressed in nine Premiership appearance"
+    },
+    {
+      "sample_id": "shifted_16",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 984.4421249581501,
+      "variant_ttft_ms": 652.4754579877481,
+      "speedup": 1.5087803118207637,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 16,
+      "seed_text": "The document covers a wide range of topics, from sports to politics and international relations. Here is a summary of the key findings:\n\n1. **Scott Brown's Return to Scotland's Squad**:\n   - Scott Bro",
+      "variant_text": "The document covers a wide range of topics, from sports to politics and international relations. Here is a summary of the key findings:\n\n1. **Scott Brown's Return to Scotland's Squad**:\n   - Scott Bro"
+    },
+    {
+      "sample_id": "shifted_17",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 1287.4560830532573,
+      "variant_ttft_ms": 622.6525419624522,
+      "speedup": 2.067695859709338,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 10,
+      "seed_text": "The central argument of the document appears to be the contrast between the success of the Welsh national football team in Euro 2016 and the ongoing socio-economic challenges faced by certain areas wi",
+      "variant_text": "The text appears to be a news article summarizing various events related to Welsh football and the Scottish Index of Multiple Deprivation. There isn't a single central argument, but rather a collectio"
+    },
+    {
+      "sample_id": "shifted_18",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 999.3672500131652,
+      "variant_ttft_ms": 597.5566250272095,
+      "speedup": 1.6724226762068939,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 13,
+      "seed_text": "Based on the passage provided, the most important facts mentioned are:\n\n1. **Rugby Steroids Test**: The first positive steroids test in Scottish rugby history has occurred, raising concerns about dopi",
+      "variant_text": "Based on the passage provided, the most important facts mentioned are:\n\n1. **Rugby Steroids Test**: The first positive steroids test in Scottish rugby history has occurred, raising concerns about dopi"
+    },
+    {
+      "sample_id": "shifted_19",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 991.2976250052452,
+      "variant_ttft_ms": 646.4636249584146,
+      "speedup": 1.5334159366956075,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 11,
+      "seed_text": "Based on the provided document, several conclusions can be drawn:\n\n1. **Cavendish's Performance**: Mark Cavendish, a seasoned professional cyclist, started his campaign with a sixth-place finish in th",
+      "variant_text": "Based on the document provided, several conclusions can be drawn:\n\n1. **Cavendish's Performance**: Mark Cavendish, a seasoned professional cyclist, started his campaign with a sixth-place finish in th"
+    },
+    {
+      "sample_id": "shifted_20",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 1270.955457992386,
+      "variant_ttft_ms": 642.5506250234321,
+      "speedup": 1.9779849376787046,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 12,
+      "seed_text": "The main points discussed in the document are:\n\n1. **Arrests and Gun Incident**: Four men were arrested after a gun was reported in a car on Derby Road, Enfield. They are currently being held at a nor",
+      "variant_text": "The document covers multiple topics, but the main points discussed are:\n\n1. **Gun sighting incident in Derby Road, Enfield**: Four men were arrested after a car was stopped for having a gun visible in"
+    },
+    {
+      "sample_id": "shifted_21",
+      "scenario": "shifted_prefix",
+      "seed_ttft_ms": 1372.6374169928022,
+      "variant_ttft_ms": 606.8174169631675,
+      "speedup": 2.262027058916996,
+      "is_hit": true,
+      "dataset": "xsum",
+      "expected_shift": 8,
+      "seed_text": "Certainly, here is a summary of the key findings from the documents:\n\n1. **GB vs Greece Basketball Game**:\n   - **Event**: GB vs Greece basketball game.\n   - **Location**: Copper Box Arena, London.\n  ",
+      "variant_text": "Certainly, here is a summary of the key findings from the documents provided:\n\n1. **GB vs Greece Basketball Game**:\n   - **Event Details**: Britain will play Greece at the Copper Box Arena in London.\n"
+    }
+  ]
+}
