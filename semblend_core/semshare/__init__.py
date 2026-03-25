@@ -18,6 +18,7 @@ from semblend_core.semshare.attention_recovery import (
     compute_attention_recovery,
 )
 from semblend_core.semshare.kv_rearrange import KVRearrangePlan, build_rearrange_plan
+from semblend_core.semshare.embedding_capture import EmbeddingCaptureBuffer
 from semblend_core.semshare.selective_attention import (
     build_selective_attention_plan,
     enhance_plan_with_selective_recompute,

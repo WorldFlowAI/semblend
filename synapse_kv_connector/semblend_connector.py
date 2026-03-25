@@ -459,6 +459,27 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
                 file=sys.stderr, flush=True,
             )
 
+        # SemShareKV embedding capture: capture layer-0 K vectors for LSH indexing
+        self._embedding_capture = None
+        self._selective_recompute = (
+            os.environ.get("SEMBLEND_SELECTIVE_RECOMPUTE", "0") == "1"
+        )
+        if self._selective_recompute:
+            try:
+                from semblend_core.semshare.embedding_capture import (
+                    EmbeddingCaptureBuffer,
+                )
+                self._embedding_capture = EmbeddingCaptureBuffer(max_entries=1000)
+                print(
+                    "[SemBlend] SemShareKV embedding capture enabled",
+                    file=sys.stderr, flush=True,
+                )
+            except Exception as e:
+                print(
+                    f"[SemBlend] embedding capture init failed: {e}",
+                    file=sys.stderr, flush=True,
+                )
+
         self._stats = {
             "lmcache_hits": 0,
             "semblend_hits": 0,
@@ -466,6 +487,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
             "total_lookups": 0,
             "total_saves": 0,
             "partial_attn_applied": 0,
+            "embedding_captures": 0,
         }
 
         msg = (
@@ -712,6 +734,10 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         # Capture KV fingerprint for donor registration (Option C)
         self._capture_kv_fingerprint(layer_name, kv_layer)
 
+        # SemShareKV: capture layer-0 K vectors as token embeddings for LSH
+        if self._embedding_capture is not None:
+            self._capture_layer0_embeddings(layer_name, kv_layer, attn_metadata)
+
         # Per-layer KV deviation logging for bathtub curve calibration
         # When donor KV was loaded, compare freshly computed KV against
         # the loaded donor KV to measure actual per-layer deviation.
@@ -721,6 +747,37 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         self._lmcache.save_kv_layer(
             layer_name, kv_layer, attn_metadata, **kwargs
         )
+
+    def _capture_layer0_embeddings(
+        self,
+        layer_name: str,
+        kv_layer: torch.Tensor,
+        attn_metadata: Any,
+    ) -> None:
+        """Capture layer-0 K vectors as token embeddings for SemShareKV LSH."""
+        try:
+            from semblend_core.semshare.embedding_capture import (
+                extract_layer0_embeddings,
+            )
+
+            embeddings = extract_layer0_embeddings(kv_layer, layer_name)
+            if embeddings is None:
+                return  # not layer 0
+
+            # Get request ID from attn_metadata
+            req_id = None
+            if hasattr(attn_metadata, "request_id"):
+                req_id = attn_metadata.request_id
+            elif hasattr(attn_metadata, "seq_group_metadata_list"):
+                for sg in attn_metadata.seq_group_metadata_list:
+                    req_id = sg.request_id
+                    break
+
+            if req_id and self._embedding_capture is not None:
+                self._embedding_capture.capture(req_id, embeddings)
+                self._stats["embedding_captures"] += 1
+        except Exception:
+            pass  # non-critical, don't block inference
 
     def wait_for_save(self) -> None:
         self._lmcache.wait_for_save()
@@ -2028,17 +2085,42 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
 
         # New pipeline path
         if self._pipeline is not None:
-            self._pipeline.register_donor(
-                request_id=request.request_id,
-                token_ids=token_ids,
-                prompt_text=prompt,
-            )
-            print(
-                f"[SemBlend] donor reg (pipeline): req={request.request_id}, "
-                f"tok={len(token_ids)}/{len(all_ids)}, "
-                f"num_prompt={num_prompt}, prompt={len(prompt)}ch",
-                file=sys.stderr, flush=True,
-            )
+            # Check for captured layer-0 embeddings (SemShareKV LSH indexing)
+            captured_embeddings = None
+            if self._embedding_capture is not None:
+                captured_embeddings = self._embedding_capture.pop(
+                    request.request_id
+                )
+
+            if (
+                captured_embeddings is not None
+                and hasattr(self._pipeline, "register_donor_semshare")
+            ):
+                self._pipeline.register_donor_semshare(
+                    request_id=request.request_id,
+                    token_ids=token_ids,
+                    token_embeddings=captured_embeddings,
+                    prompt_text=prompt,
+                )
+                print(
+                    f"[SemBlend] donor reg (pipeline+LSH): req={request.request_id}, "
+                    f"tok={len(token_ids)}/{len(all_ids)}, "
+                    f"emb_shape={captured_embeddings.shape}, "
+                    f"num_prompt={num_prompt}, prompt={len(prompt)}ch",
+                    file=sys.stderr, flush=True,
+                )
+            else:
+                self._pipeline.register_donor(
+                    request_id=request.request_id,
+                    token_ids=token_ids,
+                    prompt_text=prompt,
+                )
+                print(
+                    f"[SemBlend] donor reg (pipeline): req={request.request_id}, "
+                    f"tok={len(token_ids)}/{len(all_ids)}, "
+                    f"num_prompt={num_prompt}, prompt={len(prompt)}ch",
+                    file=sys.stderr, flush=True,
+                )
             return
 
         # Legacy path
