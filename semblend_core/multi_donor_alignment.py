@@ -286,6 +286,16 @@ def compute_multi_donor_alignment(
                 d_starts.append(j)
             donor_chunk_cache[donor_id] = (d_chunks, d_starts)
 
+        # For multi-donor, use a lower fuzzy threshold (0.70 vs 0.90)
+        # because shifted chunk boundaries reduce per-chunk overlap even
+        # when the underlying content is identical.
+        multi_donor_fuzzy_overlap = max(0.70, min_fuzzy_overlap - 0.20)
+        logger.info(
+            "multi_donor fuzzy: checking %d unmatched chunks against %d donors "
+            "(threshold=%.2f)",
+            len(unmatched_indices), len(donor_chunk_cache), multi_donor_fuzzy_overlap,
+        )
+
         for t_idx in unmatched_indices:
             t_chunk = target_chunks[t_idx]
             best_match: ChunkAssignment | None = None
@@ -295,7 +305,7 @@ def compute_multi_donor_alignment(
                 used = used_donor_chunks.get(donor_id, set())
                 result = _fuzzy_match_chunk(
                     t_chunk, donor_chunks, donor_chunk_starts,
-                    used, min_fuzzy_overlap,
+                    used, multi_donor_fuzzy_overlap,
                 )
                 if result is not None:
                     d_idx, pairs = result
