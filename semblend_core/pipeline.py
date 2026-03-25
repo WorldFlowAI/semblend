@@ -172,6 +172,12 @@ class SemBlendPipeline:
             "SEMBLEND_MULTI_DONOR", "0"
         ).strip() in ("1", "true", "True")
 
+        # SemShareKV selective recompute: enhances existing bathtub plan
+        # with per-token graduated recomputation
+        self._selective_recompute = os.environ.get(
+            "SEMBLEND_SELECTIVE_RECOMPUTE", "0"
+        ).strip() in ("1", "true", "True")
+
         # SemShareKV mode: token-level LSH matching with per-layer selective recompute
         self._mode = os.environ.get("SEMBLEND_MODE", "chunk").strip().lower()
         self._semshare_config = None
@@ -712,14 +718,22 @@ class SemBlendPipeline:
                 num_layers=num_layers,
             )
 
+            # Optionally enhance with SemShareKV selective recompute
+            if self._selective_recompute and plan is not None:
+                plan = self._apply_selective_recompute(
+                    plan, pipeline_result, num_layers,
+                    copy_positions, placeholder_positions,
+                )
+
             logger.info(
                 "PartialAttention plan: reuse=%d, partial=%d, "
-                "full_layers=%d/%d, comp_ratio=%.2f",
+                "full_layers=%d/%d, comp_ratio=%.2f, selective=%s",
                 plan.num_reuse_positions,
                 plan.num_partial_positions,
                 plan.num_full_layers,
                 num_layers,
                 plan.computation_ratio,
+                self._selective_recompute,
             )
             return plan
 
@@ -728,6 +742,91 @@ class SemBlendPipeline:
                 "Failed to build PartialAttention plan", exc_info=True
             )
             return None
+
+    def _apply_selective_recompute(
+        self,
+        plan: object,
+        pipeline_result: PipelineResult,
+        num_layers: int,
+        copy_positions: list[int],
+        placeholder_positions: list[int],
+    ) -> object:
+        """Enhance a bathtub plan with SemShareKV selective recompute.
+
+        Uses token match quality as a proxy for HD detection (since we
+        don't have layer 1 KV at plan time). Tokens with lower alignment
+        confidence get higher recompute priority.
+        """
+        try:
+            from semblend_core.semshare.config import SemShareConfig
+            from semblend_core.semshare.hd_detector import HDDetectionResult
+            from semblend_core.semshare.layer_schedule import compute_layer_schedule
+            from semblend_core.semshare.selective_attention import (
+                enhance_plan_with_selective_recompute,
+            )
+
+            target_len = plan.target_len
+            if target_len <= 0:
+                return plan
+
+            # Estimate HD mask from alignment confidence:
+            # Positions with recompute action or low fuzzy confidence → HD
+            hd_mask = []
+            deviation_scores = []
+            for i in range(target_len):
+                is_placeholder = i in set(placeholder_positions)
+                # Use fuzzy confidence as deviation proxy
+                # Lower confidence → higher deviation → more likely HD
+                dev = 1.0 - pipeline_result.fuzzy_confidence if is_placeholder else 0.0
+
+                # Also check slot actions for confidence info
+                for sa in pipeline_result.slot_actions:
+                    pos = sa.get("targetPos", sa.get("target_pos", -1))
+                    if pos == i:
+                        if sa.get("action") == "recompute":
+                            dev = 1.0
+                        elif sa.get("confidence", 1.0) < 0.8:
+                            dev = max(dev, 0.5)
+                        break
+
+                hd_mask.append(dev > 0.3)
+                deviation_scores.append(dev)
+
+            config = self._semshare_config or SemShareConfig()
+            hd_result = HDDetectionResult(
+                hd_mask=tuple(hd_mask),
+                deviation_scores=tuple(deviation_scores),
+                hd_threshold=0.3,
+                hd_fraction=sum(hd_mask) / target_len if target_len > 0 else 0.0,
+            )
+
+            schedule = compute_layer_schedule(
+                hd_result,
+                num_layers=num_layers,
+                config=config,
+                unmatched_positions=tuple(placeholder_positions),
+            )
+
+            enhanced = enhance_plan_with_selective_recompute(
+                plan, schedule, hd_result,
+            )
+
+            logger.info(
+                "Selective recompute applied: comp_ratio %.2f → %.2f, "
+                "hd_tokens=%d/%d",
+                plan.computation_ratio,
+                enhanced.computation_ratio,
+                sum(hd_mask),
+                target_len,
+            )
+            return enhanced
+
+        except Exception:
+            logger.warning(
+                "Selective recompute enhancement failed, using bathtub plan",
+                exc_info=True,
+            )
+            return plan
 
     # ------------------------------------------------------------------
     # Multi-turn fast path + multi-donor
