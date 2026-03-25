@@ -447,6 +447,10 @@ class DonorStore:
         matches.sort(key=lambda x: x[0], reverse=True)
         return [m for _, m in matches[:top_k]]
 
+    def get_donor(self, donor_id: str) -> DonorNode | None:
+        """Get a donor node by request_id."""
+        return self._entries.get(donor_id)
+
     def get_donor_tokens(self, donor_id: str) -> list[int] | None:
         """Get a donor's token IDs by request_id.
 
