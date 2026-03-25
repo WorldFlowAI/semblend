@@ -357,7 +357,7 @@ def _fuzzy_match_chunk(
     donor_chunk_starts: list[int],
     used_donor_chunks: set[int],
     min_overlap: float,
-) -> tuple[int, list[tuple[int, int]]] | None:
+) -> tuple[int, list[tuple[int, int]], float] | None:
     """Find the best fuzzy-matching donor chunk for a target chunk.
 
     Computes token-set overlap between the target chunk and each unused
@@ -407,6 +407,8 @@ def _fuzzy_match_chunk(
     if best_idx is None:
         return None
 
+    best_overlap_ratio = best_overlap
+
     # Build per-token alignment for the best-matching donor chunk.
     # For the common shifted-prefix case, tokens are identical but offset.
     # Use greedy positional matching: prefer same-position matches first.
@@ -440,7 +442,7 @@ def _fuzzy_match_chunk(
             pairs.append((i, d_offset))
             matched_target.add(i)
 
-    return (best_idx, pairs)
+    return (best_idx, pairs, best_overlap_ratio)
 
 
 def compute_fuzzy_chunk_alignment(
@@ -517,6 +519,7 @@ def compute_fuzzy_chunk_alignment(
     # Phase 2: fuzzy matches for unmatched target chunks
     fuzzy_matches: dict[int, list[tuple[int, int]]] = {}
     fuzzy_donor_idx: dict[int, int] = {}
+    fuzzy_overlap_ratios: dict[int, float] = {}  # track overlap for context gate
 
     for t_idx, t_chunk in enumerate(target_chunks):
         if t_idx in exact_matches:
@@ -529,37 +532,59 @@ def compute_fuzzy_chunk_alignment(
             used_donor_chunks, overlap_threshold,
         )
         if result is not None:
-            d_idx, pairs = result
+            d_idx, pairs, overlap_ratio = result
             fuzzy_matches[t_idx] = pairs
             fuzzy_donor_idx[t_idx] = d_idx
+            fuzzy_overlap_ratios[t_idx] = overlap_ratio
             used_donor_chunks.add(d_idx)
 
     # Merge exact + fuzzy matches for context gate
     all_matched = set(exact_matches.keys()) | set(fuzzy_matches.keys())
 
     # Phase 3: context gate — reject isolated matches
+    # Exception: high-overlap fuzzy matches (>= 0.95) are exempt from the
+    # neighbor requirement. With 95%+ token overlap, the match is almost
+    # certainly a shifted-prefix, not a false positive. This prevents the
+    # cascade rejection where chunk 0 (instruction) misses → chunk 1 has
+    # no left neighbor → all subsequent chunks get rejected.
+    _FUZZY_CONTEXT_GATE_EXEMPT_OVERLAP = float(
+        os.environ.get("SEMBLEND_FUZZY_CONTEXT_EXEMPT_OVERLAP", "0.95")
+    )
+
     if use_context_gate and all_matched:
         validated_exact: dict[int, int] = {}
         validated_fuzzy: dict[int, list[tuple[int, int]]] = {}
         rejected_count = 0
+        exempt_count = 0
 
         for t_idx in all_matched:
             has_neighbor = (
                 (t_idx - 1) in all_matched
                 or (t_idx + 1) in all_matched
             )
-            if has_neighbor:
+
+            # High-overlap fuzzy matches are exempt from context gate
+            is_high_overlap_fuzzy = (
+                t_idx in fuzzy_overlap_ratios
+                and fuzzy_overlap_ratios[t_idx] >= _FUZZY_CONTEXT_GATE_EXEMPT_OVERLAP
+            )
+
+            if has_neighbor or is_high_overlap_fuzzy:
                 if t_idx in exact_matches:
                     validated_exact[t_idx] = exact_matches[t_idx]
                 if t_idx in fuzzy_matches:
                     validated_fuzzy[t_idx] = fuzzy_matches[t_idx]
+                if is_high_overlap_fuzzy and not has_neighbor:
+                    exempt_count += 1
             else:
                 rejected_count += 1
 
-        if rejected_count > 0:
+        if rejected_count > 0 or exempt_count > 0:
             logger.info(
-                "context_gate: rejected %d/%d isolated chunk matches",
+                "context_gate: rejected %d/%d isolated, "
+                "exempted %d high-overlap fuzzy (>=%.0f%%)",
                 rejected_count, len(all_matched),
+                exempt_count, _FUZZY_CONTEXT_GATE_EXEMPT_OVERLAP * 100,
             )
         exact_matches = validated_exact
         fuzzy_matches = validated_fuzzy
