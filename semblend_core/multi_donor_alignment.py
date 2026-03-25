@@ -438,29 +438,44 @@ def _build_composite_result(
 
             elif asgn.match_type == MatchType.FUZZY:
                 fuzzy_chunks += 1
-                # For fuzzy matches, use position-aligned copy
-                # (simplified: copy all tokens at aligned positions)
+                # Fuzzy match: per-token greedy matching by token ID
+                # (handles shifted chunk boundaries where same tokens
+                # appear at different offsets within the chunk)
                 donor_tokens = donor_token_store.get(asgn.donor_id, [])
                 d_chunk = donor_tokens[d_start:d_start + chunk_size]
 
+                # Build donor token → position map for greedy matching
+                from collections import defaultdict
+                donor_positions: dict[int, list[int]] = defaultdict(list)
+                for di, tok in enumerate(d_chunk):
+                    donor_positions[tok].append(di)
+                donor_pos_idx: dict[int, int] = defaultdict(int)
+
                 for i in range(len(t_chunk)):
-                    if t_start + i < len(target_tokens):
-                        if i < len(d_chunk) and t_chunk[i] == d_chunk[i]:
+                    if t_start + i >= len(target_tokens):
+                        break
+                    tok = t_chunk[i]
+                    candidates = donor_positions.get(tok)
+                    if candidates is not None:
+                        idx = donor_pos_idx[tok]
+                        if idx < len(candidates):
+                            d_offset = candidates[idx]
+                            donor_pos_idx[tok] = idx + 1
                             slot_actions.append(MultiDonorSlotAction(
                                 action="copy_from_donor",
                                 target_pos=t_start + i,
-                                donor_pos=d_start + i,
+                                donor_pos=d_start + d_offset,
                                 donor_id=asgn.donor_id,
                             ))
                             map_donor_ids.append(asgn.donor_id)
-                            map_donor_positions.append(d_start + i)
+                            map_donor_positions.append(d_start + d_offset)
                             map_target_positions.append(t_start + i)
                             num_reused += 1
-                        else:
-                            slot_actions.append(MultiDonorSlotAction(
-                                action="recompute",
-                                target_pos=t_start + i,
-                            ))
+                            continue
+                    slot_actions.append(MultiDonorSlotAction(
+                        action="recompute",
+                        target_pos=t_start + i,
+                    ))
         else:
             recompute_chunks += 1
             full_assignments.append(ChunkAssignment(
