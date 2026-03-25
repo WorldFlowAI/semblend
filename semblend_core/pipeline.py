@@ -173,21 +173,24 @@ class SemBlendPipeline:
         ).strip() in ("1", "true", "True")
 
         # SemShareKV selective recompute: enhances existing bathtub plan
-        # with per-token graduated recomputation
+        # with per-token graduated recomputation (requires semshare module)
         self._selective_recompute = os.environ.get(
             "SEMBLEND_SELECTIVE_RECOMPUTE", "0"
         ).strip() in ("1", "true", "True")
+        if self._selective_recompute:
+            try:
+                from semblend_core.semshare.config import SemShareConfig  # noqa: F401
+            except ImportError:
+                logger.warning(
+                    "SEMBLEND_SELECTIVE_RECOMPUTE=1 but semshare module not installed. "
+                    "Disabling selective recompute."
+                )
+                self._selective_recompute = False
 
-        # SemShareKV mode: token-level LSH matching with per-layer selective recompute
-        self._mode = os.environ.get("SEMBLEND_MODE", "chunk").strip().lower()
+        # Pipeline mode (chunk is the only production mode)
+        self._mode = "chunk"
         self._semshare_config = None
         self._lsh_index = None
-        if self._mode == "semshare":
-            from semblend_core.semshare.config import SemShareConfig
-            from semblend_core.semshare.lsh_index import LSHIndex
-            self._semshare_config = SemShareConfig(max_donors=max_donors)
-            self._lsh_index = LSHIndex(self._semshare_config)
-            logger.info("SemBlend mode=semshare: token-level LSH matching enabled")
 
         # Minimum ChunkIndex hits to trigger fast path (skip embedding)
         try:
@@ -1019,141 +1022,6 @@ class SemBlendPipeline:
                 return 40
         return 32  # default
 
-    # ------------------------------------------------------------------
-    # SemShareKV mode: token-level LSH matching
-    # ------------------------------------------------------------------
-
-    def find_donor_semshare(
-        self,
-        token_ids: list[int],
-        token_embeddings: np.ndarray,
-    ) -> PipelineResult:
-        """SemShareKV donor discovery via token-level LSH matching.
-
-        Called when SEMBLEND_MODE=semshare and token embeddings are available
-        from the model's layer 0 output (captured by the vLLM hook).
-
-        Args:
-            token_ids: Token IDs of the target request.
-            token_embeddings: shape [seq_len, embed_dim] from model layer 0.
-
-        Returns:
-            PipelineResult with semshare-specific fields.
-        """
-        timings = PipelineTimings()
-        t_start = time.monotonic()
-
-        try:
-            return self._find_donor_semshare_inner(
-                token_ids, token_embeddings, timings, t_start,
-            )
-        except Exception as e:
-            logger.error(
-                "SemShareKV pipeline error (graceful → cold prefill): %s",
-                e, exc_info=True,
-            )
-            timings.total_ms = (time.monotonic() - t_start) * 1000
-            return PipelineResult(
-                found=False, mode="semshare", timings=timings,
-                rejection_reason=f"semshare_error: {e}",
-            )
-
-    def _find_donor_semshare_inner(
-        self,
-        token_ids: list[int],
-        token_embeddings: np.ndarray,
-        timings: PipelineTimings,
-        t_start: float,
-    ) -> PipelineResult:
-        """Inner semshare lookup — no exception handling."""
-        from semblend_core.semshare.token_matcher import match_tokens
-        from semblend_core.semshare.kv_rearrange import build_rearrange_plan
-
-        if self._lsh_index is None or self._semshare_config is None:
-            return PipelineResult(
-                found=False, mode="semshare", timings=timings,
-                rejection_reason="semshare_not_initialized",
-            )
-
-        # Stage 1: LSH token matching
-        t0 = time.monotonic()
-        match_result = match_tokens(
-            token_embeddings, self._lsh_index, self._semshare_config,
-        )
-        timings.lookup_ms = (time.monotonic() - t0) * 1000
-
-        if match_result is None:
-            timings.total_ms = (time.monotonic() - t_start) * 1000
-            return PipelineResult(
-                found=False, mode="semshare", timings=timings,
-                rejection_reason="semshare_no_match",
-            )
-
-        # Stage 2: Build KV rearrangement plan
-        t1 = time.monotonic()
-        donor_node = self._donor_store.get_donor(match_result.donor_id)
-        donor_seq_len = len(donor_node.token_ids) if donor_node else 0
-
-        rearrange_plan = build_rearrange_plan(
-            match_result,
-            target_seq_len=len(token_ids),
-            donor_seq_len=donor_seq_len,
-        )
-        timings.align_ms = (time.monotonic() - t1) * 1000
-
-        timings.total_ms = (time.monotonic() - t_start) * 1000
-
-        logger.info(
-            "SemShareKV match: donor=%s, match_ratio=%.2f, "
-            "coverage=%.2f, rope_correction=%s, latency=%.1fms",
-            match_result.donor_id,
-            match_result.match_ratio,
-            rearrange_plan.coverage,
-            rearrange_plan.needs_rope_correction,
-            timings.total_ms,
-        )
-
-        return PipelineResult(
-            found=True,
-            mode="semshare",
-            donor_id=match_result.donor_id,
-            similarity=match_result.match_ratio,
-            reuse_ratio=rearrange_plan.coverage,
-            donor_tokens=list(donor_node.token_ids) if donor_node else [],
-            timings=timings,
-            token_match_ratio=match_result.match_ratio,
-            kv_rearrange_plan=rearrange_plan,
-        )
-
-    def register_donor_semshare(
-        self,
-        request_id: str,
-        token_ids: list[int],
-        token_embeddings: np.ndarray,
-        prompt_text: str = "",
-    ) -> None:
-        """Register a donor with token embeddings for SemShareKV LSH indexing.
-
-        Called after a request completes when SEMBLEND_MODE=semshare.
-        The token_embeddings come from model layer 0 (captured by vLLM hook).
-
-        Args:
-            request_id: Unique request identifier.
-            token_ids: Token IDs of the completed request.
-            token_embeddings: shape [seq_len, embed_dim] from model layer 0.
-            prompt_text: Decoded prompt text (for MiniLM embedding too).
-        """
-        # Register in LSH index for token-level matching
-        if self._lsh_index is not None:
-            self._lsh_index.register_donor(request_id, token_embeddings)
-
-        # Also register in standard donor store (for chunk-level fallback)
-        self.register_donor(request_id, token_ids, prompt_text)
-
     @property
     def mode(self) -> str:
         return self._mode
-
-    @property
-    def lsh_index(self):
-        return self._lsh_index
