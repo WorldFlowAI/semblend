@@ -364,6 +364,12 @@ def compute_multi_donor_alignment(
         all_assignments = validated
 
     if not all_assignments:
+        logger.info(
+            "multi_donor_alignment: no assignments after all phases "
+            "(exact=%d, semantic=%d, fuzzy=%d, total_chunks=%d)",
+            len(assignments), len(semantic_assignments), len(fuzzy_assignments),
+            num_target_chunks,
+        )
         return None
 
     # Phase 4: Build composite plan
