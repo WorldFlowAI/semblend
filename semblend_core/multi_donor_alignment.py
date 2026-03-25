@@ -101,6 +101,7 @@ def compute_multi_donor_alignment(
     pq_store: object | None = None,
     target_text: str = "",
     embedder: object | None = None,
+    token_index: object | None = None,
 ) -> MultiDonorAlignmentResult | None:
     """Compute multi-donor chunk alignment using ChunkIndex.
 
@@ -240,33 +241,38 @@ def compute_multi_donor_alignment(
                     if asgn and asgn.donor_id:
                         candidate_donor_ids.add(asgn.donor_id)
 
-        # CRITICAL: when no exact/semantic matches found, search donors
-        # with highest token overlap (fast Jaccard pre-filter).
-        # This enables the multi-donor RAG case where articles appear at
-        # different chunk boundaries across donors.
+        # CRITICAL: when no exact/semantic matches found, use TokenIndex
+        # to find donor chunks with high token overlap (O(chunk_size) per chunk).
+        if not candidate_donor_ids and token_index is not None:
+            from semblend_core.token_index import TokenIndex
+            if isinstance(token_index, TokenIndex):
+                # For each target chunk, find candidate donor chunks via TokenIndex
+                for t_idx in unmatched_indices:
+                    t_chunk = target_chunks[t_idx]
+                    candidates = token_index.find_fuzzy_candidates(t_chunk)
+                    for ref, shared_count in candidates[:5]:  # Top 5 per chunk
+                        candidate_donor_ids.add(ref.donor_id)
+
+                if candidate_donor_ids:
+                    logger.info(
+                        "multi_donor fuzzy: TokenIndex found %d candidate donors "
+                        "for %d unmatched chunks",
+                        len(candidate_donor_ids), len(unmatched_indices),
+                    )
+
+        # Fallback: brute-force Jaccard if TokenIndex unavailable
         if not candidate_donor_ids and donor_token_store:
-            # Fast Jaccard pre-filter: find donors with highest token set overlap
             target_set = set(target_tokens)
-            scored_donors = []
+            scored = []
             for did, d_tokens in donor_token_store.items():
                 donor_set = set(d_tokens)
-                intersection = len(target_set & donor_set)
+                inter = len(target_set & donor_set)
                 union = len(target_set | donor_set)
-                jaccard = intersection / union if union > 0 else 0
-                if jaccard > 0.15:  # At least 15% token set overlap
-                    scored_donors.append((jaccard, did))
-
-            # Take top 20 donors by Jaccard (limits fuzzy search cost)
-            scored_donors.sort(reverse=True)
-            candidate_donor_ids = {did for _, did in scored_donors[:20]}
-
-            if candidate_donor_ids:
-                logger.info(
-                    "multi_donor fuzzy: no exact matches, searching top %d "
-                    "donors by Jaccard (best=%.2f)",
-                    len(candidate_donor_ids),
-                    scored_donors[0][0] if scored_donors else 0,
-                )
+                jacc = inter / union if union > 0 else 0
+                if jacc > 0.15:
+                    scored.append((jacc, did))
+            scored.sort(reverse=True)
+            candidate_donor_ids = {did for _, did in scored[:20]}
 
         donor_chunk_cache: dict[str, tuple[list[list[int]], list[int]]] = {}
         for donor_id in candidate_donor_ids:

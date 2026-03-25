@@ -30,6 +30,7 @@ from semblend_core.alignment import (
     estimate_reuse_ratio,
 )
 from semblend_core.chunk_index import ChunkIndex
+from semblend_core.token_index import TokenIndex
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +94,14 @@ class DonorStore:
         self._id_to_idx: dict[str, int] = {}
         self._next_idx = 0
 
-        # ChunkIndex for O(1) cross-donor chunk lookup
+        # ChunkIndex for O(1) cross-donor chunk lookup (exact hash)
         self._chunk_index = chunk_index or ChunkIndex(
+            max_donors=max_entries,
+            chunk_size=chunk_size,
+        )
+
+        # TokenIndex for scalable fuzzy cross-donor chunk matching
+        self._token_index = TokenIndex(
             max_donors=max_entries,
             chunk_size=chunk_size,
         )
@@ -106,6 +113,11 @@ class DonorStore:
     @property
     def embedding_dim(self) -> int:
         return self._embedding_dim
+
+    @property
+    def token_index(self) -> TokenIndex:
+        """Access the TokenIndex for fuzzy cross-donor chunk lookup."""
+        return self._token_index
 
     @property
     def chunk_index(self) -> ChunkIndex:
@@ -129,8 +141,9 @@ class DonorStore:
             evicted_idx = self._id_to_idx.pop(evicted_id, None)
             if evicted_idx is not None:
                 self._valid_mask[evicted_idx] = False
-            # Remove from ChunkIndex
+            # Remove from indexes
             self._chunk_index.remove_donor(evicted_id)
+            self._token_index.remove_donor(evicted_id)
 
         # Assign storage index (reuse evicted slots or append)
         idx = self._next_idx % self._max_entries
@@ -146,9 +159,10 @@ class DonorStore:
         self._id_to_idx[node.request_id] = idx
         self._entries[node.request_id] = node
 
-        # Index chunks in ChunkIndex for cross-donor lookup
+        # Index chunks in ChunkIndex (exact hash) and TokenIndex (fuzzy)
         if node.token_ids:
             self._chunk_index.add_donor_chunks(node.request_id, node.token_ids)
+            self._token_index.add_donor(node.request_id, node.token_ids)
 
     def find_donor(
         self,
@@ -496,6 +510,7 @@ class DonorStore:
             pq_store=pq_store,
             target_text=target_text,
             embedder=embedder,
+            token_index=self._token_index,
         )
 
         if result is not None and result.reuse_ratio < min_reuse_ratio:
