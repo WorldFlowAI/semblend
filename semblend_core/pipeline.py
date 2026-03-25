@@ -373,6 +373,17 @@ class SemBlendPipeline:
         timings.lookup_ms = (time.monotonic() - t0) * 1000
 
         if match is None:
+            # Stage 2.5: Fuzzy fallback — when embedding similarity fails,
+            # scan donors for high token overlap via fuzzy chunk alignment.
+            # This catches shifted-prefix where instruction differs enough
+            # to drop cosine below 0.60 but article content is 95%+ identical.
+            if self._chunk_fast_path and hasattr(self._donor_store, 'chunk_index'):
+                fuzzy_result = self._try_fuzzy_overlap_fallback(
+                    token_ids, timings, t_start,
+                )
+                if fuzzy_result is not None:
+                    return fuzzy_result
+
             timings.total_ms = (time.monotonic() - t_start) * 1000
             try:
                 from semblend_core.metrics import METRICS
@@ -830,6 +841,187 @@ class SemBlendPipeline:
                 exc_info=True,
             )
             return plan
+
+    # ------------------------------------------------------------------
+    # Fuzzy overlap fallback — scan donors when embedding similarity fails
+    # ------------------------------------------------------------------
+
+    def _try_fuzzy_overlap_fallback(
+        self,
+        token_ids: list[int],
+        timings: PipelineTimings,
+        t_start: float,
+    ) -> PipelineResult | None:
+        """Fallback when embedding cosine fails: try fuzzy chunk alignment
+        directly against top donors by token overlap.
+
+        For shifted-prefix scenarios, the instruction differs enough to drop
+        cosine below threshold, but the article content (95%+ of tokens) is
+        nearly identical. This method:
+        1. Samples a few donors from the store (most recent)
+        2. Runs fuzzy chunk alignment directly
+        3. If any donor produces reuse_ratio >= 0.50, accepts it
+
+        Only runs when SEMBLEND_CHUNK_FAST_PATH=1 and the primary lookup failed.
+        """
+        try:
+            from semblend_core.alignment import compute_fuzzy_chunk_alignment
+
+            t0 = time.monotonic()
+
+            # Get recent donors (up to 10) — most likely to be relevant
+            all_donors = self._donor_store.get_all_donor_tokens()
+            if not all_donors:
+                return None
+
+            # Try most recent donors first (ordered by insertion in Python 3.7+)
+            donor_ids = list(all_donors.keys())[-10:]
+
+            best_result = None
+            best_reuse = 0.0
+            best_donor_id = None
+
+            for donor_id in donor_ids:
+                donor_tokens = all_donors[donor_id]
+                if len(donor_tokens) < self._chunk_size * 2:
+                    continue
+
+                alignment = compute_fuzzy_chunk_alignment(
+                    donor_tokens=donor_tokens,
+                    target_tokens=token_ids,
+                    chunk_size=self._chunk_size,
+                )
+
+                if alignment.reuse_ratio > best_reuse:
+                    best_reuse = alignment.reuse_ratio
+                    best_result = alignment
+                    best_donor_id = donor_id
+
+            fallback_ms = (time.monotonic() - t0) * 1000
+
+            if best_result is None or best_reuse < self._min_reuse_ratio:
+                logger.info(
+                    "fuzzy_overlap_fallback: no donor with reuse >= %.2f "
+                    "(best=%.2f, scanned %d donors, %.1fms)",
+                    self._min_reuse_ratio, best_reuse, len(donor_ids), fallback_ms,
+                )
+                return None
+
+            logger.info(
+                "fuzzy_overlap_fallback: found donor %s with reuse=%.2f "
+                "(scanned %d donors, %.1fms)",
+                best_donor_id, best_reuse, len(donor_ids), fallback_ms,
+            )
+
+            # Build result using the fuzzy alignment
+            from semblend_core.donor_store import DonorMatch
+            donor_node = self._donor_store.get_donor(best_donor_id)
+            if donor_node is None:
+                return None
+
+            match = DonorMatch(
+                donor=donor_node,
+                similarity=best_reuse,  # use reuse as proxy for similarity
+                alignment=best_result,
+            )
+
+            # Continue with the standard pipeline from Stage 4 (bathtub)
+            return self._build_result_from_match(
+                match, token_ids, timings, t_start, fallback_ms,
+            )
+
+        except Exception as e:
+            logger.warning("fuzzy_overlap_fallback failed: %s", e, exc_info=True)
+            return None
+
+    def _build_result_from_match(
+        self,
+        match: object,
+        token_ids: list[int],
+        timings: PipelineTimings,
+        t_start: float,
+        extra_lookup_ms: float = 0.0,
+    ) -> PipelineResult:
+        """Build a PipelineResult from a DonorMatch (shared by main + fallback paths)."""
+        from semblend_core.bathtub import compute_layer_deviations
+
+        timings.lookup_ms += extra_lookup_ms
+
+        alignment = match.alignment
+        fuzzy_chunks = getattr(alignment, "fuzzy_chunks", 0)
+        exact_chunks = getattr(alignment, "exact_chunks", 0)
+
+        # Reject fuzzy-only with very low reuse
+        if fuzzy_chunks > 0 and exact_chunks == 0 and alignment.reuse_ratio < 0.30:
+            timings.total_ms = (time.monotonic() - t_start) * 1000
+            return PipelineResult(
+                found=False, timings=timings,
+                rejection_reason="fuzzy_low_reuse",
+            )
+
+        # Stage 4: Bathtub
+        t0 = time.monotonic()
+        num_layers = self._detect_num_layers()
+        mismatch = 1.0 - alignment.reuse_ratio
+        total_chunks = fuzzy_chunks + exact_chunks
+        fuzzy_fraction = fuzzy_chunks / max(total_chunks, 1) if total_chunks > 0 else 0.0
+        mean_fuzzy_conf = getattr(alignment, "mean_fuzzy_confidence", 1.0)
+
+        layer_devs = compute_layer_deviations(
+            num_layers=num_layers,
+            mismatch_fraction=mismatch,
+            model_name=self._model_name,
+            similarity=match.similarity,
+            fuzzy_fraction=fuzzy_fraction,
+            mean_fuzzy_confidence=mean_fuzzy_conf,
+            recompute_config=self._recompute_config,
+        )
+        timings.bathtub_ms = (time.monotonic() - t0) * 1000
+
+        force_verify = [d.layer_idx for d in layer_devs if d.should_recompute]
+        confidence_tier = "fuzzy_fallback"
+
+        timings.total_ms = (time.monotonic() - t_start) * 1000
+
+        slot_actions = []
+        for sa in alignment.slot_actions:
+            slot_actions.append({
+                "action": sa.action.value,
+                "targetPos": sa.target_pos,
+                "donorPos": sa.donor_pos,
+                "confidence": getattr(sa, "confidence", 1.0),
+            })
+
+        layer_deviations = [
+            {
+                "layerIdx": d.layer_idx,
+                "deviationScore": d.deviation_score,
+                "shouldRecompute": d.should_recompute,
+            }
+            for d in layer_devs
+        ]
+
+        from semblend_core.pipeline import PositionMapping
+        position_map = PositionMapping()
+        for sa in alignment.slot_actions:
+            if sa.action.value == "copy_from_donor" and sa.donor_pos != sa.target_pos:
+                position_map.donor_positions.append(sa.donor_pos)
+                position_map.target_positions.append(sa.target_pos)
+
+        return PipelineResult(
+            found=True,
+            donor_id=match.donor.request_id,
+            similarity=match.similarity,
+            reuse_ratio=alignment.reuse_ratio,
+            donor_tokens=list(match.donor.token_ids),
+            slot_actions=slot_actions,
+            layer_deviations=layer_deviations,
+            position_map=position_map,
+            timings=timings,
+            fuzzy_confidence=mean_fuzzy_conf,
+            force_verify_layers=force_verify,
+            confidence_tier=confidence_tier,
+        )
 
     # ------------------------------------------------------------------
     # Multi-turn fast path + multi-donor
