@@ -764,8 +764,8 @@ class SemBlendPipeline:
 
         if result is None:
             return None
-        if result.donors_per_composite <= 1 and result.reuse_ratio < 0.80:
-            return None  # Single-donor path will handle this
+        if result.reuse_ratio < self._min_reuse_ratio:
+            return None  # Below minimum reuse threshold
 
         timings.lookup_ms = lookup_ms
 

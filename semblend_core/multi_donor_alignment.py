@@ -229,14 +229,44 @@ def compute_multi_donor_alignment(
     fuzzy_assignments: dict[int, ChunkAssignment] = {}
 
     if unmatched_indices:
-        # Collect candidate donors
+        # Collect candidate donors for fuzzy matching
         candidate_donor_ids = set(used_donor_chunks.keys())
+
+        # Include donors from neighbor matches
         for t_idx in unmatched_indices:
             for neighbor in (t_idx - 1, t_idx + 1):
                 if neighbor in assignments or neighbor in semantic_assignments:
                     asgn = assignments.get(neighbor) or semantic_assignments.get(neighbor)
                     if asgn and asgn.donor_id:
                         candidate_donor_ids.add(asgn.donor_id)
+
+        # CRITICAL: when no exact/semantic matches found, search donors
+        # with highest token overlap (fast Jaccard pre-filter).
+        # This enables the multi-donor RAG case where articles appear at
+        # different chunk boundaries across donors.
+        if not candidate_donor_ids and donor_token_store:
+            # Fast Jaccard pre-filter: find donors with highest token set overlap
+            target_set = set(target_tokens)
+            scored_donors = []
+            for did, d_tokens in donor_token_store.items():
+                donor_set = set(d_tokens)
+                intersection = len(target_set & donor_set)
+                union = len(target_set | donor_set)
+                jaccard = intersection / union if union > 0 else 0
+                if jaccard > 0.15:  # At least 15% token set overlap
+                    scored_donors.append((jaccard, did))
+
+            # Take top 20 donors by Jaccard (limits fuzzy search cost)
+            scored_donors.sort(reverse=True)
+            candidate_donor_ids = {did for _, did in scored_donors[:20]}
+
+            if candidate_donor_ids:
+                logger.info(
+                    "multi_donor fuzzy: no exact matches, searching top %d "
+                    "donors by Jaccard (best=%.2f)",
+                    len(candidate_donor_ids),
+                    scored_donors[0][0] if scored_donors else 0,
+                )
 
         donor_chunk_cache: dict[str, tuple[list[list[int]], list[int]]] = {}
         for donor_id in candidate_donor_ids:
