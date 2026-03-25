@@ -1,0 +1,200 @@
+{
+  "scenario": "cross_document",
+  "config": {
+    "endpoint": "http://localhost:8100",
+    "model": "Qwen/Qwen2.5-7B-Instruct-AWQ",
+    "n_pairs": 30,
+    "token_length": 8192
+  },
+  "summary": {
+    "n_total": 26,
+    "hit_rate": 0.0,
+    "mean_speedup": 1.007,
+    "median_speedup": 1.005,
+    "hit_only_speedup": 0
+  },
+  "results": [
+    {
+      "pair_idx": 0,
+      "donor_ttft_ms": 3387.2,
+      "target_ttft_ms": 3480.5,
+      "speedup": 0.97,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 1,
+      "donor_ttft_ms": 3308.5,
+      "target_ttft_ms": 3542.4,
+      "speedup": 0.93,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 2,
+      "donor_ttft_ms": 3581.1,
+      "target_ttft_ms": 3336.5,
+      "speedup": 1.07,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 3,
+      "donor_ttft_ms": 3262.5,
+      "target_ttft_ms": 3310.6,
+      "speedup": 0.99,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 4,
+      "donor_ttft_ms": 3441.0,
+      "target_ttft_ms": 3360.5,
+      "speedup": 1.02,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 5,
+      "donor_ttft_ms": 3503.6,
+      "target_ttft_ms": 3418.0,
+      "speedup": 1.03,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 6,
+      "donor_ttft_ms": 3306.0,
+      "target_ttft_ms": 3180.7,
+      "speedup": 1.04,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 7,
+      "donor_ttft_ms": 3486.7,
+      "target_ttft_ms": 3629.6,
+      "speedup": 0.96,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 8,
+      "donor_ttft_ms": 3252.9,
+      "target_ttft_ms": 3627.7,
+      "speedup": 0.9,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 9,
+      "donor_ttft_ms": 3306.3,
+      "target_ttft_ms": 3606.3,
+      "speedup": 0.92,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 13,
+      "donor_ttft_ms": 3652.7,
+      "target_ttft_ms": 3594.6,
+      "speedup": 1.02,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 14,
+      "donor_ttft_ms": 3355.0,
+      "target_ttft_ms": 3385.0,
+      "speedup": 0.99,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 15,
+      "donor_ttft_ms": 3365.5,
+      "target_ttft_ms": 3443.9,
+      "speedup": 0.98,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 16,
+      "donor_ttft_ms": 3668.4,
+      "target_ttft_ms": 3393.5,
+      "speedup": 1.08,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 18,
+      "donor_ttft_ms": 3336.1,
+      "target_ttft_ms": 3414.7,
+      "speedup": 0.98,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 19,
+      "donor_ttft_ms": 3221.8,
+      "target_ttft_ms": 3366.2,
+      "speedup": 0.96,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 20,
+      "donor_ttft_ms": 3314.8,
+      "target_ttft_ms": 3306.5,
+      "speedup": 1.0,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 21,
+      "donor_ttft_ms": 3501.8,
+      "target_ttft_ms": 3417.3,
+      "speedup": 1.02,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 22,
+      "donor_ttft_ms": 3759.4,
+      "target_ttft_ms": 3601.6,
+      "speedup": 1.04,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 23,
+      "donor_ttft_ms": 3285.4,
+      "target_ttft_ms": 3486.1,
+      "speedup": 0.94,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 24,
+      "donor_ttft_ms": 3734.5,
+      "target_ttft_ms": 3508.2,
+      "speedup": 1.06,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 25,
+      "donor_ttft_ms": 3599.9,
+      "target_ttft_ms": 3250.7,
+      "speedup": 1.11,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 26,
+      "donor_ttft_ms": 3488.7,
+      "target_ttft_ms": 2884.3,
+      "speedup": 1.21,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 27,
+      "donor_ttft_ms": 3247.2,
+      "target_ttft_ms": 3523.9,
+      "speedup": 0.92,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 28,
+      "donor_ttft_ms": 3579.5,
+      "target_ttft_ms": 3534.2,
+      "speedup": 1.01,
+      "is_hit": false
+    },
+    {
+      "pair_idx": 29,
+      "donor_ttft_ms": 3565.6,
+      "target_ttft_ms": 3452.5,
+      "speedup": 1.03,
+      "is_hit": false
+    }
+  ]
+}
