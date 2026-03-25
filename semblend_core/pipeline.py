@@ -326,11 +326,14 @@ class SemBlendPipeline:
 
         # Stage 1.5: Multi-donor path (if enabled)
         if self._multi_donor:
-            multi_result = self._try_multi_donor(
-                token_ids, timings, t_start, prompt_text=prompt_text,
-            )
-            if multi_result is not None:
-                return multi_result
+            try:
+                multi_result = self._try_multi_donor(
+                    token_ids, timings, t_start, prompt_text=prompt_text,
+                )
+                if multi_result is not None:
+                    return multi_result
+            except Exception as e:
+                logger.warning("multi-donor path failed: %s", e, exc_info=True)
 
         # Stage 2: Donor lookup (cosine similarity + alignment)
         t0 = time.monotonic()
