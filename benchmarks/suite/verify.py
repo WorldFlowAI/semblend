@@ -178,7 +178,29 @@ def verify_k8s_pod_code(
     except Exception as e:
         checks["lmcache_post_load_hook"] = False
 
-    # Check 5: Fuzzy matching must be enabled and functional
+    # Check 5: ONNX GPU embedding must be active (not CPU fallback)
+    try:
+        result = subprocess.run(
+            ["kubectl", "exec", "-n", namespace, pod_name, "--",
+             "python3", "-c",
+             "from semblend_core.embedder import OnnxGPUEmbedder; "
+             "e = OnnxGPUEmbedder(); "
+             "print('gpu' if e.available else 'cpu_fallback')"],
+            capture_output=True, text=True, timeout=30,
+        )
+        is_gpu = result.returncode == 0 and "gpu" in result.stdout
+        checks["onnx_gpu_embed"] = is_gpu
+        if not is_gpu:
+            errors.append(
+                "ONNX GPU embedding not active — falling back to CPU. "
+                "For benchmarks, GPU segmented embedding is REQUIRED. "
+                "Check ONNX runtime installation and CUDA availability."
+            )
+    except Exception as e:
+        errors.append(f"ONNX GPU check failed: {e}")
+        checks["onnx_gpu_embed"] = False
+
+    # Check 5b: Fuzzy matching must be enabled and functional
     try:
         result = subprocess.run(
             ["kubectl", "exec", "-n", namespace, pod_name, "--",
