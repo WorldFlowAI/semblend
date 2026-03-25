@@ -787,6 +787,16 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         # Build metadata via LMCache
         meta = self._lmcache.build_connector_meta(scheduler_output)
 
+        # When SEMBLEND_MULTI_DONOR=1, enable content-addressed chunk hashing
+        # on ALL requests so LMCache stores KV with position-independent hashes.
+        # This enables cross-sequence chunk matching for multi-donor KV reuse.
+        if os.environ.get("SEMBLEND_MULTI_DONOR", "0") == "1" and meta is not None:
+            for req_meta in getattr(meta, "requests", []):
+                if hasattr(req_meta, "request_configs"):
+                    if req_meta.request_configs is None:
+                        req_meta.request_configs = {}
+                    req_meta.request_configs["content_addressed"] = True
+
         # After metadata is built, swap token IDs in the ReqMeta entries
         # for donor-matched requests so LMCache retrieves the DONOR's KV.
         # Also skip saving for these requests (donor's tokens shouldn't be
