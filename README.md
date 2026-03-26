@@ -24,14 +24,14 @@ Measured on A10G GPU, Qwen2.5-7B-AWQ, vLLM 0.14.1 + LMCache.
 
 ### TTFT speedup vs cold prefill
 
-| Context | Cold TTFT | Hit TTFT | Speedup | Hit Rate |
-|---------|-----------|----------|---------|----------|
-| 8K | 3,349 ms | 528 ms | **6.4x** | 80% |
-| 12K | 5,051 ms | 592 ms | **8.5x** | 100% |
-| 16K | 6,500 ms | 730 ms | **8.9x** | 100% |
-| 24K | 10,857 ms | 802 ms | **13.5x** | 100% |
+| Context | n | Cold p50 | Hit p50 | Speedup | 95% CI | Hit Rate |
+|---------|---|----------|---------|---------|--------|----------|
+| 8K | 30 | 3,096 ms | 534 ms | **5.5x** | [5.2, 5.8] | 90% |
+| 12K | 28 | 4,894 ms | 623 ms | **7.9x** | [7.8, 7.9] | 89% |
+| 16K | 20 | 6,646 ms | 763 ms | **8.7x** | [8.6, 8.8] | 90% |
+| 24K | 14 | 10,616 ms | 827 ms | **13.0x** | [12.8, 13.2] | 100% |
 
-Hit TTFT stays <1s regardless of context length — bounded by KV retrieval from CPU offload, not prefill. Speedup scales with context because cold TTFT grows linearly while warm TTFT is roughly constant. Miss overhead is 5–40ms (negligible).
+Hit TTFT stays <1s regardless of context length — bounded by KV retrieval from CPU offload, not prefill. Speedup scales with context because cold TTFT grows linearly (~0.46ms/token) while warm TTFT is sublinear. ~10% miss rate at 8K–16K is from instruction variants crossing the cosine similarity threshold; 24K achieves 100% because the instruction is <0.1% of total tokens.
 
 ### Hit rates on real workloads
 
@@ -40,8 +40,8 @@ Hit TTFT stays <1s regardless of context length — bounded by KV retrieval from
 | WildChat-1M conversations (≥4K) | **82.7%** | 1.69x |
 | Summarization (CNN/DM, SAMSum) | 50–88% | 2.3–2.4x |
 | Multi-turn dialogue (turn 2+) | 99.5% | 5.1x |
-| Cross-instruction RAG (8K) | **80–100%** | 6.4x |
-| Cross-instruction RAG (16K) | **100%** | **8.9x** |
+| Cross-instruction RAG (8K) | **90%** | 5.5x |
+| Cross-instruction RAG (16K) | **90%** | **8.7x** |
 | Code generation (dissimilar) | 0% | 0.96x |
 
 Full-document segmented GPU embedding (v0.2.0) achieves 100% coverage of the prompt regardless of length, enabling 82.7% hit rate on real WildChat conversations (up from 29% with sparse sampling).

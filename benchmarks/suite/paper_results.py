@@ -64,15 +64,20 @@ TABLE_3 = TableReference(
     table_number=3,
     title="SemBlend KV Donor Injection — TTFT Speedup",
     entries=[
-        # Qwen2.5-7B-AWQ — validated 2026-03-26, A10G g5.4xlarge, fresh pod per length
-        TTFTEntry(8192, 3349, 528, 6.35, 0.80, model="qwen"),
-        TTFTEntry(12288, 5051, 592, 8.54, 1.00, model="qwen"),
-        TTFTEntry(16384, 6500, 730, 8.91, 1.00, model="qwen"),
-        TTFTEntry(24576, 10857, 802, 13.53, 1.00, model="qwen"),
+        # Qwen2.5-7B-AWQ — validated 2026-03-26, A10G g5.4xlarge, CPU offload 20GB
+        # Fresh pod per length, 2-request warmup, bootstrap 95% CIs
+        TTFTEntry(8192, 3096, 534, 5.53, 0.90, model="qwen"),   # n=30, CI [5.24, 5.75]
+        TTFTEntry(12288, 4894, 623, 7.88, 0.89, model="qwen"),  # n=28, CI [7.83, 7.94]
+        TTFTEntry(16384, 6646, 763, 8.68, 0.90, model="qwen"),  # n=20, CI [8.56, 8.79]
+        TTFTEntry(24576, 10616, 827, 12.99, 1.00, model="qwen"),  # n=14, CI [12.76, 13.23]
         # LLaMA-3.1-8B-AWQ (previous validation, pending re-run)
         TTFTEntry(8192, 3416, 627, 5.45, 1.00, model="llama"),
     ],
-    notes="Qwen validated 2026-03-26 on A10G with CPU offload 15GB. n=5 per length, fresh pod per length.",
+    notes=(
+        "Qwen validated 2026-03-26 on A10G g5.4xlarge (64GB RAM), CPU offload 20GB. "
+        "Fresh pod per length with 2-request warmup. Speedup is hit-conditional (p50). "
+        "~10% miss rate at 8K-16K from instruction variants below cosine threshold."
+    ),
 )
 
 
