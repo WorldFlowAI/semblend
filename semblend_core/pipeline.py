@@ -875,21 +875,32 @@ class SemBlendPipeline:
                 return None
 
             # Try most recent donors first (ordered by insertion in Python 3.7+)
-            donor_ids = list(all_donors.keys())[-10:]
+            donor_ids = list(all_donors.keys())[-20:]
 
             best_result = None
             best_reuse = 0.0
             best_donor_id = None
+
+            # Use relaxed overlap threshold for fallback (primary uses 0.90)
+            fallback_overlap = float(
+                os.environ.get("SEMBLEND_FUZZY_FALLBACK_OVERLAP", "0.80")
+            )
 
             for donor_id in donor_ids:
                 donor_tokens = all_donors[donor_id]
                 if len(donor_tokens) < self._chunk_size * 2:
                     continue
 
+                # Quick length check: skip donors with very different lengths
+                len_ratio = len(donor_tokens) / max(len(token_ids), 1)
+                if len_ratio < 0.5 or len_ratio > 2.0:
+                    continue
+
                 alignment = compute_fuzzy_chunk_alignment(
                     donor_tokens=donor_tokens,
                     target_tokens=token_ids,
                     chunk_size=self._chunk_size,
+                    min_overlap=fallback_overlap,
                 )
 
                 if alignment.reuse_ratio > best_reuse:
