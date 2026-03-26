@@ -3,6 +3,7 @@
 Captures semblend version, git SHA, engine versions, hardware info,
 and timestamps so every result JSON is fully traceable.
 """
+
 from __future__ import annotations
 
 import os
@@ -70,6 +71,7 @@ def _get_semblend_version() -> str:
     """Get the installed semblend package version."""
     try:
         from importlib.metadata import version
+
         return version("semblend")
     except Exception:
         pass
@@ -146,6 +148,7 @@ def _detect_engine_versions() -> EngineVersions:
     ]:
         try:
             from importlib.metadata import version
+
             versions[key] = version(pkg)
         except Exception:
             versions[key] = ""

@@ -14,6 +14,7 @@ with TRT-LLM-specific stride computation.
 
 Requires: tensorrt_llm, torch (install with: pip install semblend[trtllm])
 """
+
 from __future__ import annotations
 
 import logging
@@ -209,10 +210,12 @@ class TRTLLMPyTorchBackend:
 
         # Convert PositionMapping to list of tuples if needed
         if hasattr(position_deltas, "donor_positions"):
-            pairs = list(zip(
-                position_deltas.donor_positions,
-                position_deltas.target_positions,
-            ))
+            pairs = list(
+                zip(
+                    position_deltas.donor_positions,
+                    position_deltas.target_positions,
+                )
+            )
         else:
             pairs = list(position_deltas)
 
@@ -348,16 +351,10 @@ class TRTLLMPyTorchBackend:
 
         from semblend_core.pipeline import SemBlendPipeline
 
-        min_similarity = float(
-            os.environ.get("SEMBLEND_MIN_SIMILARITY", "0.60")
-        )
-        max_donors = int(
-            os.environ.get("SEMBLEND_MAX_DONORS", "1000")
-        )
+        min_similarity = float(os.environ.get("SEMBLEND_MIN_SIMILARITY", "0.60"))
+        max_donors = int(os.environ.get("SEMBLEND_MAX_DONORS", "1000"))
         embedder_type = os.environ.get("SEMBLEND_EMBEDDER", "minilm")
-        min_reuse = float(
-            os.environ.get("SEMBLEND_MIN_REUSE_RATIO", "0.50")
-        )
+        min_reuse = float(os.environ.get("SEMBLEND_MIN_REUSE_RATIO", "0.50"))
 
         self._pipeline = SemBlendPipeline(
             max_donors=max_donors,
@@ -370,8 +367,7 @@ class TRTLLMPyTorchBackend:
         )
 
         logger.info(
-            "SemBlend pipeline initialized for TRT-LLM: "
-            "min_sim=%.2f, max_donors=%d, chunk_size=%d",
+            "SemBlend pipeline initialized for TRT-LLM: min_sim=%.2f, max_donors=%d, chunk_size=%d",
             min_similarity,
             max_donors,
             self._tokens_per_block,
@@ -396,9 +392,8 @@ class TRTLLMPyTorchBackend:
 
         try:
             from transformers import AutoTokenizer
-            self._tokenizer = AutoTokenizer.from_pretrained(
-                model_name, trust_remote_code=True
-            )
+
+            self._tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
             logger.info("SemBlend tokenizer loaded: %s", model_name)
         except Exception as e:
             logger.error("Failed to load tokenizer for %s: %s", model_name, e)
@@ -422,9 +417,7 @@ class TRTLLMPyTorchBackend:
             tail = max_decode - head - mid_w
             mid_start = (n - mid_w) // 2
             sampled = (
-                token_ids[:head]
-                + token_ids[mid_start:mid_start + mid_w]
-                + token_ids[n - tail:]
+                token_ids[:head] + token_ids[mid_start : mid_start + mid_w] + token_ids[n - tail :]
             )
 
         return tokenizer.decode(sampled, skip_special_tokens=True)

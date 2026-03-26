@@ -1,7 +1,7 @@
 """Tests for alignment.py and bathtub.py."""
+
 from __future__ import annotations
 
-import math
 import time
 
 
@@ -130,6 +130,8 @@ def test_context_gate_rejects_isolated_match():
     """A single isolated chunk match should be rejected by the context gate."""
     from synapse_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
+    )
+    from synapse_kv_connector.alignment import (
         SlotActionType,
         compute_chunk_alignment,
     )
@@ -157,7 +159,8 @@ def test_context_gate_accepts_contiguous_matches():
     """Two or more contiguous matching chunks should pass the context gate."""
     from synapse_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
-        SlotActionType,
+    )
+    from synapse_kv_connector.alignment import (
         compute_chunk_alignment,
     )
 
@@ -182,6 +185,8 @@ def test_context_gate_disabled_accepts_isolated():
     """With context gate disabled, isolated matches should be accepted."""
     from synapse_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
+    )
+    from synapse_kv_connector.alignment import (
         compute_chunk_alignment,
     )
 
@@ -205,6 +210,8 @@ def test_context_gate_full_match_accepted():
     """All chunks matching should all pass the context gate."""
     from synapse_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
+    )
+    from synapse_kv_connector.alignment import (
         compute_chunk_alignment,
     )
 
@@ -217,6 +224,8 @@ def test_context_gate_reorder_with_contiguous():
     """REORDER scenario: swapped paragraph blocks should pass gate if contiguous."""
     from synapse_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
+    )
+    from synapse_kv_connector.alignment import (
         compute_chunk_alignment,
     )
 
@@ -238,6 +247,8 @@ def test_context_gate_scattered_isolated_all_rejected():
     """Multiple isolated matches (no two adjacent) should all be rejected."""
     from synapse_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
+    )
+    from synapse_kv_connector.alignment import (
         compute_chunk_alignment,
     )
 
@@ -289,7 +300,7 @@ def test_adaptive_threshold_monotonic():
         assert thresholds[i] <= thresholds[i + 1], (
             f"Threshold should increase with similarity: "
             f"sim={sims[i]}→{thresholds[i]:.3f}, "
-            f"sim={sims[i+1]}→{thresholds[i+1]:.3f}"
+            f"sim={sims[i + 1]}→{thresholds[i + 1]:.3f}"
         )
 
 
@@ -407,6 +418,8 @@ def test_fuzzy_exact_chunks_still_work():
     """Exact chunk matches should still work with fuzzy alignment enabled."""
     from synapse_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
+    )
+    from synapse_kv_connector.alignment import (
         SlotActionType,
         compute_fuzzy_chunk_alignment,
     )
@@ -424,6 +437,8 @@ def test_fuzzy_shifted_prefix_recovers_reuse():
     """Shifted prefix (Δ=1 token) should produce fuzzy matches for document chunks."""
     from synapse_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
+    )
+    from synapse_kv_connector.alignment import (
         SlotActionType,
         compute_chunk_alignment,
         compute_fuzzy_chunk_alignment,
@@ -436,7 +451,7 @@ def test_fuzzy_shifted_prefix_recovers_reuse():
     document = list(range(1, 3 * CS - 4))  # shared document content
 
     donor = instruction_a + document
-    target = instruction_b + document[:len(document) - 1]
+    target = instruction_b + document[: len(document) - 1]
 
     # Pad to same length
     while len(donor) < 3 * CS:
@@ -452,7 +467,9 @@ def test_fuzzy_shifted_prefix_recovers_reuse():
 
     # Fuzzy chunk alignment: should recover most tokens
     fuzzy_result = compute_fuzzy_chunk_alignment(
-        donor, target, min_overlap=0.90,
+        donor,
+        target,
+        min_overlap=0.90,
     )
     assert fuzzy_result.fuzzy_chunks > 0, "Should have fuzzy-matched chunks"
     assert fuzzy_result.reuse_ratio > 0.90, (
@@ -461,19 +478,18 @@ def test_fuzzy_shifted_prefix_recovers_reuse():
 
     # Verify that fuzzy matches have donor_pos != target_pos (Δ ≠ 0)
     copy_actions = [
-        sa for sa in fuzzy_result.slot_actions
-        if sa.action == SlotActionType.COPY_FROM_DONOR
+        sa for sa in fuzzy_result.slot_actions if sa.action == SlotActionType.COPY_FROM_DONOR
     ]
     delta_nonzero = [sa for sa in copy_actions if sa.donor_pos != sa.target_pos]
-    assert len(delta_nonzero) > 0, (
-        "Fuzzy matches should produce Δ≠0 (shifted positions)"
-    )
+    assert len(delta_nonzero) > 0, "Fuzzy matches should produce Δ≠0 (shifted positions)"
 
 
 def test_fuzzy_high_overlap_threshold():
     """Chunks with overlap below threshold should not match."""
     from synapse_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
+    )
+    from synapse_kv_connector.alignment import (
         compute_fuzzy_chunk_alignment,
     )
 
@@ -483,7 +499,10 @@ def test_fuzzy_high_overlap_threshold():
     target = list(range(1, CS // 2 + 1)) + list(range(10001, 10001 + CS // 2))
 
     result = compute_fuzzy_chunk_alignment(
-        donor, target, min_overlap=0.90, context_gate=False,
+        donor,
+        target,
+        min_overlap=0.90,
+        context_gate=False,
     )
     assert result.fuzzy_chunks == 0, (
         f"50% overlap should not match at 0.90 threshold, got {result.fuzzy_chunks} fuzzy"
@@ -494,6 +513,8 @@ def test_fuzzy_low_overlap_threshold():
     """Chunks with overlap above a lower threshold should match."""
     from synapse_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
+    )
+    from synapse_kv_connector.alignment import (
         compute_fuzzy_chunk_alignment,
     )
 
@@ -513,17 +534,22 @@ def test_fuzzy_low_overlap_threshold():
     # Use a permissive fuzzy config to test overlap-only matching
     # (bag-cosine gate would reject 90% overlap with sequential tokens)
     from synapse_kv_connector.alignment import FuzzyMatchConfig
+
     permissive_config = FuzzyMatchConfig(
-        bag_cosine_min=0.50, confidence_low=0.10,
+        bag_cosine_min=0.50,
+        confidence_low=0.10,
     )
     result = compute_fuzzy_chunk_alignment(
-        donor, target, min_overlap=0.85, context_gate=False,
+        donor,
+        target,
+        min_overlap=0.85,
+        context_gate=False,
         fuzzy_config=permissive_config,
     )
     # chunk_b matches exactly, chunk_a' should fuzzy-match chunk_a
     assert result.exact_chunks >= 1, "chunk_b should match exactly"
     assert result.fuzzy_chunks >= 1, (
-        f"chunk_a' with 90% overlap should fuzzy-match at 0.85 threshold"
+        "chunk_a' with 90% overlap should fuzzy-match at 0.85 threshold"
     )
     assert result.reuse_ratio > 0.90
 
@@ -532,6 +558,8 @@ def test_fuzzy_context_gate_integration():
     """Fuzzy matches should respect the context gate (adjacent match required)."""
     from synapse_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
+    )
+    from synapse_kv_connector.alignment import (
         compute_fuzzy_chunk_alignment,
     )
 
@@ -552,7 +580,10 @@ def test_fuzzy_context_gate_integration():
     target = chunk_a_prime + chunk_x + chunk_c_prime
 
     result = compute_fuzzy_chunk_alignment(
-        donor, target, min_overlap=0.90, context_gate=True,
+        donor,
+        target,
+        min_overlap=0.90,
+        context_gate=True,
     )
     # A' and C' have no adjacent match (X doesn't match B) → gate rejects
     assert result.reuse_ratio == 0.0, (
@@ -565,6 +596,8 @@ def test_fuzzy_compute_alignment_integration():
     """compute_alignment with fuzzy=True should use fuzzy chunk matching."""
     from synapse_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
+    )
+    from synapse_kv_connector.alignment import (
         compute_alignment,
     )
 
@@ -574,7 +607,7 @@ def test_fuzzy_compute_alignment_integration():
     document = list(range(1, 3 * CS - 4))
 
     donor = instruction_a + document
-    target = instruction_b + document[:len(document) - 1]
+    target = instruction_b + document[: len(document) - 1]
     while len(donor) < 3 * CS:
         donor.append(0)
     while len(target) < 3 * CS:
@@ -597,6 +630,8 @@ def test_fuzzy_delta_values_correct():
     """Verify that fuzzy match Δ values are correct for a constant shift."""
     from synapse_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
+    )
+    from synapse_kv_connector.alignment import (
         SlotActionType,
         compute_fuzzy_chunk_alignment,
     )
@@ -618,14 +653,17 @@ def test_fuzzy_delta_values_correct():
         target.append(0)
 
     result = compute_fuzzy_chunk_alignment(
-        donor, target, min_overlap=0.90, context_gate=False,
+        donor,
+        target,
+        min_overlap=0.90,
+        context_gate=False,
     )
 
     # Check that document token deltas are consistent
     copy_actions = [
-        sa for sa in result.slot_actions
-        if sa.action == SlotActionType.COPY_FROM_DONOR
-        and sa.donor_pos is not None
+        sa
+        for sa in result.slot_actions
+        if sa.action == SlotActionType.COPY_FROM_DONOR and sa.donor_pos is not None
     ]
     # For matched document tokens, Δ should be ≈ shift (±1 depending on
     # which chunk boundary they fall in)
@@ -633,6 +671,7 @@ def test_fuzzy_delta_values_correct():
     if deltas:
         # Most deltas should be equal to the shift
         from collections import Counter
+
         delta_counts = Counter(deltas)
         most_common_delta = delta_counts.most_common(1)[0][0]
         assert most_common_delta == shift, (

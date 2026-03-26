@@ -3,6 +3,7 @@
 All bathtub curve logic lives in the shared semblend_core package.
 This module re-exports everything for existing import paths.
 """
+
 from semblend_core.bathtub import (  # noqa: F401
     PRESETS,
     BathtubPreset,

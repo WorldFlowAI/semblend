@@ -4,6 +4,7 @@ Note: These tests verify the import paths only. They do NOT instantiate
 the connector (which requires vLLM + LMCache + CUDA). The actual E2E
 connector tests run on GPU infrastructure.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -59,7 +60,9 @@ def mock_vllm_imports():
 
     # Clear cached imports
     for mod_name in list(sys.modules.keys()):
-        if mod_name.startswith("synapse_kv_connector") or mod_name.startswith("semblend.integration.vllm"):
+        if mod_name.startswith("synapse_kv_connector") or mod_name.startswith(
+            "semblend.integration.vllm"
+        ):
             if mod_name in sys.modules:
                 del sys.modules[mod_name]
 
@@ -82,9 +85,11 @@ class TestVllmImportPaths:
     def test_vllm_integration_init(self):
         """The semblend.integration.vllm package is importable."""
         import semblend.integration.vllm
+
         assert semblend.integration.vllm is not None
 
     def test_integration_init(self):
         """The semblend.integration package is importable."""
         import semblend.integration
+
         assert semblend.integration is not None

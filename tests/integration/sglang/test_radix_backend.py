@@ -1,8 +1,8 @@
 """Tests for SemBlend RadixCache backend."""
+
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 
 class TestDonorStore:
@@ -10,10 +10,12 @@ class TestDonorStore:
 
     def test_import(self):
         from semblend.integration.sglang.radix_backend import _SemBlendDonorStore
+
         assert _SemBlendDonorStore is not None
 
     def test_empty_store(self):
         from semblend.integration.sglang.radix_backend import _SemBlendDonorStore
+
         store = _SemBlendDonorStore(max_entries=10, min_similarity=0.5)
         assert store.size == 0
         query = np.random.randn(384).astype(np.float32)
@@ -21,6 +23,7 @@ class TestDonorStore:
 
     def test_add_and_find(self):
         from semblend.integration.sglang.radix_backend import _SemBlendDonorStore
+
         store = _SemBlendDonorStore(max_entries=10, min_similarity=0.5)
 
         emb = np.random.randn(384).astype(np.float32)
@@ -36,6 +39,7 @@ class TestDonorStore:
 
     def test_exclude_self(self):
         from semblend.integration.sglang.radix_backend import _SemBlendDonorStore
+
         store = _SemBlendDonorStore(max_entries=10, min_similarity=0.5)
 
         emb = np.random.randn(384).astype(np.float32)
@@ -49,6 +53,7 @@ class TestDonorStore:
 
     def test_lru_eviction(self):
         from semblend.integration.sglang.radix_backend import _SemBlendDonorStore
+
         store = _SemBlendDonorStore(max_entries=3, min_similarity=0.5)
 
         for i in range(5):
@@ -60,6 +65,7 @@ class TestDonorStore:
 
     def test_similarity_threshold(self):
         from semblend.integration.sglang.radix_backend import _SemBlendDonorStore
+
         store = _SemBlendDonorStore(max_entries=10, min_similarity=0.99)
 
         emb = np.random.randn(384).astype(np.float32)
@@ -73,6 +79,7 @@ class TestDonorStore:
 
     def test_best_match_returned(self):
         from semblend.integration.sglang.radix_backend import _SemBlendDonorStore
+
         store = _SemBlendDonorStore(max_entries=10, min_similarity=0.0)
 
         base = np.random.randn(384).astype(np.float32)
@@ -98,4 +105,5 @@ class TestCreateSemBlendRadixCache:
 
     def test_import(self):
         from semblend.integration.sglang.radix_backend import create_semblend_radix_cache
+
         assert create_semblend_radix_cache is not None

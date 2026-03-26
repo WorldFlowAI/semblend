@@ -38,9 +38,7 @@ try:
         return _blake3.blake3(data).hexdigest()
 
 except ImportError:
-    logger.debug(
-        "blake3 package not available, falling back to hashlib.blake2b"
-    )
+    logger.debug("blake3 package not available, falling back to hashlib.blake2b")
 
     def _blake3_hash(data: bytes) -> str:
         return hashlib.blake2b(data, digest_size=32).hexdigest()
@@ -220,9 +218,7 @@ class SynapseSegmentClient:
             ValueError: On invalid input.
         """
         if kv_data.dtype != np.float16:
-            raise ValueError(
-                f"kv_data must be float16, got {kv_data.dtype}"
-            )
+            raise ValueError(f"kv_data must be float16, got {kv_data.dtype}")
 
         kv_b64 = base64.standard_b64encode(kv_data.tobytes()).decode("ascii")
 
@@ -246,9 +242,7 @@ class SynapseSegmentClient:
         resp.raise_for_status()
         return resp.json()
 
-    def load_segment_kv(
-        self, segment_hash: str
-    ) -> LoadSegmentResult | None:
+    def load_segment_kv(self, segment_hash: str) -> LoadSegmentResult | None:
         """Load a segment's KV state by its content hash.
 
         Args:
@@ -514,9 +508,7 @@ class SynapseSegmentClient:
             viable=plan_data.get("viable", True),
         )
 
-    def _parse_transfer_plan_response(
-        self, data: dict[str, Any]
-    ) -> KvTransferPlan:
+    def _parse_transfer_plan_response(self, data: dict[str, Any]) -> KvTransferPlan:
         """Parse a TransferPlanResponse from the gateway."""
         plan = self._parse_plan_from_data(data["plan"])
         # Override viable from the top-level response

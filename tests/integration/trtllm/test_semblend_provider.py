@@ -3,6 +3,7 @@
 Tests the concrete SemanticCacheLookupProvider and PostPrefixLoadHook
 implementations without requiring TRT-LLM or GPU.
 """
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -13,15 +14,18 @@ class TestSemBlendProviderImport:
 
     def test_import(self):
         from semblend.integration.trtllm.semblend_provider import SemBlendProvider
+
         assert SemBlendProvider is not None
 
     def test_init_defaults(self):
         from semblend.integration.trtllm.semblend_provider import SemBlendProvider
+
         provider = SemBlendProvider()
         assert provider is not None
 
     def test_init_custom(self):
         from semblend.integration.trtllm.semblend_provider import SemBlendProvider
+
         provider = SemBlendProvider(
             model_name="test-model",
             min_similarity=0.70,
@@ -38,6 +42,7 @@ class TestSemBlendProviderImport:
         from semblend.integration.trtllm.upstream_interface import (
             SemanticCacheLookupProvider,
         )
+
         provider = SemBlendProvider()
         assert isinstance(provider, SemanticCacheLookupProvider)
 
@@ -47,6 +52,7 @@ class TestSemBlendProviderSearch:
 
     def test_miss_disabled(self):
         from semblend.integration.trtllm.semblend_provider import SemBlendProvider
+
         provider = SemBlendProvider()
         with patch.dict("os.environ", {"SEMBLEND_ENABLED": "0"}):
             result = provider.find_semantic_match([1, 2, 3], "test")
@@ -55,12 +61,14 @@ class TestSemBlendProviderSearch:
 
     def test_miss_short_tokens(self):
         from semblend.integration.trtllm.semblend_provider import SemBlendProvider
+
         provider = SemBlendProvider()
         result = provider.find_semantic_match(list(range(50)), "short")
         assert result is None
 
     def test_miss_empty_store(self):
         from semblend.integration.trtllm.semblend_provider import SemBlendProvider
+
         provider = SemBlendProvider(model_name="test")
         # No donors registered, so search will miss
         result = provider.find_semantic_match(list(range(200)), "a long prompt text " * 20)
@@ -73,12 +81,14 @@ class TestSemBlendProviderRegistration:
 
     def test_register_skips_short(self):
         from semblend.integration.trtllm.semblend_provider import SemBlendProvider
+
         provider = SemBlendProvider()
         provider.register_completed("req-1", list(range(50)), "short")
         assert provider.get_stats()["registrations"] == 0
 
     def test_on_eviction(self):
         from semblend.integration.trtllm.semblend_provider import SemBlendProvider
+
         provider = SemBlendProvider()
         provider.on_eviction("req-1")
         assert provider.get_stats()["evictions"] == 1
@@ -91,6 +101,7 @@ class TestSemBlendPostLoadHook:
         from semblend.integration.trtllm.semblend_provider import (
             SemBlendPostLoadHook,
         )
+
         assert SemBlendPostLoadHook is not None
 
     def test_implements_abc(self):
@@ -100,6 +111,7 @@ class TestSemBlendPostLoadHook:
         from semblend.integration.trtllm.upstream_interface import (
             PostPrefixLoadHook,
         )
+
         hook = SemBlendPostLoadHook()
         assert isinstance(hook, PostPrefixLoadHook)
 
@@ -107,6 +119,7 @@ class TestSemBlendPostLoadHook:
         from semblend.integration.trtllm.semblend_provider import (
             SemBlendPostLoadHook,
         )
+
         hook = SemBlendPostLoadHook()
         hook.on_prefix_loaded(
             kv_buffers=[],
@@ -120,6 +133,7 @@ class TestSemBlendPostLoadHook:
         from semblend.integration.trtllm.semblend_provider import (
             SemBlendPostLoadHook,
         )
+
         hook = SemBlendPostLoadHook()
         # All positions match (no delta needed)
         hook.on_prefix_loaded(

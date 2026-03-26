@@ -29,6 +29,7 @@ Environment variables (SemBlend-specific):
     SEMBLEND_MIN_REUSE_RATIO=0.50   Minimum alignment reuse ratio
     SEMBLEND_TRTLLM_APPROACH=auto   Hook approach (auto, token_sub, radix_patch)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -115,12 +116,8 @@ def _setup_env(args: argparse.Namespace) -> None:
     if args.model:
         os.environ.setdefault("SEMBLEND_MODEL_NAME", args.model)
 
-    os.environ.setdefault(
-        "SEMBLEND_MIN_SIMILARITY", str(args.semblend_min_similarity)
-    )
-    os.environ.setdefault(
-        "SEMBLEND_TRTLLM_APPROACH", args.semblend_approach
-    )
+    os.environ.setdefault("SEMBLEND_MIN_SIMILARITY", str(args.semblend_min_similarity))
+    os.environ.setdefault("SEMBLEND_TRTLLM_APPROACH", args.semblend_approach)
 
 
 def main() -> None:

@@ -19,6 +19,7 @@ Usage (after upstream PR is merged):
     )
     llm = LLM(model=model, kv_cache_config=config)
 """
+
 from __future__ import annotations
 
 import logging
@@ -81,8 +82,7 @@ class SemBlendProvider(SemanticCacheLookupProvider):
         }
 
         logger.info(
-            "SemBlendProvider initialized: model=%s, min_sim=%.2f, "
-            "chunk_size=%d, max_donors=%d",
+            "SemBlendProvider initialized: model=%s, min_sim=%.2f, chunk_size=%d, max_donors=%d",
             self._model_name,
             self._min_similarity,
             self._chunk_size,
@@ -138,10 +138,12 @@ class SemBlendProvider(SemanticCacheLookupProvider):
         # Build position mapping from slot actions
         position_mapping = []
         if result.position_map and result.position_map.num_pairs > 0:
-            position_mapping = list(zip(
-                result.position_map.donor_positions,
-                result.position_map.target_positions,
-            ))
+            position_mapping = list(
+                zip(
+                    result.position_map.donor_positions,
+                    result.position_map.target_positions,
+                )
+            )
 
         logger.info(
             "Semantic hit: donor=%s sim=%.3f reuse=%.2f pairs=%d (%.1fms)",
@@ -238,6 +240,7 @@ class SemBlendProvider(SemanticCacheLookupProvider):
 
         try:
             from transformers import AutoTokenizer
+
             self._tokenizer = AutoTokenizer.from_pretrained(
                 self._model_name, trust_remote_code=True
             )
@@ -256,9 +259,7 @@ class SemBlendProvider(SemanticCacheLookupProvider):
     def _update_avg_ms(self, elapsed_ms: float) -> None:
         n = self._stats["hits"] + self._stats["misses"]
         if n > 0:
-            self._stats["avg_query_ms"] = (
-                self._stats["avg_query_ms"] * (n - 1) + elapsed_ms
-            ) / n
+            self._stats["avg_query_ms"] = (self._stats["avg_query_ms"] * (n - 1) + elapsed_ms) / n
 
 
 class SemBlendPostLoadHook(PostPrefixLoadHook):

@@ -11,10 +11,10 @@ Tests the SemBlend pipeline with TRT-LLM's Python API to validate:
 Usage (inside the pod):
     python3 /scripts/test_trtllm_integration.py
 """
+
 from __future__ import annotations
 
 import json
-import statistics
 import sys
 import time
 
@@ -23,6 +23,7 @@ def test_kv_cache_adapter():
     """Phase 2.2: Validate stride computation with real TRT-LLM tensors."""
     print("=== Test: KV Cache Adapter ===")
     import torch
+
     from semblend.integration.trtllm.kv_cache_adapter import (
         detect_trtllm_layout,
         trtllm_kv_strides,
@@ -54,8 +55,10 @@ def test_kv_cache_adapter():
     assert val == 0.0, f"Expected 0.0 at offset {offset}, got {val}"
 
     print(f"  Layout: {layout}")
-    print(f"  Strides: block={strides.kv_stride_block}, kv={strides.kv_stride_kv}, "
-          f"pos={strides.kv_stride_pos}, head={strides.kv_stride_head}")
+    print(
+        f"  Strides: block={strides.kv_stride_block}, kv={strides.kv_stride_kv}, "
+        f"pos={strides.kv_stride_pos}, head={strides.kv_stride_head}"
+    )
     print("  PASSED")
     return True
 
@@ -134,21 +137,21 @@ def test_trtllm_model_access():
     # Look for engine/KV manager
     engine = None
     kv_mgr = None
-    for attr in ("_engine", "engine", "_model_engine", "model_engine",
-                 "_executor", "executor"):
+    for attr in ("_engine", "engine", "_model_engine", "model_engine", "_executor", "executor"):
         candidate = getattr(llm, attr, None)
         if candidate is not None:
             engine = candidate
             print(f"  Found engine at llm.{attr}: {type(candidate).__name__}")
             print(f"    Engine attrs: {[a for a in dir(candidate) if not a.startswith('_')][:20]}")
 
-            for mgr_attr in ("kv_cache_manager", "_kv_cache_manager",
-                             "kv_mgr", "_kv_mgr"):
+            for mgr_attr in ("kv_cache_manager", "_kv_cache_manager", "kv_mgr", "_kv_mgr"):
                 kv_candidate = getattr(candidate, mgr_attr, None)
                 if kv_candidate is not None:
                     kv_mgr = kv_candidate
                     print(f"    Found KV manager at .{mgr_attr}: {type(kv_candidate).__name__}")
-                    print(f"      KV manager attrs: {[a for a in dir(kv_candidate) if not a.startswith('_')][:20]}")
+                    print(
+                        f"      KV manager attrs: {[a for a in dir(kv_candidate) if not a.startswith('_')][:20]}"
+                    )
                     break
             break
 
@@ -181,7 +184,7 @@ def test_trtllm_model_access():
     with open("/results/trtllm_internals.json", "w") as f:
         json.dump(results, f, indent=2)
 
-    print(f"  Results saved to /results/trtllm_internals.json")
+    print("  Results saved to /results/trtllm_internals.json")
     print("  PASSED")
     return True
 

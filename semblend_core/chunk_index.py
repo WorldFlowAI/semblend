@@ -10,6 +10,7 @@ donors contain a given chunk. This enables:
 Memory: 100K donors × 30 chunks = 3M entries ≈ 150MB
 Thread-safe with RW lock for concurrent register/find.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ChunkLocation:
     """Where a chunk lives in the donor store."""
+
     donor_id: str
     chunk_idx: int
     pos: int  # Token position in the donor sequence (chunk_idx * chunk_size)
@@ -103,7 +105,7 @@ class ChunkIndex:
         # Phase 1: hash outside the lock (CPU-bound, no shared state)
         chunk_data: list[tuple[str, int]] = []  # (hash, chunk_start)
         for chunk_start in range(0, len(token_ids), self._chunk_size):
-            chunk = token_ids[chunk_start:chunk_start + self._chunk_size]
+            chunk = token_ids[chunk_start : chunk_start + self._chunk_size]
             if len(chunk) == self._chunk_size:
                 chunk_data.append((_chunk_hash(chunk), chunk_start))
 
@@ -151,7 +153,8 @@ class ChunkIndex:
         if chunks_indexed > 0:
             logger.debug(
                 "ChunkIndex: indexed %d chunks for donor %s",
-                chunks_indexed, donor_id,
+                chunks_indexed,
+                donor_id,
             )
 
         return chunks_indexed
@@ -171,9 +174,7 @@ class ChunkIndex:
             for h in hashes:
                 locs = self._index.get(h)
                 if locs is not None:
-                    self._index[h] = [
-                        loc for loc in locs if loc.donor_id != interned_id
-                    ]
+                    self._index[h] = [loc for loc in locs if loc.donor_id != interned_id]
                     if not self._index[h]:
                         del self._index[h]
 
@@ -226,7 +227,7 @@ class ChunkIndex:
 
         with self._lock:
             for chunk_start in range(0, len(target_tokens), self._chunk_size):
-                chunk = target_tokens[chunk_start:chunk_start + self._chunk_size]
+                chunk = target_tokens[chunk_start : chunk_start + self._chunk_size]
                 if len(chunk) != self._chunk_size:
                     continue
 
@@ -248,9 +249,7 @@ class ChunkIndex:
         for h in hashes:
             locs = self._index.get(h)
             if locs is not None:
-                self._index[h] = [
-                    loc for loc in locs if loc.donor_id != evicted_id
-                ]
+                self._index[h] = [loc for loc in locs if loc.donor_id != evicted_id]
                 if not self._index[h]:
                     del self._index[h]
 
@@ -282,7 +281,7 @@ def chunk_hash_sequence(
     """
     hashes = []
     for i in range(0, len(token_ids), chunk_size):
-        chunk = token_ids[i:i + chunk_size]
+        chunk = token_ids[i : i + chunk_size]
         if len(chunk) == chunk_size:
             hashes.append(_chunk_hash(chunk))
     return hashes

@@ -1,4 +1,5 @@
 """Tests for multi-donor composite alignment."""
+
 import pytest
 
 from semblend_core.chunk_index import ChunkIndex
@@ -24,7 +25,7 @@ class TestSingleDonorFallback:
         chunk_index.add_donor_chunks("d1", donor)
 
         # Target shares first 3 chunks with donor
-        target = donor[:CHUNK_SIZE * 3] + _make_tokens(CHUNK_SIZE, offset=9000)
+        target = donor[: CHUNK_SIZE * 3] + _make_tokens(CHUNK_SIZE, offset=9000)
 
         result = compute_multi_donor_alignment(
             target_tokens=target,
@@ -102,8 +103,8 @@ class TestComplementaryDonors:
         # RAG query with pieces from all 3 docs + new query
         query_chunk = _make_tokens(CHUNK_SIZE, offset=9999)
         target = (
-            doc1[:CHUNK_SIZE * 2]  # 2 chunks from doc1
-            + doc2[CHUNK_SIZE:CHUNK_SIZE * 3]  # 2 chunks from doc2
+            doc1[: CHUNK_SIZE * 2]  # 2 chunks from doc1
+            + doc2[CHUNK_SIZE : CHUNK_SIZE * 3]  # 2 chunks from doc2
             + doc3[:CHUNK_SIZE]  # 1 chunk from doc3
             + query_chunk  # new query
         )

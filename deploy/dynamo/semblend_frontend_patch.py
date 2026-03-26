@@ -14,12 +14,11 @@ Usage (inside the Dynamo frontend container):
 For the upstream PR, this logic moves into the Rust KvIndexer as
 SemanticKvIndexer (synapse-sem-indexer crate).
 """
+
 from __future__ import annotations
 
 import logging
 import os
-import sys
-import time
 
 logger = logging.getLogger("semblend.dynamo.patch")
 
@@ -27,8 +26,8 @@ logger = logging.getLogger("semblend.dynamo.patch")
 def patch_frontend():
     """Monkey-patch the Dynamo frontend to add SemBlend semantic lookup."""
     try:
-        from semblend_core.pipeline import SemBlendPipeline
         from semblend_core.embedder import create_embedder
+        from semblend_core.pipeline import SemBlendPipeline
     except ImportError:
         logger.error("semblend not installed — pip install semblend sentence-transformers")
         return False
@@ -56,6 +55,7 @@ def patch_frontend():
     if model_name:
         try:
             from transformers import AutoTokenizer
+
             tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
             logger.info("SemBlend tokenizer loaded: %s", model_name)
         except Exception as e:
@@ -100,8 +100,7 @@ def patch_frontend():
                 if result.found:
                     stats["semantic_hits"] += 1
                     logger.info(
-                        "SemBlend hit: donor=%s sim=%.3f reuse=%.2f "
-                        "(embed=%.1fms lookup=%.1fms)",
+                        "SemBlend hit: donor=%s sim=%.3f reuse=%.2f (embed=%.1fms lookup=%.1fms)",
                         result.donor_id,
                         result.similarity,
                         result.reuse_ratio,
@@ -161,4 +160,5 @@ if __name__ == "__main__":
 
     # Start the normal Dynamo frontend
     from dynamo.frontend import main
+
     main()

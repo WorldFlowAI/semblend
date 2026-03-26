@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import base64
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
 from synapse_kv_connector.client import LoadKvResult
 from synapse_kv_connector.connector import SynapseKVConnector
-from synapse_kv_connector.partial_attention import AttentionMode
 from synapse_kv_connector.segment_client import (
     FindDonorResult,
     KvSlotAction,
@@ -60,26 +58,20 @@ def _mock_tier3_found(
         donor_len=num_copied + num_placeholders,
         slot_actions=[],
         copy_positions=list(range(num_copied)),
-        placeholder_positions=list(
-            range(num_copied, num_copied + num_placeholders)
-        ),
+        placeholder_positions=list(range(num_copied, num_copied + num_placeholders)),
         num_copied=num_copied,
         num_placeholders=num_placeholders,
         reuse_ratio=reuse_ratio,
         viable=viable,
     )
     result = FindDonorResult(found=True, plan=plan, tree_size=3)
-    connector._segment_client.find_donor_and_plan = MagicMock(
-        return_value=result
-    )
+    connector._segment_client.find_donor_and_plan = MagicMock(return_value=result)
 
 
 def _mock_tier3_not_found(connector: SynapseKVConnector) -> None:
     """Mock the segment client to return no donor."""
     result = FindDonorResult(found=False, plan=None, tree_size=0)
-    connector._segment_client.find_donor_and_plan = MagicMock(
-        return_value=result
-    )
+    connector._segment_client.find_donor_and_plan = MagicMock(return_value=result)
 
 
 # ---------------------------------------------------------------------------
@@ -242,9 +234,7 @@ class TestSaveKvWithDeltaTree:
         connector._token_client.store_kv_state.assert_called_once()
         connector._segment_client.insert_delta_node.assert_called_once()
 
-        call_kwargs = (
-            connector._segment_client.insert_delta_node.call_args[1]
-        )
+        call_kwargs = connector._segment_client.insert_delta_node.call_args[1]
         assert call_kwargs["request_id"] == "abc123"
         assert call_kwargs["token_ids"] == [1, 2, 3, 4, 5]
         assert call_kwargs["kv_resident"] is True
@@ -273,9 +263,7 @@ class TestSaveKvWithDeltaTree:
             request_id="custom-id",
         )
 
-        call_kwargs = (
-            connector._segment_client.insert_delta_node.call_args[1]
-        )
+        call_kwargs = connector._segment_client.insert_delta_node.call_args[1]
         assert call_kwargs["request_id"] == "custom-id"
 
     def test_save_skips_delta_tree_when_tier3_disabled(self) -> None:
@@ -376,9 +364,7 @@ class TestTier3StartLoadKv:
             head_dim=64,
             kv_data=donor_kv,
         )
-        connector._token_client.load_kv_state_by_hash = MagicMock(
-            return_value=donor_result
-        )
+        connector._token_client.load_kv_state_by_hash = MagicMock(return_value=donor_result)
 
         result = connector.start_load_kv([1, 2, 3, 4, 99])
 
@@ -391,9 +377,7 @@ class TestTier3StartLoadKv:
         # Placeholder position [4] should be zeros
         np.testing.assert_array_equal(result[:, :, :, 4, :], 0.0)
         # Verify load_kv_state_by_hash was called with the donor hash
-        connector._token_client.load_kv_state_by_hash.assert_called_once_with(
-            "donor-abc"
-        )
+        connector._token_client.load_kv_state_by_hash.assert_called_once_with("donor-abc")
 
     def test_consumes_transfer_plan(self) -> None:
         """Transfer plan is consumed (cleared) after use."""
@@ -405,9 +389,7 @@ class TestTier3StartLoadKv:
         assert connector.last_transfer_plan is not None
 
         # Mock donor not found to test plan consumption
-        connector._token_client.load_kv_state_by_hash = MagicMock(
-            return_value=None
-        )
+        connector._token_client.load_kv_state_by_hash = MagicMock(return_value=None)
         connector.start_load_kv([1, 2, 3, 4])
 
         # Plan should be consumed (None)
@@ -421,9 +403,7 @@ class TestTier3StartLoadKv:
 
         connector.get_num_new_matched_tokens([1, 2, 3, 4])
 
-        connector._token_client.load_kv_state_by_hash = MagicMock(
-            return_value=None
-        )
+        connector._token_client.load_kv_state_by_hash = MagicMock(return_value=None)
         result = connector.start_load_kv([1, 2, 3, 4])
 
         assert result is None
@@ -453,9 +433,7 @@ class TestTier3StartLoadKv:
             viable=True,
         )
         result = FindDonorResult(found=True, plan=plan, tree_size=1)
-        connector._segment_client.find_donor_and_plan = MagicMock(
-            return_value=result
-        )
+        connector._segment_client.find_donor_and_plan = MagicMock(return_value=result)
 
         connector.get_num_new_matched_tokens([1, 2, 3, 4, 5])
 
@@ -468,9 +446,7 @@ class TestTier3StartLoadKv:
             head_dim=64,
             kv_data=donor_kv,
         )
-        connector._token_client.load_kv_state_by_hash = MagicMock(
-            return_value=donor_result
-        )
+        connector._token_client.load_kv_state_by_hash = MagicMock(return_value=donor_result)
 
         kv = connector.start_load_kv([1, 2, 3, 4, 5])
 
@@ -510,12 +486,13 @@ class TestTier3StartLoadKv:
 
         donor_kv = np.ones((2, 2, 4, 5, 64), dtype=np.float16)
         donor_result = LoadKvResult(
-            num_tokens=5, num_layers=2, num_heads=4,
-            head_dim=64, kv_data=donor_kv,
+            num_tokens=5,
+            num_layers=2,
+            num_heads=4,
+            head_dim=64,
+            kv_data=donor_kv,
         )
-        connector._token_client.load_kv_state_by_hash = MagicMock(
-            return_value=donor_result
-        )
+        connector._token_client.load_kv_state_by_hash = MagicMock(return_value=donor_result)
 
         kv = connector.start_load_kv([1, 2, 3, 4, 99])
 
@@ -542,20 +519,19 @@ class TestTier3StartLoadKv:
             viable=True,
         )
         result = FindDonorResult(found=True, plan=plan, tree_size=1)
-        connector._segment_client.find_donor_and_plan = MagicMock(
-            return_value=result
-        )
+        connector._segment_client.find_donor_and_plan = MagicMock(return_value=result)
 
         connector.get_num_new_matched_tokens([1, 2, 3, 4, 5])
 
         donor_kv = np.ones((2, 2, 4, 5, 64), dtype=np.float16)
         donor_result = LoadKvResult(
-            num_tokens=5, num_layers=2, num_heads=4,
-            head_dim=64, kv_data=donor_kv,
+            num_tokens=5,
+            num_layers=2,
+            num_heads=4,
+            head_dim=64,
+            kv_data=donor_kv,
         )
-        connector._token_client.load_kv_state_by_hash = MagicMock(
-            return_value=donor_result
-        )
+        connector._token_client.load_kv_state_by_hash = MagicMock(return_value=donor_result)
 
         kv = connector.start_load_kv([1, 2, 3, 4, 5])
 
@@ -588,16 +564,17 @@ class TestTier3StartLoadKv:
             viable=True,
         )
         result = FindDonorResult(found=True, plan=plan, tree_size=1)
-        connector._segment_client.find_donor_and_plan = MagicMock(
-            return_value=result
-        )
+        connector._segment_client.find_donor_and_plan = MagicMock(return_value=result)
         connector.get_num_new_matched_tokens([1, 2, 3])
 
         donor_kv = np.ones((2, 2, 4, 3, 64), dtype=np.float16)
         connector._token_client.load_kv_state_by_hash = MagicMock(
             return_value=LoadKvResult(
-                num_tokens=3, num_layers=2, num_heads=4,
-                head_dim=64, kv_data=donor_kv,
+                num_tokens=3,
+                num_layers=2,
+                num_heads=4,
+                head_dim=64,
+                kv_data=donor_kv,
             )
         )
         connector.start_load_kv([1, 2, 3])
@@ -606,8 +583,11 @@ class TestTier3StartLoadKv:
         # Second: Tier 1 load should clear the attention plan
         connector._token_client.load_kv_state = MagicMock(
             return_value=LoadKvResult(
-                num_tokens=3, num_layers=2, num_heads=4,
-                head_dim=64, kv_data=donor_kv,
+                num_tokens=3,
+                num_layers=2,
+                num_heads=4,
+                head_dim=64,
+                kv_data=donor_kv,
             )
         )
         connector.start_load_kv([1, 2, 3])
@@ -639,9 +619,7 @@ class TestTier3StartLoadKv:
             head_dim=64,
             kv_data=kv,
         )
-        connector._token_client.load_kv_state = MagicMock(
-            return_value=result
-        )
+        connector._token_client.load_kv_state = MagicMock(return_value=result)
 
         loaded = connector.start_load_kv([1, 2, 3, 4, 5])
 

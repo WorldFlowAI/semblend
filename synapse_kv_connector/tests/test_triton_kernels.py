@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 import pytest
 
 # Import with graceful degradation
@@ -22,7 +21,6 @@ except ImportError:
 pytestmark = pytest.mark.skipif(not HAS_TORCH, reason="torch not available")
 
 from synapse_kv_connector.triton_kernels import (
-    HAS_TRITON,
     PartialPrefillResult,
     masked_qkv_projection,
     partial_prefill,
@@ -30,7 +28,6 @@ from synapse_kv_connector.triton_kernels import (
     scatter_donor_kv,
     scatter_donor_kv_paged,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -284,9 +281,7 @@ class TestScatterDonorKvPaged:
         """Target positions beyond block table range are skipped."""
         dev = _device()
         block_size = 4
-        kv_cache = self._make_paged_kv(
-            num_blocks=4, num_heads=1, block_size=block_size, head_dim=8
-        )
+        kv_cache = self._make_paged_kv(num_blocks=4, num_heads=1, block_size=block_size, head_dim=8)
         donor_kv = self._make_paged_donor(num_heads=1, donor_len=4, head_dim=8)
 
         # Only 1 block mapped
@@ -525,12 +520,16 @@ class TestPartialPrefill:
         )
 
         qkv_weight = torch.randn(
-            3 * num_heads * head_dim, hidden_dim,
-            dtype=torch.float16, device=dev,
+            3 * num_heads * head_dim,
+            hidden_dim,
+            dtype=torch.float16,
+            device=dev,
         )
         out_proj = torch.randn(
-            hidden_dim, num_heads * head_dim,
-            dtype=torch.float16, device=dev,
+            hidden_dim,
+            num_heads * head_dim,
+            dtype=torch.float16,
+            device=dev,
         )
 
         # 50% reuse: positions 0,1,2,3 from donor; 4,5,6,7 computed
@@ -538,7 +537,8 @@ class TestPartialPrefill:
         target_pos = torch.tensor([0, 1, 2, 3], dtype=torch.int32, device=dev)
         compute_mask = torch.tensor(
             [False, False, False, False, True, True, True, True],
-            dtype=torch.bool, device=dev,
+            dtype=torch.bool,
+            device=dev,
         )
 
         result = partial_prefill(
@@ -577,12 +577,16 @@ class TestPartialPrefill:
             head_dim=head_dim,
         )
         qkv_weight = torch.randn(
-            3 * num_heads * head_dim, hidden_dim,
-            dtype=torch.float16, device=dev,
+            3 * num_heads * head_dim,
+            hidden_dim,
+            dtype=torch.float16,
+            device=dev,
         )
         out_proj = torch.randn(
-            hidden_dim, num_heads * head_dim,
-            dtype=torch.float16, device=dev,
+            hidden_dim,
+            num_heads * head_dim,
+            dtype=torch.float16,
+            device=dev,
         )
 
         donor_pos = torch.arange(seq_len, dtype=torch.int32, device=dev)
@@ -614,16 +618,18 @@ class TestPartialPrefill:
         head_dim = 8
 
         hidden = torch.randn(seq_len, hidden_dim, dtype=torch.float16, device=dev)
-        donor_kv = _make_donor_kv(
-            num_layers=1, num_heads=num_heads, donor_len=4, head_dim=head_dim
-        )
+        donor_kv = _make_donor_kv(num_layers=1, num_heads=num_heads, donor_len=4, head_dim=head_dim)
         qkv_weight = torch.randn(
-            3 * num_heads * head_dim, hidden_dim,
-            dtype=torch.float16, device=dev,
+            3 * num_heads * head_dim,
+            hidden_dim,
+            dtype=torch.float16,
+            device=dev,
         )
         out_proj = torch.randn(
-            hidden_dim, num_heads * head_dim,
-            dtype=torch.float16, device=dev,
+            hidden_dim,
+            num_heads * head_dim,
+            dtype=torch.float16,
+            device=dev,
         )
 
         empty = torch.zeros(0, dtype=torch.int32, device=dev)
@@ -662,12 +668,16 @@ class TestPartialPrefill:
             head_dim=head_dim,
         )
         qkv_weight = torch.randn(
-            3 * num_heads * head_dim, hidden_dim,
-            dtype=torch.float16, device=dev,
+            3 * num_heads * head_dim,
+            hidden_dim,
+            dtype=torch.float16,
+            device=dev,
         )
         out_proj = torch.randn(
-            hidden_dim, num_heads * head_dim,
-            dtype=torch.float16, device=dev,
+            hidden_dim,
+            num_heads * head_dim,
+            dtype=torch.float16,
+            device=dev,
         )
 
         # Sparse reuse: positions 0,3,6,9,12 from donor 0,2,4,6,8
@@ -719,12 +729,16 @@ class TestPartialPrefill:
             num_layers=4, num_heads=num_heads, donor_len=32, head_dim=head_dim
         )
         qkv_weight = torch.randn(
-            3 * num_heads * head_dim, hidden_dim,
-            dtype=torch.float16, device=dev,
+            3 * num_heads * head_dim,
+            hidden_dim,
+            dtype=torch.float16,
+            device=dev,
         )
         out_proj = torch.randn(
-            hidden_dim, num_heads * head_dim,
-            dtype=torch.float16, device=dev,
+            hidden_dim,
+            num_heads * head_dim,
+            dtype=torch.float16,
+            device=dev,
         )
 
         donor_pos = torch.arange(16, dtype=torch.int32, device=dev)
@@ -814,12 +828,9 @@ class TestPipelinePlanBuilding:
             reuse_ratio=0.6,
             donor_tokens=list(range(100)),
             slot_actions=[
-                {"action": "copy_from_donor", "targetPos": i, "donorPos": i}
-                for i in range(60)
-            ] + [
-                {"action": "recompute", "targetPos": i, "donorPos": None}
-                for i in range(60, 100)
-            ],
+                {"action": "copy_from_donor", "targetPos": i, "donorPos": i} for i in range(60)
+            ]
+            + [{"action": "recompute", "targetPos": i, "donorPos": None} for i in range(60, 100)],
             layer_deviations=[
                 {
                     "layerIdx": i,

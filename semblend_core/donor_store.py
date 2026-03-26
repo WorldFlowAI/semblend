@@ -14,6 +14,7 @@ Performance targets:
   - Add donor: O(1) append + O(chunks) ChunkIndex indexing
   - LRU eviction at capacity
 """
+
 from __future__ import annotations
 
 import logging
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class DonorNode:
     """A cached donor entry with embedding and token data."""
+
     request_id: str
     token_ids: list[int]
     embedding: np.ndarray | None  # [dim] normalized
@@ -49,6 +51,7 @@ class DonorNode:
 @dataclass(frozen=True)
 class DonorMatch:
     """Result of a donor lookup with alignment."""
+
     donor: DonorNode
     similarity: float
     alignment: AlignmentResult
@@ -66,7 +69,7 @@ class DonorStore:
 
     Args:
         max_entries: Maximum number of donors to store.
-        embedding_dim: Dimension of embeddings (384 for MiniLM, 1024 for jina).
+        embedding_dim: Dimension of embeddings (384 for MiniLM).
         min_similarity: Minimum cosine similarity for donor candidates.
         chunk_size: KV block size for alignment (from backend).
         chunk_index: Optional pre-configured ChunkIndex. If None, creates one.
@@ -211,7 +214,8 @@ class DonorStore:
             max_sim = float(similarities.max()) if len(similarities) > 0 else 0.0
             logger.debug(
                 "DonorStore: no candidates above threshold (max_sim=%.4f < %.2f)",
-                max_sim, self._min_similarity,
+                max_sim,
+                self._min_similarity,
             )
             return None
 
@@ -253,7 +257,8 @@ class DonorStore:
 
             # Fast reuse estimation (no SlotAction creation)
             reuse = estimate_reuse_ratio(
-                donor.token_ids, query_tokens,
+                donor.token_ids,
+                query_tokens,
                 chunk_size=self._chunk_size,
             )
             if reuse < min_reuse_ratio:
@@ -269,7 +274,8 @@ class DonorStore:
         if best_candidate is not None:
             _, sim, donor = best_candidate
             alignment = compute_alignment(
-                donor.token_ids, query_tokens,
+                donor.token_ids,
+                query_tokens,
                 chunk_size=self._chunk_size,
             )
             if alignment.reuse_ratio >= min_reuse_ratio:
@@ -283,7 +289,9 @@ class DonorStore:
         if elapsed_ms > 5:
             logger.debug(
                 "DonorStore.find_donor: %.1fms (N=%d, candidates=%d)",
-                elapsed_ms, n_valid, len(candidate_indices),
+                elapsed_ms,
+                n_valid,
+                len(candidate_indices),
             )
 
         return best_match
@@ -359,7 +367,8 @@ class DonorStore:
 
             # Fast reuse estimation (no SlotAction creation)
             reuse = estimate_reuse_ratio(
-                donor.token_ids, query_tokens,
+                donor.token_ids,
+                query_tokens,
                 chunk_size=self._chunk_size,
             )
             if reuse < min_reuse_ratio:
@@ -380,17 +389,20 @@ class DonorStore:
         matches: list[DonorMatch] = []
         for score, sim, donor in top_candidates:
             alignment = compute_alignment(
-                donor.token_ids, query_tokens,
+                donor.token_ids,
+                query_tokens,
                 chunk_size=self._chunk_size,
             )
             if alignment.reuse_ratio < min_reuse_ratio:
                 continue
 
-            matches.append(DonorMatch(
-                donor=donor,
-                similarity=sim,
-                alignment=alignment,
-            ))
+            matches.append(
+                DonorMatch(
+                    donor=donor,
+                    similarity=sim,
+                    alignment=alignment,
+                )
+            )
 
         return matches
 
@@ -425,24 +437,30 @@ class DonorStore:
 
         # Sort by Jaccard descending, take top candidates
         scored.sort(key=lambda x: x[0], reverse=True)
-        candidates = scored[:top_k * 2]
+        candidates = scored[: top_k * 2]
 
         # Run alignment on top candidates
         matches: list[tuple[float, DonorMatch]] = []
         for jaccard, donor in candidates:
             alignment = compute_alignment(
-                donor.token_ids, query_tokens,
+                donor.token_ids,
+                query_tokens,
                 chunk_size=self._chunk_size,
             )
             if alignment.reuse_ratio < min_reuse_ratio:
                 continue
 
             score = jaccard * alignment.reuse_ratio
-            matches.append((score, DonorMatch(
-                donor=donor,
-                similarity=jaccard,
-                alignment=alignment,
-            )))
+            matches.append(
+                (
+                    score,
+                    DonorMatch(
+                        donor=donor,
+                        similarity=jaccard,
+                        alignment=alignment,
+                    ),
+                )
+            )
 
         matches.sort(key=lambda x: x[0], reverse=True)
         return [m for _, m in matches[:top_k]]
@@ -465,10 +483,7 @@ class DonorStore:
         Used by multi_donor_alignment to build the donor_token_store.
         Returns defensive copies to prevent mutation of internal state.
         """
-        return {
-            did: list(node.token_ids)
-            for did, node in self._entries.items()
-        }
+        return {did: list(node.token_ids) for did, node in self._entries.items()}
 
     def find_multi_donor(
         self,

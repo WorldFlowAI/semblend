@@ -23,6 +23,7 @@ Quality metrics per run:
 
 Each scenario uses the existing autoresearch-semblend benchmark scripts.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class BenchmarkConfig:
     """A single benchmark configuration."""
+
     name: str
     description: str
     env_vars: dict[str, str]
@@ -40,6 +42,7 @@ class BenchmarkConfig:
 @dataclass(frozen=True)
 class BenchmarkScenario:
     """A benchmark scenario with dataset and measurement params."""
+
     name: str
     description: str
     script: str  # relative to autoresearch-semblend/benchmarks/e2e/
@@ -136,8 +139,11 @@ SCENARIO_3_CROSS_DOCUMENT = BenchmarkScenario(
     token_lengths=(4096, 8192),
     n_samples=200,
     quality_metrics=(
-        "ppl_ratio", "token_match_ratio", "ttft_speedup",
-        "l2_deviation", "attention_recovery",
+        "ppl_ratio",
+        "token_match_ratio",
+        "ttft_speedup",
+        "l2_deviation",
+        "attention_recovery",
     ),
 )
 
@@ -149,6 +155,7 @@ ALL_SCENARIOS = (
 
 
 # ── Benchmark Matrix ───────────────────────────────────────────────────
+
 
 def get_benchmark_matrix() -> list[dict]:
     """Generate the full 4-config × 3-scenario benchmark matrix.
@@ -164,16 +171,17 @@ def get_benchmark_matrix() -> list[dict]:
         for config in ALL_CONFIGS:
             for token_length in scenario.token_lengths:
                 for dataset in scenario.datasets:
-                    matrix.append({
-                        "config": config,
-                        "scenario": scenario,
-                        "token_length": token_length,
-                        "dataset": dataset,
-                        "run_id": (
-                            f"{config.name}__{scenario.name}__{dataset}"
-                            f"__{token_length}"
-                        ),
-                    })
+                    matrix.append(
+                        {
+                            "config": config,
+                            "scenario": scenario,
+                            "token_length": token_length,
+                            "dataset": dataset,
+                            "run_id": (
+                                f"{config.name}__{scenario.name}__{dataset}__{token_length}"
+                            ),
+                        }
+                    )
     return matrix
 
 
@@ -190,11 +198,13 @@ def print_matrix_summary() -> None:
         print(f"  Datasets: {', '.join(scenario.datasets)}")
         print(f"  Token lengths: {', '.join(str(t) for t in scenario.token_lengths)}")
         print(f"  Quality metrics: {', '.join(scenario.quality_metrics)}")
-        print(f"  Runs: {len(runs)} ({len(ALL_CONFIGS)} configs × "
-              f"{len(scenario.token_lengths)} lengths × "
-              f"{len(scenario.datasets)} datasets)")
+        print(
+            f"  Runs: {len(runs)} ({len(ALL_CONFIGS)} configs × "
+            f"{len(scenario.token_lengths)} lengths × "
+            f"{len(scenario.datasets)} datasets)"
+        )
 
-    print(f"\nConfigurations:")
+    print("\nConfigurations:")
     for cfg in ALL_CONFIGS:
         baseline_tag = " [BASELINE]" if cfg.is_baseline else ""
         print(f"  {cfg.name}{baseline_tag}: {cfg.description}")

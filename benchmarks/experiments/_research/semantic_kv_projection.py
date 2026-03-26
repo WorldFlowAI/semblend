@@ -22,6 +22,7 @@ Usage (run inside the GPU pod):
 
 Requires: torch, transformers, awq (already in vLLM image)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -74,15 +75,15 @@ class LayerDeviation:
     layer_idx: int
     k_cosine_sim: float  # mean cosine similarity of K vectors
     v_cosine_sim: float  # mean cosine similarity of V vectors
-    k_l2_dist: float     # mean L2 distance of K vectors
-    v_l2_dist: float     # mean L2 distance of V vectors
+    k_l2_dist: float  # mean L2 distance of K vectors
+    v_l2_dist: float  # mean L2 distance of V vectors
 
 
 @dataclass
 class CorrectionResult:
     layer_idx: int
-    before_k_sim: float   # K similarity before correction
-    after_k_sim: float    # K similarity after affine correction
+    before_k_sim: float  # K similarity before correction
+    after_k_sim: float  # K similarity after affine correction
     before_v_sim: float
     after_v_sim: float
     correction_residual: float  # how well W fits the probe data
@@ -158,7 +159,9 @@ def load_model_and_tokenizer(model_name: str):
     return model, tokenizer
 
 
-def extract_kv(model, tokenizer, text: str) -> tuple[list[torch.Tensor], list[torch.Tensor], torch.Tensor]:
+def extract_kv(
+    model, tokenizer, text: str
+) -> tuple[list[torch.Tensor], list[torch.Tensor], torch.Tensor]:
     """Forward pass to extract per-layer K,V tensors.
 
     Returns:
@@ -198,7 +201,7 @@ def compute_layer_deviations(
     deviations = []
 
     for layer_idx in range(n_layers):
-        dk = donor_keys[layer_idx]   # [1, n_heads, donor_len, head_dim]
+        dk = donor_keys[layer_idx]  # [1, n_heads, donor_len, head_dim]
         tk = target_keys[layer_idx]  # [1, n_heads, target_len, head_dim]
         dv = donor_values[layer_idx]
         tv = target_values[layer_idx]
@@ -314,7 +317,7 @@ def estimate_lowrank_correction(
 
 def apply_mean_shift(
     donor_kv: torch.Tensor,  # [1, n_heads, seq_len, head_dim]
-    shift: torch.Tensor,     # [n_heads, head_dim]
+    shift: torch.Tensor,  # [n_heads, head_dim]
 ) -> torch.Tensor:
     """Apply mean-shift correction: corrected = donor + shift."""
     orig_dtype = donor_kv.dtype
@@ -324,30 +327,32 @@ def apply_mean_shift(
 
 def apply_procrustes(
     donor_kv: torch.Tensor,  # [1, n_heads, seq_len, head_dim]
-    R: torch.Tensor,         # [n_heads, head_dim, head_dim]
+    R: torch.Tensor,  # [n_heads, head_dim, head_dim]
 ) -> torch.Tensor:
     """Apply Procrustes rotation: corrected = donor @ R."""
     orig_dtype = donor_kv.dtype
     # [1, n_heads, seq_len, head_dim] @ [n_heads, head_dim, head_dim]
-    corrected = torch.einsum('bhsd,hde->bhse', donor_kv.float(), R)
+    corrected = torch.einsum("bhsd,hde->bhse", donor_kv.float(), R)
     return corrected.to(orig_dtype)
 
 
 def apply_lowrank(
     donor_kv: torch.Tensor,  # [1, n_heads, seq_len, head_dim]
-    U: torch.Tensor,         # [n_heads, rank]
-    V: torch.Tensor,         # [n_heads, rank, head_dim]
+    U: torch.Tensor,  # [n_heads, rank]
+    V: torch.Tensor,  # [n_heads, rank, head_dim]
 ) -> torch.Tensor:
     """Apply low-rank correction: corrected = donor + U @ V (broadcast)."""
     orig_dtype = donor_kv.dtype
     # Correction vector per head: U @ V → [n_heads, head_dim]
-    correction = torch.einsum('hr,hrd->hd', U, V)  # [n_heads, head_dim]
+    correction = torch.einsum("hr,hrd->hd", U, V)  # [n_heads, head_dim]
     corrected = donor_kv.float() + correction.unsqueeze(0).unsqueeze(2)
     return corrected.to(orig_dtype)
 
 
 def generate_with_kv(
-    model, tokenizer, prompt_text: str,
+    model,
+    tokenizer,
+    prompt_text: str,
     injected_keys: list[torch.Tensor] | None = None,
     injected_values: list[torch.Tensor] | None = None,
     max_new_tokens: int = 128,
@@ -417,7 +422,7 @@ def generate_with_kv(
             )
 
         time_ms = (time.monotonic() - t0) * 1000
-        generated_ids = gen_ids.sequences[0][input_ids.shape[1]:]
+        generated_ids = gen_ids.sequences[0][input_ids.shape[1] :]
         text = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
         # Compute PPL from scores
@@ -432,7 +437,7 @@ def generate_with_kv(
             total_log_prob += token_log_prob
             n_tokens += 1
 
-        ppl = math.exp(-total_log_prob / max(n_tokens, 1)) if n_tokens > 0 else float('inf')
+        ppl = math.exp(-total_log_prob / max(n_tokens, 1)) if n_tokens > 0 else float("inf")
 
     else:
         # Cold prefill — standard generation
@@ -447,7 +452,7 @@ def generate_with_kv(
             )
 
         time_ms = (time.monotonic() - t0) * 1000
-        generated_ids = gen_ids.sequences[0][input_ids.shape[1]:]
+        generated_ids = gen_ids.sequences[0][input_ids.shape[1] :]
         text = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
         scores = gen_ids.scores
@@ -461,7 +466,7 @@ def generate_with_kv(
             total_log_prob += token_log_prob
             n_tokens += 1
 
-        ppl = math.exp(-total_log_prob / max(n_tokens, 1)) if n_tokens > 0 else float('inf')
+        ppl = math.exp(-total_log_prob / max(n_tokens, 1)) if n_tokens > 0 else float("inf")
 
     return text, ppl, time_ms
 
@@ -506,11 +511,13 @@ def load_triviaqa_pairs(n: int) -> list[dict]:
         if not question or not ans_text:
             continue
 
-        pairs.append({
-            "context": context,
-            "question": question,
-            "answer": ans_text,
-        })
+        pairs.append(
+            {
+                "context": context,
+                "question": question,
+                "answer": ans_text,
+            }
+        )
 
     print(f"Loaded {len(pairs)} pairs")
     return pairs
@@ -522,16 +529,19 @@ def run_experiment(n_pairs: int = 20, max_new_tokens: int = 64) -> dict:
     num_layers = model.config.num_hidden_layers
 
     # Define injection layers (middle layers only)
-    early_layers = set(range(0, 4))            # 0-3: always recompute
+    early_layers = set(range(0, 4))  # 0-3: always recompute
     late_layers = set(range(num_layers - 3, num_layers))  # 25-27: always recompute
     inject_layers = set(range(4, num_layers - 3))  # 4-24: inject with correction
 
-    print(f"\nLayer plan: recompute early {sorted(early_layers)}, "
-          f"inject middle {min(inject_layers)}-{max(inject_layers)}, "
-          f"recompute late {sorted(late_layers)}")
+    print(
+        f"\nLayer plan: recompute early {sorted(early_layers)}, "
+        f"inject middle {min(inject_layers)}-{max(inject_layers)}, "
+        f"recompute late {sorted(late_layers)}"
+    )
 
     pairs = load_triviaqa_pairs(n_pairs)
     import random
+
     rng = random.Random(42)
 
     results: list[SampleResult] = []
@@ -561,7 +571,10 @@ def run_experiment(n_pairs: int = 20, max_new_tokens: int = 64) -> dict:
 
         # Step 2: Measure per-layer deviation
         deviations = compute_layer_deviations(
-            donor_keys, donor_values, target_keys, target_values,
+            donor_keys,
+            donor_values,
+            target_keys,
+            target_values,
         )
 
         # Print bathtub curve
@@ -570,8 +583,10 @@ def run_experiment(n_pairs: int = 20, max_new_tokens: int = 64) -> dict:
             print(f"  {'Layer':>5} {'K_cos':>8} {'V_cos':>8} {'K_L2':>8} {'V_L2':>8}")
             for d in deviations:
                 marker = " *" if d.layer_idx in inject_layers else ""
-                print(f"  {d.layer_idx:>5} {d.k_cosine_sim:>8.4f} {d.v_cosine_sim:>8.4f} "
-                      f"{d.k_l2_dist:>8.4f} {d.v_l2_dist:>8.4f}{marker}")
+                print(
+                    f"  {d.layer_idx:>5} {d.k_cosine_sim:>8.4f} {d.v_cosine_sim:>8.4f} "
+                    f"{d.k_l2_dist:>8.4f} {d.v_l2_dist:>8.4f}{marker}"
+                )
 
         # Step 3: Estimate corrections using three methods
         N_PROBE = 32
@@ -604,16 +619,24 @@ def run_experiment(n_pairs: int = 20, max_new_tokens: int = 64) -> dict:
                 dv_probe = dv[0, :, :N_PROBE, :]
                 tv_probe = tv[0, :, :N_PROBE, :]
 
-                before_k = F.cosine_similarity(
-                    dk[0, :, :min_len, :].reshape(-1, dk.shape[-1]).float(),
-                    tk[0, :, :min_len, :].reshape(-1, tk.shape[-1]).float(),
-                    dim=-1,
-                ).mean().item()
-                before_v = F.cosine_similarity(
-                    dv[0, :, :min_len, :].reshape(-1, dv.shape[-1]).float(),
-                    tv[0, :, :min_len, :].reshape(-1, tv.shape[-1]).float(),
-                    dim=-1,
-                ).mean().item()
+                before_k = (
+                    F.cosine_similarity(
+                        dk[0, :, :min_len, :].reshape(-1, dk.shape[-1]).float(),
+                        tk[0, :, :min_len, :].reshape(-1, tk.shape[-1]).float(),
+                        dim=-1,
+                    )
+                    .mean()
+                    .item()
+                )
+                before_v = (
+                    F.cosine_similarity(
+                        dv[0, :, :min_len, :].reshape(-1, dv.shape[-1]).float(),
+                        tv[0, :, :min_len, :].reshape(-1, tv.shape[-1]).float(),
+                        dim=-1,
+                    )
+                    .mean()
+                    .item()
+                )
 
                 # Method 1: Mean shift
                 k_shift = estimate_mean_shift(dk_probe, tk_probe)
@@ -641,23 +664,33 @@ def run_experiment(n_pairs: int = 20, max_new_tokens: int = 64) -> dict:
 
                 # Measure after-correction similarity for each method
                 after_sims = {}
-                for mname, mkv in [("mean_shift", ms_k), ("procrustes", pr_k), ("lowrank_r4", lr_k)]:
-                    after_sims[mname] = F.cosine_similarity(
-                        mkv[0, :, :min_len, :].reshape(-1, dk.shape[-1]).float(),
-                        tk[0, :, :min_len, :].reshape(-1, tk.shape[-1]).float(),
-                        dim=-1,
-                    ).mean().item()
+                for mname, mkv in [
+                    ("mean_shift", ms_k),
+                    ("procrustes", pr_k),
+                    ("lowrank_r4", lr_k),
+                ]:
+                    after_sims[mname] = (
+                        F.cosine_similarity(
+                            mkv[0, :, :min_len, :].reshape(-1, dk.shape[-1]).float(),
+                            tk[0, :, :min_len, :].reshape(-1, tk.shape[-1]).float(),
+                            dim=-1,
+                        )
+                        .mean()
+                        .item()
+                    )
 
                 # Store best correction result
                 best_method = max(after_sims, key=after_sims.get)
-                corrections.append(CorrectionResult(
-                    layer_idx,
-                    before_k,
-                    after_sims[best_method],
-                    before_v,
-                    0.0,  # V after (skip for brevity)
-                    0.0,  # residual
-                ))
+                corrections.append(
+                    CorrectionResult(
+                        layer_idx,
+                        before_k,
+                        after_sims[best_method],
+                        before_v,
+                        0.0,  # V after (skip for brevity)
+                        0.0,  # residual
+                    )
+                )
             else:
                 for m in methods.values():
                     m["keys"].append(tk)
@@ -676,38 +709,71 @@ def run_experiment(n_pairs: int = 20, max_new_tokens: int = 64) -> dict:
                 dk = donor_keys[layer_idx]
                 tk = target_keys[layer_idx]
                 min_l = min(dk.shape[2], tk.shape[2])
-                before = F.cosine_similarity(
-                    dk[0, :, :min_l, :].reshape(-1, dk.shape[-1]).float(),
-                    tk[0, :, :min_l, :].reshape(-1, tk.shape[-1]).float(),
-                    dim=-1,
-                ).mean().item()
+                before = (
+                    F.cosine_similarity(
+                        dk[0, :, :min_l, :].reshape(-1, dk.shape[-1]).float(),
+                        tk[0, :, :min_l, :].reshape(-1, tk.shape[-1]).float(),
+                        dim=-1,
+                    )
+                    .mean()
+                    .item()
+                )
 
-                ms_sim = F.cosine_similarity(
-                    methods["mean_shift"]["keys"][layer_idx - min(inject_layers)][0, :, :min_l, :].reshape(-1, dk.shape[-1]).float(),
-                    tk[0, :, :min_l, :].reshape(-1, tk.shape[-1]).float(),
-                    dim=-1,
-                ).mean().item()
+                ms_sim = (
+                    F.cosine_similarity(
+                        methods["mean_shift"]["keys"][layer_idx - min(inject_layers)][
+                            0, :, :min_l, :
+                        ]
+                        .reshape(-1, dk.shape[-1])
+                        .float(),
+                        tk[0, :, :min_l, :].reshape(-1, tk.shape[-1]).float(),
+                        dim=-1,
+                    )
+                    .mean()
+                    .item()
+                )
 
-                pr_sim = F.cosine_similarity(
-                    methods["procrustes"]["keys"][layer_idx - min(inject_layers)][0, :, :min_l, :].reshape(-1, dk.shape[-1]).float(),
-                    tk[0, :, :min_l, :].reshape(-1, tk.shape[-1]).float(),
-                    dim=-1,
-                ).mean().item()
+                pr_sim = (
+                    F.cosine_similarity(
+                        methods["procrustes"]["keys"][layer_idx - min(inject_layers)][
+                            0, :, :min_l, :
+                        ]
+                        .reshape(-1, dk.shape[-1])
+                        .float(),
+                        tk[0, :, :min_l, :].reshape(-1, tk.shape[-1]).float(),
+                        dim=-1,
+                    )
+                    .mean()
+                    .item()
+                )
 
-                lr_sim = F.cosine_similarity(
-                    methods["lowrank_r4"]["keys"][layer_idx - min(inject_layers)][0, :, :min_l, :].reshape(-1, dk.shape[-1]).float(),
-                    tk[0, :, :min_l, :].reshape(-1, tk.shape[-1]).float(),
-                    dim=-1,
-                ).mean().item()
+                lr_sim = (
+                    F.cosine_similarity(
+                        methods["lowrank_r4"]["keys"][layer_idx - min(inject_layers)][
+                            0, :, :min_l, :
+                        ]
+                        .reshape(-1, dk.shape[-1])
+                        .float(),
+                        tk[0, :, :min_l, :].reshape(-1, tk.shape[-1]).float(),
+                        dim=-1,
+                    )
+                    .mean()
+                    .item()
+                )
 
-                print(f"  {layer_idx:>5} {before:>8.4f} {ms_sim:>9.4f} {pr_sim:>9.4f} {lr_sim:>9.4f}")
+                print(
+                    f"  {layer_idx:>5} {before:>8.4f} {ms_sim:>9.4f} {pr_sim:>9.4f} {lr_sim:>9.4f}"
+                )
                 if layer_idx >= min(inject_layers) + 9:
                     print(f"  ... ({len(inject_layers)} layers total)")
                     break
 
         # Step 4: Generate (cold only for now — injection needs DynamicCache fix)
         cold_text, cold_ppl, cold_time = generate_with_kv(
-            model, tokenizer, target_prompt, max_new_tokens=max_new_tokens,
+            model,
+            tokenizer,
+            target_prompt,
+            max_new_tokens=max_new_tokens,
         )
 
         # Skip generation with injected KV for now (DynamicCache API issue)
@@ -723,29 +789,35 @@ def run_experiment(n_pairs: int = 20, max_new_tokens: int = 64) -> dict:
         corrected_match = False
 
         print(f"  Cold PPL:      {cold_ppl:.2f}  match={cold_match}  text={cold_text[:60]}...")
-        print(f"  Verbatim PPL:  {verbatim_ppl:.2f}  match={verbatim_match}  text={verbatim_text[:60]}...")
-        print(f"  Corrected PPL: {corrected_ppl:.2f}  match={corrected_match}  text={corrected_text[:60]}...")
+        print(
+            f"  Verbatim PPL:  {verbatim_ppl:.2f}  match={verbatim_match}  text={verbatim_text[:60]}..."
+        )
+        print(
+            f"  Corrected PPL: {corrected_ppl:.2f}  match={corrected_match}  text={corrected_text[:60]}..."
+        )
         print(f"  Probe time:    {probe_time_ms:.1f}ms")
 
-        results.append(SampleResult(
-            sample_id=f"triviaqa_{idx}",
-            question=pair["question"],
-            reference_answer=pair["answer"],
-            cold_text=cold_text,
-            verbatim_text=verbatim_text,
-            corrected_text=corrected_text,
-            cold_ppl=cold_ppl,
-            verbatim_ppl=verbatim_ppl,
-            corrected_ppl=corrected_ppl,
-            cold_answer_match=cold_match,
-            verbatim_answer_match=verbatim_match,
-            corrected_answer_match=corrected_match,
-            cold_time_ms=cold_time,
-            corrected_time_ms=corrected_time,
-            probe_time_ms=probe_time_ms,
-            layer_deviations=deviations,
-            corrections=corrections,
-        ))
+        results.append(
+            SampleResult(
+                sample_id=f"triviaqa_{idx}",
+                question=pair["question"],
+                reference_answer=pair["answer"],
+                cold_text=cold_text,
+                verbatim_text=verbatim_text,
+                corrected_text=corrected_text,
+                cold_ppl=cold_ppl,
+                verbatim_ppl=verbatim_ppl,
+                corrected_ppl=corrected_ppl,
+                cold_answer_match=cold_match,
+                verbatim_answer_match=verbatim_match,
+                corrected_answer_match=corrected_match,
+                cold_time_ms=cold_time,
+                corrected_time_ms=corrected_time,
+                probe_time_ms=probe_time_ms,
+                layer_deviations=deviations,
+                corrections=corrections,
+            )
+        )
 
         # Free GPU memory
         del donor_keys, donor_values, target_keys, target_values
@@ -775,9 +847,15 @@ def run_experiment(n_pairs: int = 20, max_new_tokens: int = 64) -> dict:
     print(f"\nSamples: {n}")
     print(f"\n{'Condition':<20} {'Mean PPL':>10} {'QA Match':>10} {'Match Rate':>12}")
     print("-" * 55)
-    print(f"{'Cold (baseline)':<20} {statistics.mean(cold_ppls):>10.3f} {cold_matches:>10} {cold_matches/n:>11.1%}")
-    print(f"{'Verbatim inject':<20} {statistics.mean(verbatim_ppls):>10.3f} {verbatim_matches:>10} {verbatim_matches/n:>11.1%}")
-    print(f"{'Corrected inject':<20} {statistics.mean(corrected_ppls):>10.3f} {corrected_matches:>10} {corrected_matches/n:>11.1%}")
+    print(
+        f"{'Cold (baseline)':<20} {statistics.mean(cold_ppls):>10.3f} {cold_matches:>10} {cold_matches / n:>11.1%}"
+    )
+    print(
+        f"{'Verbatim inject':<20} {statistics.mean(verbatim_ppls):>10.3f} {verbatim_matches:>10} {verbatim_matches / n:>11.1%}"
+    )
+    print(
+        f"{'Corrected inject':<20} {statistics.mean(corrected_ppls):>10.3f} {corrected_matches:>10} {corrected_matches / n:>11.1%}"
+    )
 
     # PPL ratios
     verbatim_ratios = [v / c for v, c in zip(verbatim_ppls, cold_ppls) if c > 0]
@@ -826,8 +904,12 @@ def run_experiment(n_pairs: int = 20, max_new_tokens: int = 64) -> dict:
     if corrected_ratios:
         mean_ratio = statistics.mean(corrected_ratios)
         qa_delta = (cold_matches - corrected_matches) / n
-        print(f"PPL ratio:     {mean_ratio:.4f} {'PASS' if mean_ratio <= 1.065 else 'FAIL'} (threshold <= 1.065)")
-        print(f"QA degradation:{qa_delta:+.1%} {'PASS' if qa_delta <= 0.05 else 'FAIL'} (threshold <= 5%)")
+        print(
+            f"PPL ratio:     {mean_ratio:.4f} {'PASS' if mean_ratio <= 1.065 else 'FAIL'} (threshold <= 1.065)"
+        )
+        print(
+            f"QA degradation:{qa_delta:+.1%} {'PASS' if qa_delta <= 0.05 else 'FAIL'} (threshold <= 5%)"
+        )
         if mean_ratio <= 1.065 and qa_delta <= 0.05:
             print("SEMANTIC KV PROJECTION: FEASIBLE")
         else:
@@ -858,6 +940,7 @@ def main():
 
     if args.output and results:
         from pathlib import Path
+
         out = Path(args.output)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(results, indent=2))

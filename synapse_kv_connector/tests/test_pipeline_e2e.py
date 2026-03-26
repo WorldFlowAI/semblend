@@ -9,19 +9,18 @@ Tests the full in-process pipeline without vLLM:
 
 Does NOT require GPU or vLLM — tests the decision pipeline only.
 """
+
 from __future__ import annotations
-
-import time
-
-import numpy as np
 
 
 def _create_pipeline(embedder_type: str = "jaccard"):
     """Create a pipeline with jaccard embedder (no model download needed)."""
     import os
+
     os.environ["SEMBLEND_EMBEDDER"] = embedder_type
 
     from synapse_kv_connector.pipeline import SemBlendPipeline
+
     return SemBlendPipeline(
         max_donors=1000,
         min_similarity=0.3,
@@ -201,6 +200,4 @@ def test_pipeline_layer_deviations():
         # First layer should have higher deviation than middle
         first_dev = devs[0]["deviationScore"]
         mid_dev = devs[len(devs) // 2]["deviationScore"]
-        assert first_dev > mid_dev, (
-            f"First layer dev ({first_dev}) should be > middle ({mid_dev})"
-        )
+        assert first_dev > mid_dev, f"First layer dev ({first_dev}) should be > middle ({mid_dev})"

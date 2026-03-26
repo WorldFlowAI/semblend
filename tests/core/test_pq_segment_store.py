@@ -1,10 +1,10 @@
 """Tests for PQ segment store."""
+
 from __future__ import annotations
 
 import threading
 
 import numpy as np
-import pytest
 
 
 def _random_normalized(rng, n, dim=384):
@@ -16,6 +16,7 @@ def _random_normalized(rng, n, dim=384):
 
 def test_codebook_training():
     from semblend_core.pq_segment_store import train_pq_codebook
+
     rng = np.random.RandomState(42)
     embs = _random_normalized(rng, 1000)
     cb = train_pq_codebook(embs, n_subquantizers=48, n_centroids=256)
@@ -26,8 +27,11 @@ def test_codebook_training():
 
 def test_encode_decode_roundtrip():
     from semblend_core.pq_segment_store import (
-        train_pq_codebook, pq_encode_batch, adc_cosine_similarities,
+        adc_cosine_similarities,
+        pq_encode_batch,
+        train_pq_codebook,
     )
+
     rng = np.random.RandomState(42)
     train_embs = _random_normalized(rng, 2000)
     cb = train_pq_codebook(train_embs, n_subquantizers=48, n_centroids=256)
@@ -51,6 +55,7 @@ def test_encode_decode_roundtrip():
 
 def test_segment_store_lifecycle():
     from semblend_core.pq_segment_store import PQSegmentStore
+
     rng = np.random.RandomState(42)
 
     store = PQSegmentStore(max_entries=100, train_threshold=5)
@@ -84,6 +89,7 @@ def test_segment_store_lifecycle():
 def test_segment_store_pre_training_comparison():
     """Before codebook training, uses exact cosine in buffer."""
     from semblend_core.pq_segment_store import PQSegmentStore
+
     rng = np.random.RandomState(42)
 
     store = PQSegmentStore(max_entries=100, train_threshold=100)  # high threshold
@@ -98,6 +104,7 @@ def test_segment_store_pre_training_comparison():
 def test_memory_efficiency():
     """PQ codes at 1K donors should use < 2MB."""
     from semblend_core.pq_segment_store import PQSegmentStore
+
     rng = np.random.RandomState(42)
 
     store = PQSegmentStore(max_entries=1100, train_threshold=50)
@@ -112,6 +119,7 @@ def test_memory_efficiency():
 
 def test_get_segment_similarity():
     from semblend_core.pq_segment_store import PQSegmentStore
+
     rng = np.random.RandomState(42)
 
     store = PQSegmentStore(max_entries=100, train_threshold=5)
@@ -133,6 +141,7 @@ def test_get_segment_similarity():
 
 def test_duplicate_add_ignored():
     from semblend_core.pq_segment_store import PQSegmentStore
+
     rng = np.random.RandomState(42)
 
     store = PQSegmentStore(max_entries=100, train_threshold=100)
@@ -145,6 +154,7 @@ def test_duplicate_add_ignored():
 def test_thread_safety():
     """Basic concurrent add + compare."""
     from semblend_core.pq_segment_store import PQSegmentStore
+
     rng = np.random.RandomState(42)
 
     store = PQSegmentStore(max_entries=200, train_threshold=10)

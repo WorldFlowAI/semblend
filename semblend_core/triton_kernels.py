@@ -260,11 +260,7 @@ if HAS_TRITON:
             return
 
         # Compute base offsets
-        donor_base = (
-            kv_idx * d_stride_kv
-            + head_idx * d_stride_head
-            + d_pos * d_stride_seq
-        )
+        donor_base = kv_idx * d_stride_kv + head_idx * d_stride_head + d_pos * d_stride_seq
         target_base = (
             physical_block * kv_stride_block
             + kv_idx * kv_stride_kv
@@ -428,9 +424,7 @@ if HAS_TRITON:
 
             # Load weight tile [BLOCK_OUT, BLOCK_IN] (transposed access)
             w = tl.load(
-                weight_ptr
-                + out_offsets[:, None] * w_stride_out
-                + k_offsets[None, :] * w_stride_in,
+                weight_ptr + out_offsets[:, None] * w_stride_out + k_offsets[None, :] * w_stride_in,
                 mask=(out_mask[:, None] & k_mask[None, :]),
                 other=0.0,
             )
@@ -448,9 +442,7 @@ if HAS_TRITON:
 
         # Store output
         tl.store(
-            output_ptr
-            + seq_offsets[:, None] * o_stride_seq
-            + out_offsets[None, :] * o_stride_feat,
+            output_ptr + seq_offsets[:, None] * o_stride_seq + out_offsets[None, :] * o_stride_feat,
             acc.to(output_ptr.dtype.element_ty),
             mask=(seq_mask[:, None] & out_mask[None, :]),
         )
@@ -520,7 +512,8 @@ def masked_qkv_projection(
         # PyTorch fallback — compute in float32 for precision, cast back
         input_dtype = hidden_states.dtype
         projected = torch.nn.functional.linear(
-            hidden_states.float(), qkv_weight.float(),
+            hidden_states.float(),
+            qkv_weight.float(),
             qkv_bias.float() if qkv_bias is not None else None,
         )
         mask_expanded = compute_mask.unsqueeze(1).float()
@@ -844,9 +837,7 @@ def partial_prefill(
         scatter_end.record()
 
     # Stage 2: Masked QKV projection for compute positions
-    qkv_output = masked_qkv_projection(
-        hidden_states, qkv_weight, compute_mask, qkv_bias
-    )
+    qkv_output = masked_qkv_projection(hidden_states, qkv_weight, compute_mask, qkv_bias)
 
     # Reshape QKV: [seq_len, 3*num_heads*head_dim] -> Q, K, V
     # Cast to float32 for attention computation (precision)
@@ -874,9 +865,7 @@ def partial_prefill(
         merged_v[:, compute_indices, :] = v_new[:, compute_indices, :]
 
     # Stage 3: Partial attention — compute only for masked positions
-    attn_output = partial_prefill_attention(
-        q_new, merged_k, merged_v, compute_mask, scale
-    )
+    attn_output = partial_prefill_attention(q_new, merged_k, merged_v, compute_mask, scale)
 
     if use_cuda_timing:
         attn_end.record()
@@ -885,7 +874,8 @@ def partial_prefill(
     # attn_output: [num_heads, seq_len, head_dim] -> [seq_len, hidden_dim]
     attn_flat = attn_output.permute(1, 0, 2).reshape(seq_len, num_heads * head_dim)
     final_output = torch.nn.functional.linear(
-        attn_flat, output_projection.float(),
+        attn_flat,
+        output_projection.float(),
         output_bias.float() if output_bias is not None else None,
     )
 
@@ -899,8 +889,12 @@ def partial_prefill(
     # Update target KV cache with new K,V at compute positions
     for layer_idx in range(num_layers):
         if compute_indices.numel() > 0:
-            target_kv[layer_idx, 0, :, compute_indices, :] = k_new[:, compute_indices, :].to(target_kv.dtype)
-            target_kv[layer_idx, 1, :, compute_indices, :] = v_new[:, compute_indices, :].to(target_kv.dtype)
+            target_kv[layer_idx, 0, :, compute_indices, :] = k_new[:, compute_indices, :].to(
+                target_kv.dtype
+            )
+            target_kv[layer_idx, 1, :, compute_indices, :] = v_new[:, compute_indices, :].to(
+                target_kv.dtype
+            )
 
     if use_cuda_timing:
         end_event.record()

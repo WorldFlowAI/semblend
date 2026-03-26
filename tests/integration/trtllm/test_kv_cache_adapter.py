@@ -5,6 +5,7 @@ and cross-layout compatibility with SemBlend's Triton kernels.
 
 These tests run on CPU (no TRT-LLM or GPU required).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -12,6 +13,7 @@ import pytest
 # Mock torch for CPU-only testing
 try:
     import torch
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -59,7 +61,7 @@ class TestTRTLLMKVStrides:
 
         # Same total size, different layout
         trtllm_kv = torch.zeros(100, 2, 128, 4, 128)  # TRT-LLM
-        vllm_kv = torch.zeros(100, 2, 4, 128, 128)    # vLLM
+        vllm_kv = torch.zeros(100, 2, 4, 128, 128)  # vLLM
 
         t_strides = trtllm_kv_strides(trtllm_kv)
         v_strides = vllm_kv_strides(vllm_kv)
@@ -74,13 +76,13 @@ class TestTRTLLMKVStrides:
         # stride_pos = n_heads * head_dim = 4*128 = 512
         # stride_head = head_dim = 128
         assert t_strides.kv_stride_pos == 4 * 128  # n_heads * head_dim
-        assert t_strides.kv_stride_head == 128      # head_dim
+        assert t_strides.kv_stride_head == 128  # head_dim
 
         # vLLM: head_dim=128, block_size=128, n_heads=4
         # stride_head = block_size * head_dim = 128*128 = 16384
         # stride_pos = head_dim = 128
         assert v_strides.kv_stride_head == 128 * 128  # block_size * head_dim
-        assert v_strides.kv_stride_pos == 128          # head_dim
+        assert v_strides.kv_stride_pos == 128  # head_dim
 
 
 @pytest.mark.skipif(not HAS_TORCH, reason="torch not installed")

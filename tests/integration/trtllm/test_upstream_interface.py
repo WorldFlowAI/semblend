@@ -3,6 +3,7 @@
 Verifies the ABCs can be imported and implemented correctly.
 These tests validate the interface design, not TRT-LLM internals.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -15,12 +16,14 @@ class TestSemanticCacheLookupProvider:
         from semblend.integration.trtllm.upstream_interface import (
             SemanticCacheLookupProvider,
         )
+
         assert SemanticCacheLookupProvider is not None
 
     def test_cannot_instantiate_directly(self):
         from semblend.integration.trtllm.upstream_interface import (
             SemanticCacheLookupProvider,
         )
+
         with pytest.raises(TypeError, match="abstract"):
             SemanticCacheLookupProvider()
 
@@ -81,12 +84,14 @@ class TestPostPrefixLoadHook:
         from semblend.integration.trtllm.upstream_interface import (
             PostPrefixLoadHook,
         )
+
         assert PostPrefixLoadHook is not None
 
     def test_cannot_instantiate_directly(self):
         from semblend.integration.trtllm.upstream_interface import (
             PostPrefixLoadHook,
         )
+
         with pytest.raises(TypeError, match="abstract"):
             PostPrefixLoadHook()
 
@@ -99,13 +104,14 @@ class TestPostPrefixLoadHook:
             def __init__(self):
                 self.calls = []
 
-            def on_prefix_loaded(self, kv_buffers, block_table,
-                                 position_mapping, rope_config):
-                self.calls.append({
-                    "num_layers": len(kv_buffers),
-                    "num_pairs": len(position_mapping),
-                    "rope_base": rope_config.get("rope_base", 10000.0),
-                })
+            def on_prefix_loaded(self, kv_buffers, block_table, position_mapping, rope_config):
+                self.calls.append(
+                    {
+                        "num_layers": len(kv_buffers),
+                        "num_pairs": len(position_mapping),
+                        "rope_base": rope_config.get("rope_base", 10000.0),
+                    }
+                )
 
         hook = TestHook()
         hook.on_prefix_loaded(
@@ -126,6 +132,7 @@ class TestSemanticMatchResult:
         from semblend.integration.trtllm.upstream_interface import (
             SemanticMatchResult,
         )
+
         assert SemanticMatchResult is not None
 
     def test_creation(self):

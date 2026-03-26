@@ -55,7 +55,6 @@ from synapse_kv_connector.partial_attention import (
 )
 from synapse_kv_connector.rope_correction import (
     nope_permute_paged_kv,
-    rope_correct_scatter_paged,
 )
 from synapse_kv_connector.triton_kernels import (
     partial_prefill_attention,
@@ -137,9 +136,7 @@ class PartialAttentionHook:
         self._rope_base = rope_base
 
         # Pre-compute position tensors (shared across layers)
-        self._donor_positions, self._target_positions = (
-            self._build_position_tensors()
-        )
+        self._donor_positions, self._target_positions = self._build_position_tensors()
         self._compute_mask = self._build_compute_mask(layer_idx=0)
 
     @property
@@ -256,6 +253,7 @@ class PartialAttentionHook:
                     )
                     # Apply RoPE delta correction to K at target positions
                     from synapse_kv_connector.rope_correction import rope_correct_k
+
                     k_cache = target_layer[0, 0]  # [num_heads, seq_len, head_dim]
                     head_dim = k_cache.shape[-1]
                     corrected = rope_correct_k(
@@ -350,9 +348,7 @@ class PartialAttentionHook:
 
         compute_mask = self._build_compute_mask(layer_idx)
 
-        return partial_prefill_attention(
-            query, key, value, compute_mask, scale
-        )
+        return partial_prefill_attention(query, key, value, compute_mask, scale)
 
     def get_compute_mask_tensor(self, layer_idx: int) -> torch.Tensor:
         """Get the compute mask as a GPU tensor for a given layer.
@@ -433,6 +429,7 @@ class RoPECorrectionHook:
         # SEMBLEND_USE_NOPE=1 switches to NoPE two-step correction (MEPIC-style)
         if use_nope is None:
             import os
+
             use_nope = os.environ.get("SEMBLEND_USE_NOPE", "0").strip() == "1"
         self._use_nope = use_nope
 
@@ -468,9 +465,9 @@ class RoPECorrectionHook:
 
         start = time.perf_counter()
         pos_map = self._position_map
-        num_pairs = pos_map.num_pairs if hasattr(pos_map, 'num_pairs') else 0
+        num_pairs = pos_map.num_pairs if hasattr(pos_map, "num_pairs") else 0
         needs_correction = (
-            pos_map.needs_correction if hasattr(pos_map, 'needs_correction') else False
+            pos_map.needs_correction if hasattr(pos_map, "needs_correction") else False
         )
 
         if num_pairs == 0 or not needs_correction or block_table is None:
@@ -482,10 +479,11 @@ class RoPECorrectionHook:
                 "time_ms": 0.0,
             }
             import sys
+
             print(
-                f"[SemBlend] RoPE hook: skip ({self._result['reason']}), "
-                f"req={self._request_id}",
-                file=sys.stderr, flush=True,
+                f"[SemBlend] RoPE hook: skip ({self._result['reason']}), req={self._request_id}",
+                file=sys.stderr,
+                flush=True,
             )
             return self._result
 
@@ -493,9 +491,7 @@ class RoPECorrectionHook:
         donor_positions = pos_map.donor_positions
         target_positions = pos_map.target_positions
         correction_pairs = [
-            (int(d), int(t))
-            for d, t in zip(donor_positions, target_positions)
-            if d != t
+            (int(d), int(t)) for d, t in zip(donor_positions, target_positions) if d != t
         ]
 
         if not correction_pairs:
@@ -518,13 +514,15 @@ class RoPECorrectionHook:
             # Check bathtub curve: skip correction for layers marked
             # for full recomputation (they'll be recomputed anyway)
             if self._plan is not None:
-                layer_masks = getattr(self._plan, 'layer_masks', None)
+                layer_masks = getattr(self._plan, "layer_masks", None)
                 if layer_masks and layer_idx < len(layer_masks):
                     if layer_masks[layer_idx].recompute_all:
-                        layer_results.append({
-                            "layer": layer_idx,
-                            "action": "skip_recompute",
-                        })
+                        layer_results.append(
+                            {
+                                "layer": layer_idx,
+                                "action": "skip_recompute",
+                            }
+                        )
                         continue
 
             try:
@@ -542,6 +540,7 @@ class RoPECorrectionHook:
                     from synapse_kv_connector.rope_correction import (
                         permute_paged_kv_with_rope,
                     )
+
                     permute_paged_kv_with_rope(
                         kv_cache=kv_cache,
                         block_table=block_table,
@@ -549,19 +548,24 @@ class RoPECorrectionHook:
                         rope_base=self._rope_base,
                     )
                 layers_corrected += 1
-                layer_results.append({
-                    "layer": layer_idx,
-                    "action": f"corrected_{correction_mode}",
-                    "pairs": len(correction_pairs),
-                })
+                layer_results.append(
+                    {
+                        "layer": layer_idx,
+                        "action": f"corrected_{correction_mode}",
+                        "pairs": len(correction_pairs),
+                    }
+                )
             except Exception as exc:
                 import sys
                 import traceback as _tb
-                layer_results.append({
-                    "layer": layer_idx,
-                    "action": "error",
-                    "error": str(exc),
-                })
+
+                layer_results.append(
+                    {
+                        "layer": layer_idx,
+                        "action": "error",
+                        "error": str(exc),
+                    }
+                )
                 if layer_idx == 0:
                     print(
                         f"[SemBlend] RoPE layer 0 FAILED: {exc}\n"
@@ -569,7 +573,8 @@ class RoPECorrectionHook:
                         f"  bt shape={getattr(block_table, 'shape', '?')}\n"
                         f"  pairs={len(correction_pairs)}\n"
                         f"  tb={_tb.format_exc()}",
-                        file=sys.stderr, flush=True,
+                        file=sys.stderr,
+                        flush=True,
                     )
 
         elapsed = (time.perf_counter() - start) * 1000.0
@@ -587,12 +592,14 @@ class RoPECorrectionHook:
         }
 
         import sys
+
         print(
             f"[SemBlend] K correction ({correction_mode}) applied: "
             f"{layers_corrected}/{len(kv_caches)} layers, "
             f"{len(correction_pairs)} position pairs, "
             f"{elapsed:.1f}ms, req={self._request_id}",
-            file=sys.stderr, flush=True,
+            file=sys.stderr,
+            flush=True,
         )
 
         return self._result
@@ -624,9 +631,7 @@ def patch_model_runner(
         True if patch was applied, False if model_runner is incompatible.
     """
     if not hasattr(model_runner, "execute_model"):
-        logger.warning(
-            "patch_model_runner: model_runner lacks execute_model, skipping"
-        )
+        logger.warning("patch_model_runner: model_runner lacks execute_model, skipping")
         return False
 
     # Store model_runner ref on connector for _apply_rope_after_load
@@ -647,6 +652,7 @@ def patch_model_runner(
         """
         import sys
         import time as _time
+
         _call_count[0] += 1
 
         sched = args[0] if args else kwargs.get("scheduler_output")
@@ -660,7 +666,8 @@ def patch_model_runner(
             print(
                 f"[SemBlend] execute_model #{_call_count[0]}: "
                 f"sched_tokens={num_sched}, elapsed={elapsed:.0f}ms",
-                file=sys.stderr, flush=True,
+                file=sys.stderr,
+                flush=True,
             )
 
         return result

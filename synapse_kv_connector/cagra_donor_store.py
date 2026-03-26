@@ -20,6 +20,7 @@ Compatibility:
     - find_donor(query_embedding, query_tokens, top_k, min_reuse_ratio) -> DonorMatch | None
     - find_donors(query_embedding, query_tokens, top_k, min_reuse_ratio) -> list[DonorMatch]
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,7 +30,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from semblend_core.alignment import AlignmentResult, compute_alignment
+from semblend_core.alignment import compute_alignment
 from semblend_core.donor_store import DonorMatch, DonorNode
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ def _has_cuvs() -> bool:
     try:
         import cupy  # noqa: F401
         import cuvs.neighbors.brute_force  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -160,13 +162,17 @@ class CAGRADonorStore:
             build_ms = (time.monotonic() - t0) * 1000
             logger.debug(
                 "CAGRADonorStore: rebuilt %s index (N=%d, %.1fms)",
-                self._index_kind, n, build_ms,
+                self._index_kind,
+                n,
+                build_ms,
             )
             self._dirty = False
             self._adds_since_rebuild = 0
 
         except Exception:
-            logger.warning("CAGRADonorStore: index build failed, falling back to numpy", exc_info=True)
+            logger.warning(
+                "CAGRADonorStore: index build failed, falling back to numpy", exc_info=True
+            )
             self._index = None
             self._index_kind = ""
             self._dirty = False
@@ -209,7 +215,9 @@ class CAGRADonorStore:
             return results
 
         except Exception:
-            logger.warning("CAGRADonorStore: GPU search failed, falling back to numpy", exc_info=True)
+            logger.warning(
+                "CAGRADonorStore: GPU search failed, falling back to numpy", exc_info=True
+            )
             return self._numpy_fallback(query_embedding, top_k)
 
     def _numpy_fallback(
@@ -336,7 +344,9 @@ class CAGRADonorStore:
             if alignment.reuse_ratio < min_reuse_ratio:
                 continue
             score = jaccard * alignment.reuse_ratio
-            matches.append((score, DonorMatch(donor=donor, similarity=jaccard, alignment=alignment)))
+            matches.append(
+                (score, DonorMatch(donor=donor, similarity=jaccard, alignment=alignment))
+            )
         matches.sort(key=lambda x: x[0], reverse=True)
         return [m for _, m in matches[:top_k]]
 

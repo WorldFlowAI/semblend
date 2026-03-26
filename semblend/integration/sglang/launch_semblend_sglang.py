@@ -13,9 +13,10 @@ Environment variables (SemBlend-specific):
     SEMBLEND_MODEL_NAME=<model>     Model name for tokenizer (auto-detected
                                     from --model-path if not set)
     SEMBLEND_MIN_SIMILARITY=0.60    Cosine similarity threshold
-    SEMBLEND_EMBEDDER=minilm        Embedder type (minilm, jina, e5, jaccard)
+    SEMBLEND_EMBEDDER=minilm        Embedder type (minilm, onnx_gpu, e5, jaccard)
     SEMBLEND_MAX_DONORS=1000        Maximum donors in the semantic store
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,16 +35,14 @@ def _auto_detect_model_name() -> None:
         if arg == "--model-path" and i + 1 < len(sys.argv):
             model_name = sys.argv[i + 1]
             os.environ["SEMBLEND_MODEL_NAME"] = model_name
-            logger.info(
-                f"Auto-detected SEMBLEND_MODEL_NAME={model_name} "
-                f"from --model-path"
-            )
+            logger.info(f"Auto-detected SEMBLEND_MODEL_NAME={model_name} from --model-path")
             return
 
 
 def main() -> None:
     """Patch RadixCache, then launch SGLang server."""
     import multiprocessing
+
     multiprocessing.freeze_support()
 
     logging.basicConfig(
@@ -63,9 +62,7 @@ def main() -> None:
         patch_radix_cache()
     except ImportError as exc:
         logger.error(f"Cannot patch RadixCache: {exc}")
-        logger.error(
-            "Ensure SGLang is installed: pip install sglang"
-        )
+        logger.error("Ensure SGLang is installed: pip install sglang")
         sys.exit(1)
 
     logger.info("Launching SGLang with SemBlend semantic KV cache reuse")
@@ -75,10 +72,7 @@ def main() -> None:
         from sglang.srt.server_args import prepare_server_args
         from sglang.srt.utils import kill_process_tree
     except ImportError:
-        logger.error(
-            "sglang.srt not found. "
-            "Ensure SGLang is installed: pip install sglang"
-        )
+        logger.error("sglang.srt not found. Ensure SGLang is installed: pip install sglang")
         sys.exit(1)
 
     server_args = prepare_server_args(sys.argv[1:])

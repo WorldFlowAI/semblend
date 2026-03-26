@@ -115,12 +115,8 @@ def apply_kv_patch(
 
     # GPU-accelerated path via Triton
     if HAS_TORCH and isinstance(kv_cache, torch.Tensor):
-        donor_pos = torch.tensor(
-            [p[0] for p in pairs], dtype=torch.int32, device=kv_cache.device
-        )
-        target_pos = torch.tensor(
-            [p[1] for p in pairs], dtype=torch.int32, device=kv_cache.device
-        )
+        donor_pos = torch.tensor([p[0] for p in pairs], dtype=torch.int32, device=kv_cache.device)
+        target_pos = torch.tensor([p[1] for p in pairs], dtype=torch.int32, device=kv_cache.device)
         # Reshape for scatter kernel: add layer dim
         target_5d = kv_cache.unsqueeze(0)  # [1, 2, num_heads, seq_len, head_dim]
         donor_5d = donor_kv.unsqueeze(0)  # [1, 2, num_heads, donor_len, head_dim]
@@ -166,12 +162,8 @@ def apply_kv_patch_gpu(
     if not pairs:
         return target_kv
 
-    donor_pos = torch.tensor(
-        [p[0] for p in pairs], dtype=torch.int32, device=target_kv.device
-    )
-    target_pos = torch.tensor(
-        [p[1] for p in pairs], dtype=torch.int32, device=target_kv.device
-    )
+    donor_pos = torch.tensor([p[0] for p in pairs], dtype=torch.int32, device=target_kv.device)
+    target_pos = torch.tensor([p[1] for p in pairs], dtype=torch.int32, device=target_kv.device)
 
     scatter_donor_kv(target_kv, donor_kv, donor_pos, target_pos)
     return target_kv
@@ -257,12 +249,8 @@ def execute_partial_prefill(
     pairs = compute_donor_kv_indices(plan, 0)
     device = hidden_states.device
 
-    donor_positions = torch.tensor(
-        [p[0] for p in pairs], dtype=torch.int32, device=device
-    )
-    target_positions = torch.tensor(
-        [p[1] for p in pairs], dtype=torch.int32, device=device
-    )
+    donor_positions = torch.tensor([p[0] for p in pairs], dtype=torch.int32, device=device)
+    target_positions = torch.tensor([p[1] for p in pairs], dtype=torch.int32, device=device)
     compute_mask = get_compute_mask_gpu(plan, 0, device=str(device))
 
     return partial_prefill(

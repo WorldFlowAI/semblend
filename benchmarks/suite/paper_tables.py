@@ -3,6 +3,7 @@
 Maps each of the 19 tables in the SemBlend paper to the benchmark script,
 engine configuration, model, and CLI arguments needed to reproduce it.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ from enum import Enum
 
 class Priority(Enum):
     """Reproduction priority level."""
+
     P0 = "p0"  # Core results — must reproduce
     P1 = "p1"  # Comparative results
     P2 = "p2"  # Supplementary results
@@ -18,6 +20,7 @@ class Priority(Enum):
 
 class Engine(Enum):
     """Inference engine backend."""
+
     VLLM_LMCACHE = "vllm+lmcache"
     SGLANG = "sglang"
     SGLANG_LMCACHE = "sglang+lmcache"
@@ -53,7 +56,6 @@ LLAMA_AWQ = "meta-llama/Llama-3.1-8B-Instruct-AWQ"
 
 PAPER_TABLES: dict[int, TableConfig] = {
     # Table 2: Bootstrap CIs (reference only, not runnable as a single script)
-
     3: TableConfig(
         table_number=3,
         title="SemBlend KV Donor Injection — TTFT Speedup 2K-32K",
@@ -122,8 +124,12 @@ PAPER_TABLES: dict[int, TableConfig] = {
         models=(QWEN_AWQ,),
         script="e2e/semblend_ttft_bench.py",
         datasets=(
-            "synthetic", "xsum", "multinews",
-            "cnn_dailymail", "wikihow", "samsum",
+            "synthetic",
+            "xsum",
+            "multinews",
+            "cnn_dailymail",
+            "wikihow",
+            "samsum",
         ),
         context_lengths=(2048, 4096, 8192, 12288, 16384),
         n_samples=8,
@@ -175,8 +181,11 @@ PAPER_TABLES: dict[int, TableConfig] = {
         models=(QWEN_AWQ,),
         script="suite/cli.py",
         datasets=(
-            "triviaqa", "narrativeqa", "longeval",
-            "wikitext103", "scbench",
+            "triviaqa",
+            "narrativeqa",
+            "longeval",
+            "wikitext103",
+            "scbench",
         ),
         n_samples=1000,
         extra_args={"--concurrency": "4", "--cooldown": "0.5"},

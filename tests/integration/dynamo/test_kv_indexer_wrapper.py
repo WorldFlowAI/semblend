@@ -2,6 +2,7 @@
 
 Uses a mock KvIndexer to test the wrapper logic without Dynamo installed.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -38,12 +39,14 @@ class TestSemBlendKvIndexerWrapperImport:
         from semblend.integration.dynamo.kv_indexer_wrapper import (
             SemBlendKvIndexerWrapper,
         )
+
         assert SemBlendKvIndexerWrapper is not None
 
     def test_init(self):
         from semblend.integration.dynamo.kv_indexer_wrapper import (
             SemBlendKvIndexerWrapper,
         )
+
         mock = MockKvIndexer()
         wrapper = SemBlendKvIndexerWrapper(
             inner_indexer=mock,
@@ -56,6 +59,7 @@ class TestSemBlendKvIndexerWrapperImport:
         from semblend.integration.dynamo.kv_indexer_wrapper import (
             SemBlendKvIndexerWrapper,
         )
+
         mock = MockKvIndexer()
         wrapper = SemBlendKvIndexerWrapper(inner_indexer=mock)
         stats = wrapper.get_stats()
@@ -198,6 +202,7 @@ class TestEventPublisher:
         from semblend.integration.dynamo.event_publisher import (
             SemBlendEventPublisher,
         )
+
         assert SemBlendEventPublisher is not None
 
     def test_publish_stored_forwarded(self):

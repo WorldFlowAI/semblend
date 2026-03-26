@@ -9,6 +9,7 @@ Usage:
     METRICS.record_embedding_latency(3.2)
     METRICS.record_donor_store_size(150)
 """
+
 from __future__ import annotations
 
 import logging
@@ -269,13 +270,12 @@ def _create_metrics() -> _NoopMetrics | _PrometheusMetrics:
 
     try:
         import prometheus_client  # noqa: F401
+
         metrics = _PrometheusMetrics()
         logger.info("SemBlend Prometheus metrics initialized")
         return metrics
     except ImportError:
-        logger.debug(
-            "prometheus_client not installed, metrics disabled"
-        )
+        logger.debug("prometheus_client not installed, metrics disabled")
         return _NoopMetrics()
 
 

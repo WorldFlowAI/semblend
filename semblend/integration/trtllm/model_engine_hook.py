@@ -21,6 +21,7 @@ Approach C (Block-Level Injection, fallback):
 
 The active approach is selected at init based on available TRT-LLM APIs.
 """
+
 from __future__ import annotations
 
 import logging
@@ -59,9 +60,7 @@ class SemBlendModelEngineHook:
     ) -> None:
         self._engine = engine
         self._backend = backend
-        self._approach = approach or os.environ.get(
-            "SEMBLEND_TRTLLM_APPROACH", "auto"
-        )
+        self._approach = approach or os.environ.get("SEMBLEND_TRTLLM_APPROACH", "auto")
         self._original_enqueue = None
         self._active_approach = None
         self._stats = {
@@ -92,8 +91,7 @@ class SemBlendModelEngineHook:
             self._wrap_block_injection()
         else:
             logger.warning(
-                "No viable SemBlend approach detected for TRT-LLM. "
-                "Semantic KV reuse disabled."
+                "No viable SemBlend approach detected for TRT-LLM. Semantic KV reuse disabled."
             )
             self._active_approach = "none"
             return "none"
@@ -131,16 +129,12 @@ class SemBlendModelEngineHook:
         """
         # Check for enqueue_request (token substitution)
         if hasattr(self._engine, "enqueue_request"):
-            logger.info(
-                "Detected enqueue_request API -> using token substitution"
-            )
+            logger.info("Detected enqueue_request API -> using token substitution")
             return "token_sub"
 
         # Check for enqueue (variant API name)
         if hasattr(self._engine, "enqueue"):
-            logger.info(
-                "Detected enqueue API -> using token substitution"
-            )
+            logger.info("Detected enqueue API -> using token substitution")
             return "token_sub"
 
         # Check for Python-accessible radix tree
@@ -148,16 +142,12 @@ class SemBlendModelEngineHook:
         if kv_mgr is not None:
             radix_tree = getattr(kv_mgr, "radix_tree", None)
             if radix_tree is not None and hasattr(radix_tree, "match_prefix"):
-                logger.info(
-                    "Detected Python radix tree -> using radix patch"
-                )
+                logger.info("Detected Python radix tree -> using radix patch")
                 return "radix_patch"
 
         # Check for block allocation API
         if kv_mgr is not None and hasattr(kv_mgr, "get_buffers"):
-            logger.info(
-                "Detected get_buffers API -> using block injection"
-            )
+            logger.info("Detected get_buffers API -> using block injection")
             return "block_inject"
 
         return "none"
@@ -183,12 +173,12 @@ class SemBlendModelEngineHook:
         hook = self
 
         def patched_enqueue(request: Any, *args: Any, **kwargs: Any) -> Any:
-            return hook._intercept_request(
-                request, hook._original_enqueue, *args, **kwargs
-            )
+            return hook._intercept_request(request, hook._original_enqueue, *args, **kwargs)
 
         setattr(self._engine, enqueue_attr, patched_enqueue)
-        logger.info("Patched %s.%s for token substitution", type(self._engine).__name__, enqueue_attr)
+        logger.info(
+            "Patched %s.%s for token substitution", type(self._engine).__name__, enqueue_attr
+        )
 
     def _intercept_request(
         self,
@@ -252,9 +242,7 @@ class SemBlendModelEngineHook:
                 setattr(request, attr, donor_tokens)
                 return
 
-    def _schedule_rope_correction(
-        self, request: Any, position_map: Any
-    ) -> None:
+    def _schedule_rope_correction(self, request: Any, position_map: Any) -> None:
         """Tag the request for post-load RoPE correction.
 
         The correction is applied after TRT-LLM loads the donor's KV
@@ -289,8 +277,12 @@ class SemBlendModelEngineHook:
 
             # Short match -- try semantic fallback
             return hook._semantic_radix_fallback(
-                token_ids, matched_len, result,
-                original_match, *args, **kwargs,
+                token_ids,
+                matched_len,
+                result,
+                original_match,
+                *args,
+                **kwargs,
             )
 
         radix_tree.match_prefix = patched_match_prefix

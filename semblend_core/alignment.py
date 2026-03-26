@@ -19,13 +19,14 @@ Context gate (enabled by default): rejects isolated chunk matches where
 no adjacent chunk also matches. Prevents semantic staleness from token-
 identical chunks at wrong semantic positions.
 """
+
 from __future__ import annotations
 
 import hashlib
 import logging
 import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -44,14 +45,13 @@ _CONTEXT_GATE_ENABLED = os.environ.get("SEMBLEND_CONTEXT_GATE", "1") != "0"
 # Fuzzy chunk matching: when exact hash fails, check token overlap.
 # Enable with SEMBLEND_FUZZY_CHUNKS=1. Default threshold 0.90 (90% overlap).
 _FUZZY_CHUNKS_ENABLED = os.environ.get("SEMBLEND_FUZZY_CHUNKS", "1") == "1"
-_FUZZY_CHUNK_MIN_OVERLAP = float(
-    os.environ.get("SEMBLEND_FUZZY_CHUNK_OVERLAP", "0.90")
-)
+_FUZZY_CHUNK_MIN_OVERLAP = float(os.environ.get("SEMBLEND_FUZZY_CHUNK_OVERLAP", "0.90"))
 
 
 @dataclass(frozen=True)
 class FuzzyMatchConfig:
     """Fully configurable fuzzy matching parameters for any model/engine."""
+
     min_overlap: float = float(os.environ.get("SEMBLEND_FUZZY_CHUNK_OVERLAP", "0.90"))
     decay_function: str = os.environ.get("SEMBLEND_FUZZY_DECAY_FN", "exponential")
     position_tau: float = float(os.environ.get("SEMBLEND_FUZZY_POSITION_TAU", "128"))
@@ -66,6 +66,7 @@ class FuzzyMatchConfig:
 @dataclass(frozen=True)
 class ChunkConfidence:
     """Per-chunk confidence metadata for fuzzy matches."""
+
     chunk_idx: int
     overlap_ratio: float
     positional_coherence: float
@@ -83,6 +84,7 @@ _DEFAULT_FUZZY_CONFIG = FuzzyMatchConfig()
 try:
     from rapidfuzz.distance import Opcodes  # noqa: F401
     from rapidfuzz.distance.Levenshtein import opcodes as lev_opcodes
+
     HAS_RAPIDFUZZ = True
 except ImportError:
     HAS_RAPIDFUZZ = False
@@ -123,6 +125,7 @@ def _chunk_hash(tokens: list[int]) -> str:
     to 32 hex chars (128 bits) for FIPS compliance.
     """
     import struct
+
     data = struct.pack(f"<{len(tokens)}I", *tokens)
     return hashlib.sha256(data).hexdigest()[:32]
 
@@ -155,18 +158,16 @@ def compute_chunk_alignment(
     Returns:
         AlignmentResult with chunk-aligned slot actions.
     """
-    use_context_gate = (
-        context_gate if context_gate is not None else _CONTEXT_GATE_ENABLED
-    )
+    use_context_gate = context_gate if context_gate is not None else _CONTEXT_GATE_ENABLED
 
     # Split into chunks
     donor_chunks = []
     for i in range(0, len(donor_tokens), chunk_size):
-        donor_chunks.append(donor_tokens[i:i + chunk_size])
+        donor_chunks.append(donor_tokens[i : i + chunk_size])
 
     target_chunks = []
     for i in range(0, len(target_tokens), chunk_size):
-        target_chunks.append(target_tokens[i:i + chunk_size])
+        target_chunks.append(target_tokens[i : i + chunk_size])
 
     # Build donor chunk hash → list of chunk indices
     # Only full-size chunks can match (partial trailing chunks can't)
@@ -196,23 +197,21 @@ def compute_chunk_alignment(
         validated: dict[int, int] = {}
         rejected_count = 0
         for t_idx, d_idx in chunk_matches.items():
-            has_neighbor = (
-                (t_idx - 1) in matched_set
-                or (t_idx + 1) in matched_set
-            )
+            has_neighbor = (t_idx - 1) in matched_set or (t_idx + 1) in matched_set
             if has_neighbor:
                 validated[t_idx] = d_idx
             else:
                 rejected_count += 1
                 logger.info(
-                    "context_gate: rejected isolated chunk match "
-                    "target[%d] -> donor[%d]",
-                    t_idx, d_idx,
+                    "context_gate: rejected isolated chunk match target[%d] -> donor[%d]",
+                    t_idx,
+                    d_idx,
                 )
         if rejected_count > 0:
             logger.info(
                 "context_gate: rejected %d/%d isolated chunk matches",
-                rejected_count, len(chunk_matches),
+                rejected_count,
+                len(chunk_matches),
             )
         chunk_matches = validated
 
@@ -227,18 +226,22 @@ def compute_chunk_alignment(
         if d_idx is not None:
             d_start = d_idx * chunk_size
             for i in range(chunk_size):
-                slot_actions.append(SlotAction(
-                    action=SlotActionType.COPY_FROM_DONOR,
-                    target_pos=t_start + i,
-                    donor_pos=d_start + i,
-                ))
+                slot_actions.append(
+                    SlotAction(
+                        action=SlotActionType.COPY_FROM_DONOR,
+                        target_pos=t_start + i,
+                        donor_pos=d_start + i,
+                    )
+                )
                 num_reused += 1
         else:
             for i in range(len(t_chunk)):
-                slot_actions.append(SlotAction(
-                    action=SlotActionType.RECOMPUTE,
-                    target_pos=t_start + i,
-                ))
+                slot_actions.append(
+                    SlotAction(
+                        action=SlotActionType.RECOMPUTE,
+                        target_pos=t_start + i,
+                    )
+                )
 
     target_len = len(target_tokens)
     reuse_ratio = num_reused / max(target_len, 1)
@@ -247,10 +250,12 @@ def compute_chunk_alignment(
     matched_chunks = len(chunk_matches)
     total_target_chunks = sum(1 for c in target_chunks if len(c) == chunk_size)
     logger.info(
-        "chunk_alignment: %d/%d chunks matched (reuse=%.2f), "
-        "donor_chunks=%d, target_chunks=%d",
-        matched_chunks, total_target_chunks, reuse_ratio,
-        len(donor_chunks), len(target_chunks),
+        "chunk_alignment: %d/%d chunks matched (reuse=%.2f), donor_chunks=%d, target_chunks=%d",
+        matched_chunks,
+        total_target_chunks,
+        reuse_ratio,
+        len(donor_chunks),
+        len(target_chunks),
     )
 
     return AlignmentResult(
@@ -270,6 +275,7 @@ def chunk_bag_cosine(donor_chunk: list[int], target_chunk: list[int]) -> float:
     and captures distribution shape beyond simple overlap ratio.
     """
     from collections import Counter
+
     d_counts = Counter(donor_chunk)
     t_counts = Counter(target_chunk)
     vocab = set(d_counts.keys()) | set(t_counts.keys())
@@ -380,6 +386,7 @@ def _fuzzy_match_chunk(
 
     # Build target token multiset
     from collections import Counter
+
     target_counts = Counter(target_chunk)
 
     best_idx: int | None = None
@@ -427,6 +434,7 @@ def _fuzzy_match_chunk(
 
     # Phase 2: match remaining tokens greedily by token ID
     from collections import defaultdict
+
     remaining_donor: dict[int, list[int]] = defaultdict(list)
     for i in range(target_len):
         if i not in matched_donor:
@@ -477,23 +485,19 @@ def compute_fuzzy_chunk_alignment(
     Returns:
         AlignmentResult with exact + fuzzy chunk-aligned slot actions.
     """
-    use_context_gate = (
-        context_gate if context_gate is not None else _CONTEXT_GATE_ENABLED
-    )
-    overlap_threshold = (
-        min_overlap if min_overlap is not None else _FUZZY_CHUNK_MIN_OVERLAP
-    )
+    use_context_gate = context_gate if context_gate is not None else _CONTEXT_GATE_ENABLED
+    overlap_threshold = min_overlap if min_overlap is not None else _FUZZY_CHUNK_MIN_OVERLAP
 
     # Split into chunks
     donor_chunks: list[list[int]] = []
     donor_chunk_starts: list[int] = []
     for i in range(0, len(donor_tokens), chunk_size):
-        donor_chunks.append(donor_tokens[i:i + chunk_size])
+        donor_chunks.append(donor_tokens[i : i + chunk_size])
         donor_chunk_starts.append(i)
 
     target_chunks: list[list[int]] = []
     for i in range(0, len(target_tokens), chunk_size):
-        target_chunks.append(target_tokens[i:i + chunk_size])
+        target_chunks.append(target_tokens[i : i + chunk_size])
 
     # Build donor chunk hash map (exact matching)
     donor_hash_map: dict[str, list[int]] = {}
@@ -528,8 +532,11 @@ def compute_fuzzy_chunk_alignment(
             continue
 
         result = _fuzzy_match_chunk(
-            t_chunk, donor_chunks, donor_chunk_starts,
-            used_donor_chunks, overlap_threshold,
+            t_chunk,
+            donor_chunks,
+            donor_chunk_starts,
+            used_donor_chunks,
+            overlap_threshold,
         )
         if result is not None:
             d_idx, pairs, overlap_ratio = result
@@ -558,10 +565,7 @@ def compute_fuzzy_chunk_alignment(
         exempt_count = 0
 
         for t_idx in all_matched:
-            has_neighbor = (
-                (t_idx - 1) in all_matched
-                or (t_idx + 1) in all_matched
-            )
+            has_neighbor = (t_idx - 1) in all_matched or (t_idx + 1) in all_matched
 
             # High-overlap fuzzy matches are exempt from context gate
             is_high_overlap_fuzzy = (
@@ -581,10 +585,11 @@ def compute_fuzzy_chunk_alignment(
 
         if rejected_count > 0 or exempt_count > 0:
             logger.info(
-                "context_gate: rejected %d/%d isolated, "
-                "exempted %d high-overlap fuzzy (>=%.0f%%)",
-                rejected_count, len(all_matched),
-                exempt_count, _FUZZY_CONTEXT_GATE_EXEMPT_OVERLAP * 100,
+                "context_gate: rejected %d/%d isolated, exempted %d high-overlap fuzzy (>=%.0f%%)",
+                rejected_count,
+                len(all_matched),
+                exempt_count,
+                _FUZZY_CONTEXT_GATE_EXEMPT_OVERLAP * 100,
             )
         exact_matches = validated_exact
         fuzzy_matches = validated_fuzzy
@@ -602,11 +607,11 @@ def compute_fuzzy_chunk_alignment(
 
         # Compute overlap ratio for this specific chunk
         from collections import Counter
+
         t_counts = Counter(t_chunk)
         d_counts = Counter(d_chunk)
         overlap_count = sum(
-            min(t_counts[tok], d_counts[tok])
-            for tok in t_counts if tok in d_counts
+            min(t_counts[tok], d_counts[tok]) for tok in t_counts if tok in d_counts
         )
         overlap = overlap_count / max(len(t_chunk), 1)
 
@@ -650,11 +655,13 @@ def compute_fuzzy_chunk_alignment(
             d_idx = exact_matches[t_idx]
             d_start = d_idx * chunk_size
             for i in range(chunk_size):
-                slot_actions.append(SlotAction(
-                    action=SlotActionType.COPY_FROM_DONOR,
-                    target_pos=t_start + i,
-                    donor_pos=d_start + i,
-                ))
+                slot_actions.append(
+                    SlotAction(
+                        action=SlotActionType.COPY_FROM_DONOR,
+                        target_pos=t_start + i,
+                        donor_pos=d_start + i,
+                    )
+                )
                 num_reused += 1
 
         elif t_idx in fuzzy_matches:
@@ -667,27 +674,31 @@ def compute_fuzzy_chunk_alignment(
             for i in range(len(t_chunk)):
                 if i in matched_offsets:
                     # Find the donor offset for this target offset
-                    donor_offset = next(
-                        p[1] for p in pairs if p[0] == i
+                    donor_offset = next(p[1] for p in pairs if p[0] == i)
+                    slot_actions.append(
+                        SlotAction(
+                            action=SlotActionType.COPY_FROM_DONOR,
+                            target_pos=t_start + i,
+                            donor_pos=d_start + donor_offset,
+                        )
                     )
-                    slot_actions.append(SlotAction(
-                        action=SlotActionType.COPY_FROM_DONOR,
-                        target_pos=t_start + i,
-                        donor_pos=d_start + donor_offset,
-                    ))
                     num_reused += 1
                 else:
-                    slot_actions.append(SlotAction(
-                        action=SlotActionType.RECOMPUTE,
-                        target_pos=t_start + i,
-                    ))
+                    slot_actions.append(
+                        SlotAction(
+                            action=SlotActionType.RECOMPUTE,
+                            target_pos=t_start + i,
+                        )
+                    )
         else:
             # No match: recompute all tokens in this chunk
             for i in range(len(t_chunk)):
-                slot_actions.append(SlotAction(
-                    action=SlotActionType.RECOMPUTE,
-                    target_pos=t_start + i,
-                ))
+                slot_actions.append(
+                    SlotAction(
+                        action=SlotActionType.RECOMPUTE,
+                        target_pos=t_start + i,
+                    )
+                )
 
     target_len = len(target_tokens)
     reuse_ratio = num_reused / max(target_len, 1)
@@ -697,15 +708,20 @@ def compute_fuzzy_chunk_alignment(
     logger.info(
         "fuzzy_chunk_alignment: %d exact + %d fuzzy / %d chunks "
         "(reuse=%.3f), donor_chunks=%d, target_chunks=%d",
-        num_exact_chunks, num_fuzzy_chunks, total_target_chunks,
-        reuse_ratio, len(donor_chunks), len(target_chunks),
+        num_exact_chunks,
+        num_fuzzy_chunks,
+        total_target_chunks,
+        reuse_ratio,
+        len(donor_chunks),
+        len(target_chunks),
     )
 
     # Compute mean fuzzy confidence (only for non-downgraded chunks)
     active_confidences = [c for c in chunk_confidences if c.tier != "recompute"]
     mean_conf = (
         sum(c.confidence for c in active_confidences) / len(active_confidences)
-        if active_confidences else 1.0
+        if active_confidences
+        else 1.0
     )
 
     return AlignmentResult(
@@ -740,7 +756,7 @@ def estimate_reuse_ratio(
     # Try chunk-level matching first
     donor_hashes: dict[str, int] = {}
     for i in range(0, len(donor_tokens), chunk_size):
-        chunk = donor_tokens[i:i + chunk_size]
+        chunk = donor_tokens[i : i + chunk_size]
         if len(chunk) == chunk_size:
             data = struct.pack(f"<{len(chunk)}I", *chunk)
             h = hashlib.sha256(data).hexdigest()[:32]
@@ -748,7 +764,7 @@ def estimate_reuse_ratio(
 
     matched_tokens = 0
     for i in range(0, len(target_tokens), chunk_size):
-        chunk = target_tokens[i:i + chunk_size]
+        chunk = target_tokens[i : i + chunk_size]
         if len(chunk) == chunk_size:
             data = struct.pack(f"<{len(chunk)}I", *chunk)
             h = hashlib.sha256(data).hexdigest()[:32]
@@ -761,6 +777,7 @@ def estimate_reuse_ratio(
 
     # Fallback: token-set overlap count (O(n), no SlotAction creation)
     from collections import Counter
+
     donor_counts = Counter(donor_tokens)
     for tok in target_tokens:
         if donor_counts.get(tok, 0) > 0:
@@ -797,14 +814,18 @@ def compute_alignment(
     if use_fuzzy:
         # Fuzzy alignment: exact + fuzzy chunk matching in one pass
         fuzzy_result = compute_fuzzy_chunk_alignment(
-            donor_tokens, target_tokens, chunk_size=chunk_size,
+            donor_tokens,
+            target_tokens,
+            chunk_size=chunk_size,
         )
         if fuzzy_result.reuse_ratio > 0:
             return fuzzy_result
 
     # Primary: exact chunk-level alignment (handles REORDER correctly)
     chunk_result = compute_chunk_alignment(
-        donor_tokens, target_tokens, chunk_size=chunk_size,
+        donor_tokens,
+        target_tokens,
+        chunk_size=chunk_size,
     )
 
     # If chunk alignment found reusable chunks, use it
@@ -835,10 +856,7 @@ def _levenshtein_alignment(
     # At 16K tokens, lev_opcodes takes ~3 seconds — unacceptable for the
     # hot path. Use token-set alignment (O(n)) for long sequences.
     MAX_LEVENSHTEIN_TOKENS = 4096
-    if (
-        len(donor_tokens) > MAX_LEVENSHTEIN_TOKENS
-        or len(target_tokens) > MAX_LEVENSHTEIN_TOKENS
-    ):
+    if len(donor_tokens) > MAX_LEVENSHTEIN_TOKENS or len(target_tokens) > MAX_LEVENSHTEIN_TOKENS:
         return _token_set_alignment(donor_tokens, target_tokens)
 
     ops = lev_opcodes(donor_tokens, target_tokens)
@@ -853,30 +871,34 @@ def _levenshtein_alignment(
 
         if tag == "equal":
             for i in range(dest_end - dest_start):
-                slot_actions.append(SlotAction(
-                    action=SlotActionType.COPY_FROM_DONOR,
-                    target_pos=dest_start + i,
-                    donor_pos=src_start + i,
-                ))
+                slot_actions.append(
+                    SlotAction(
+                        action=SlotActionType.COPY_FROM_DONOR,
+                        target_pos=dest_start + i,
+                        donor_pos=src_start + i,
+                    )
+                )
                 num_reused += 1
         elif tag == "replace":
             for i in range(dest_end - dest_start):
-                slot_actions.append(SlotAction(
-                    action=SlotActionType.RECOMPUTE,
-                    target_pos=dest_start + i,
-                ))
+                slot_actions.append(
+                    SlotAction(
+                        action=SlotActionType.RECOMPUTE,
+                        target_pos=dest_start + i,
+                    )
+                )
         elif tag == "insert":
             for i in range(dest_end - dest_start):
-                slot_actions.append(SlotAction(
-                    action=SlotActionType.RECOMPUTE,
-                    target_pos=dest_start + i,
-                ))
+                slot_actions.append(
+                    SlotAction(
+                        action=SlotActionType.RECOMPUTE,
+                        target_pos=dest_start + i,
+                    )
+                )
 
     target_len = len(target_tokens)
     reuse_ratio = num_reused / max(target_len, 1)
-    edit_dist = sum(
-        1 for sa in slot_actions if sa.action == SlotActionType.RECOMPUTE
-    )
+    edit_dist = sum(1 for sa in slot_actions if sa.action == SlotActionType.RECOMPUTE)
 
     return AlignmentResult(
         reuse_ratio=reuse_ratio,
@@ -909,7 +931,9 @@ def compute_batch_alignment(
 
     for donor_id, donor_tokens in candidates:
         result = compute_alignment(
-            donor_tokens, target_tokens, chunk_size=chunk_size,
+            donor_tokens,
+            target_tokens,
+            chunk_size=chunk_size,
         )
         if result.reuse_ratio >= best_ratio:
             best_ratio = result.reuse_ratio
@@ -955,28 +979,34 @@ def _token_set_alignment(
             if idx < len(candidates):
                 d_pos = candidates[idx]
                 donor_pos_idx[t_tok] = idx + 1
-                slot_actions.append(SlotAction(
-                    action=SlotActionType.COPY_FROM_DONOR,
-                    target_pos=t_pos,
-                    donor_pos=d_pos,
-                ))
+                slot_actions.append(
+                    SlotAction(
+                        action=SlotActionType.COPY_FROM_DONOR,
+                        target_pos=t_pos,
+                        donor_pos=d_pos,
+                    )
+                )
                 num_reused += 1
                 continue
 
-        slot_actions.append(SlotAction(
-            action=SlotActionType.RECOMPUTE,
-            target_pos=t_pos,
-        ))
+        slot_actions.append(
+            SlotAction(
+                action=SlotActionType.RECOMPUTE,
+                target_pos=t_pos,
+            )
+        )
 
     target_len = len(target_tokens)
     reuse_ratio = num_reused / max(target_len, 1)
     edit_dist = target_len - num_reused
 
     logger.info(
-        "token_set_alignment: reuse=%.2f (%d/%d tokens), "
-        "donor_len=%d, target_len=%d",
-        reuse_ratio, num_reused, target_len,
-        len(donor_tokens), target_len,
+        "token_set_alignment: reuse=%.2f (%d/%d tokens), donor_len=%d, target_len=%d",
+        reuse_ratio,
+        num_reused,
+        target_len,
+        len(donor_tokens),
+        target_len,
     )
 
     return AlignmentResult(
@@ -1003,16 +1033,20 @@ def _fallback_prefix_alignment(
     slot_actions: list[SlotAction] = []
     for i in range(len(target_tokens)):
         if i < prefix_len:
-            slot_actions.append(SlotAction(
-                action=SlotActionType.COPY_FROM_DONOR,
-                target_pos=i,
-                donor_pos=i,
-            ))
+            slot_actions.append(
+                SlotAction(
+                    action=SlotActionType.COPY_FROM_DONOR,
+                    target_pos=i,
+                    donor_pos=i,
+                )
+            )
         else:
-            slot_actions.append(SlotAction(
-                action=SlotActionType.RECOMPUTE,
-                target_pos=i,
-            ))
+            slot_actions.append(
+                SlotAction(
+                    action=SlotActionType.RECOMPUTE,
+                    target_pos=i,
+                )
+            )
 
     reuse_ratio = prefix_len / max(len(target_tokens), 1)
     edit_dist = len(target_tokens) - prefix_len

@@ -5,14 +5,13 @@ Computes 64-bit SimHash of token n-gram multiset. If hamming distance > 20
 
 Latency budget: <1ms (vectorized operations on token IDs, no model).
 """
+
 from __future__ import annotations
 
 import numpy as np
 
 # Lookup table for popcount (bytes 0-255)
-_POPCOUNT_TABLE = np.array(
-    [bin(i).count("1") for i in range(256)], dtype=np.uint8
-)
+_POPCOUNT_TABLE = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
 
 
 def compute_simhash(token_ids: list[int], ngram_size: int = 3) -> int:
@@ -36,10 +35,7 @@ def compute_simhash(token_ids: list[int], ngram_size: int = 3) -> int:
 
     # Hash all sampled n-grams
     hashes = np.array(
-        [
-            hash(tuple(token_ids[i : i + ngram_size]))
-            for i in range(0, n - ngram_size + 1, stride)
-        ],
+        [hash(tuple(token_ids[i : i + ngram_size])) for i in range(0, n - ngram_size + 1, stride)],
         dtype=np.int64,
     )
 
@@ -69,9 +65,7 @@ def hamming_distance(a: int, b: int) -> int:
     return bin(a ^ b).count("1")
 
 
-def bulk_hamming_distance(
-    simhashes: np.ndarray, query_simhash: int
-) -> np.ndarray:
+def bulk_hamming_distance(simhashes: np.ndarray, query_simhash: int) -> np.ndarray:
     """Vectorized hamming distance using byte-level popcount lookup.
 
     ~10x faster than bit-shifting loop for arrays.

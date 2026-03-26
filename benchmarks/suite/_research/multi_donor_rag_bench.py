@@ -22,6 +22,7 @@ Usage:
         --dataset EdinburghNLP/xsum \
         --output-dir benchmarks/results/v0.3.0/multi_donor_rag
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,6 +43,7 @@ MIN_DOC_CHARS = 1000  # Minimum document length to ensure 4K+ tokens
 @dataclass(frozen=True)
 class QueryResult:
     """Result for a single RAG query."""
+
     query_id: str
     n_docs: int
     # Single-donor (best of N)
@@ -59,6 +61,7 @@ class QueryResult:
 @dataclass
 class RAGBenchmarkResult:
     """Aggregate RAG benchmark results."""
+
     n_queries: int
     docs_per_query: int
     dataset: str
@@ -153,9 +156,7 @@ def run_benchmark(
     documents = _load_documents(dataset_name, n_docs_needed)
 
     if len(documents) < docs_per_query:
-        raise RuntimeError(
-            f"Need at least {docs_per_query} documents, got {len(documents)}"
-        )
+        raise RuntimeError(f"Need at least {docs_per_query} documents, got {len(documents)}")
 
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -186,7 +187,7 @@ def run_benchmark(
     for q_idx in range(n_queries):
         # Pick docs_per_query documents (overlapping window)
         doc_start = q_idx % max(len(documents) - docs_per_query, 1)
-        query_docs = documents[doc_start:doc_start + docs_per_query]
+        query_docs = documents[doc_start : doc_start + docs_per_query]
         query_text = _build_rag_query(query_docs, f"Summarize the above documents. Query {q_idx}")
         token_ids = list(range(len(query_text) // 4))
 
@@ -194,11 +195,13 @@ def run_benchmark(
             token_ids=token_ids,
             prompt_text=query_text,
         )
-        single_results.append((
-            result.reuse_ratio if result.found else 0.0,
-            result.donor_id or "",
-            result.timings.total_ms,
-        ))
+        single_results.append(
+            (
+                result.reuse_ratio if result.found else 0.0,
+                result.donor_id or "",
+                result.timings.total_ms,
+            )
+        )
 
         if (q_idx + 1) % 50 == 0:
             logger.info("  Single-donor progress: %d/%d", q_idx + 1, n_queries)
@@ -224,7 +227,7 @@ def run_benchmark(
     # Run queries (multi-donor)
     for q_idx in range(n_queries):
         doc_start = q_idx % max(len(documents) - docs_per_query, 1)
-        query_docs = documents[doc_start:doc_start + docs_per_query]
+        query_docs = documents[doc_start : doc_start + docs_per_query]
         query_text = _build_rag_query(query_docs, f"Summarize the above documents. Query {q_idx}")
         token_ids = list(range(len(query_text) // 4))
 
@@ -240,17 +243,19 @@ def run_benchmark(
 
         improvement = m_reuse / max(s_reuse, 0.001) if s_reuse > 0 else 1.0
 
-        query_results.append(QueryResult(
-            query_id=f"q_{q_idx:04d}",
-            n_docs=docs_per_query,
-            single_reuse_ratio=s_reuse,
-            single_donor_id=s_donor,
-            single_total_ms=s_ms,
-            multi_reuse_ratio=m_reuse,
-            multi_donor_count=m_donors,
-            multi_total_ms=m_ms,
-            reuse_improvement=improvement,
-        ))
+        query_results.append(
+            QueryResult(
+                query_id=f"q_{q_idx:04d}",
+                n_docs=docs_per_query,
+                single_reuse_ratio=s_reuse,
+                single_donor_id=s_donor,
+                single_total_ms=s_ms,
+                multi_reuse_ratio=m_reuse,
+                multi_donor_count=m_donors,
+                multi_total_ms=m_ms,
+                reuse_improvement=improvement,
+            )
+        )
 
         if (q_idx + 1) % 50 == 0:
             logger.info("  Multi-donor progress: %d/%d", q_idx + 1, n_queries)
@@ -273,7 +278,8 @@ def run_benchmark(
         mean_donor_count=statistics.mean(r.multi_donor_count for r in query_results),
         multi_better_rate=sum(
             1 for r in query_results if r.multi_reuse_ratio > r.single_reuse_ratio
-        ) / max(n_queries, 1),
+        )
+        / max(n_queries, 1),
     )
 
     # Save results
@@ -315,19 +321,26 @@ def main() -> None:
         description="Multi-donor RAG benchmark: composite vs single-donor reuse",
     )
     parser.add_argument(
-        "--n-queries", type=int, default=200,
+        "--n-queries",
+        type=int,
+        default=200,
         help="Number of RAG queries (default: 200, min: 200)",
     )
     parser.add_argument(
-        "--docs-per-query", type=int, default=3,
+        "--docs-per-query",
+        type=int,
+        default=3,
         help="Documents per query (default: 3)",
     )
     parser.add_argument(
-        "--dataset", type=str, default="EdinburghNLP/xsum",
+        "--dataset",
+        type=str,
+        default="EdinburghNLP/xsum",
         help="HuggingFace dataset for documents",
     )
     parser.add_argument(
-        "--output-dir", type=str,
+        "--output-dir",
+        type=str,
         default="benchmarks/results/v0.3.0/multi_donor_rag",
     )
     parser.add_argument("--dry-run", action="store_true")

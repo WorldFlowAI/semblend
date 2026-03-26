@@ -1,4 +1,5 @@
 """Tests for ChunkIndex — reverse chunk hash index for cross-donor lookup."""
+
 import threading
 import time
 
@@ -44,7 +45,7 @@ class TestChunkIndexBasic:
         tokens = _make_tokens(chunk_size * 3)
         chunk_index.add_donor_chunks("d1", tokens)
 
-        second_chunk = tokens[chunk_size:chunk_size * 2]
+        second_chunk = tokens[chunk_size : chunk_size * 2]
         locs = chunk_index.lookup_chunk(second_chunk)
         assert len(locs) == 1
         assert locs[0].chunk_idx == 1
@@ -130,7 +131,7 @@ class TestFindMatchingChunks:
         chunk_index.add_donor_chunks("d1", donor)
 
         # Target shares first 3 chunks, 4th is different
-        target = donor[:chunk_size * 3] + _make_tokens(chunk_size, offset=9000)
+        target = donor[: chunk_size * 3] + _make_tokens(chunk_size, offset=9000)
         matches = chunk_index.find_matching_chunks(target)
 
         assert len(matches) == 3
@@ -205,9 +206,7 @@ class TestMemoryEstimate:
     def test_memory_grows_with_entries(self, chunk_index, chunk_size):
         m0 = chunk_index.estimated_memory_bytes()
         for i in range(100):
-            chunk_index.add_donor_chunks(
-                f"d{i}", _make_tokens(chunk_size * 10, offset=i * 1000)
-            )
+            chunk_index.add_donor_chunks(f"d{i}", _make_tokens(chunk_size * 10, offset=i * 1000))
         m1 = chunk_index.estimated_memory_bytes()
         assert m1 > m0
 
@@ -235,9 +234,7 @@ class TestLatency:
     def test_lookup_under_1ms(self, chunk_size):
         idx = ChunkIndex(max_donors=10_000, chunk_size=chunk_size)
         for i in range(1000):
-            idx.add_donor_chunks(
-                f"d{i}", _make_tokens(chunk_size * 10, offset=i * 10000)
-            )
+            idx.add_donor_chunks(f"d{i}", _make_tokens(chunk_size * 10, offset=i * 10000))
 
         target_chunk = _make_tokens(chunk_size, offset=500 * 10000)
         t0 = time.monotonic()

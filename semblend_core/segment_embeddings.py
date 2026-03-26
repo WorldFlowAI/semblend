@@ -4,6 +4,7 @@ Stores one embedding per KV-aligned chunk for fine-grained donor-target
 comparison. Used by the PQ segment store for memory-efficient storage
 and the confidence-gated fuzzy matcher for semantic verification.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ class SegmentEmbeddings:
     The number of segments varies by input length:
     n_segments = ceil(n_tokens / chunk_size).
     """
+
     matrix: np.ndarray  # [n_segments, dim], L2-normalized float32
     chunk_token_ranges: tuple[tuple[int, int], ...]  # (start, end) per segment
     chunk_size: int  # KV block size used for segmentation
@@ -44,5 +46,6 @@ class EmbedResult:
     embedding is sufficient. Multi-chunk inputs include per-segment
     embeddings for fine-grained fuzzy match verification.
     """
+
     pooled: np.ndarray  # [dim] L2-normalized
     segments: SegmentEmbeddings | None = None

@@ -16,6 +16,7 @@ Components:
   - triton_kernels.py    — CUDA scatter kernels
   - simhash.py      — SimHash pre-filter
 """
+
 from semblend_core.alignment import (
     AlignmentResult,
     SlotAction,
@@ -38,7 +39,6 @@ from semblend_core.donor_store import DonorMatch, DonorNode, DonorStore
 from semblend_core.embedder import (
     EmbedderType,
     JaccardEmbedder,
-    JinaEmbedder,
     MiniLMEmbedder,
     OnnxGpuEmbedder,
     create_embedder,
@@ -124,7 +124,6 @@ __all__ = [
     # Embedder
     "EmbedderType",
     "JaccardEmbedder",
-    "JinaEmbedder",
     "MiniLMEmbedder",
     "OnnxGpuEmbedder",
     "create_embedder",

@@ -1,4 +1,5 @@
 """Tests for segment-level text splitting."""
+
 from __future__ import annotations
 
 import pytest
@@ -95,8 +96,12 @@ class TestSegmentTokens:
             return list(range(len(t)))
 
         segments = segment_tokens(
-            token_ids, text, mock_encode,
-            mode="sentence", min_tokens=5, max_tokens=100,
+            token_ids,
+            text,
+            mock_encode,
+            mode="sentence",
+            min_tokens=5,
+            max_tokens=100,
         )
         assert len(segments) >= 1
         # Should cover all tokens
@@ -111,14 +116,20 @@ class TestSegmentTokens:
             return list(range(len(t)))
 
         segments = segment_tokens(
-            token_ids, text, mock_encode,
-            mode="sentence", min_tokens=1, max_tokens=50,
+            token_ids,
+            text,
+            mock_encode,
+            mode="sentence",
+            min_tokens=1,
+            max_tokens=50,
         )
         assert all(s.n_tokens <= 50 for s in segments)
 
     def test_empty_returns_single(self):
         segments = segment_tokens(
-            [1, 2, 3], "", lambda t: [],
+            [1, 2, 3],
+            "",
+            lambda t: [],
             mode="sentence",
         )
         assert len(segments) == 1
@@ -139,14 +150,18 @@ class TestTextSegmentProperties:
 class TestTokenSegmentProperties:
     def test_n_tokens(self):
         seg = TokenSegment(
-            token_ids=(1, 2, 3), start_token=10, end_token=13,
+            token_ids=(1, 2, 3),
+            start_token=10,
+            end_token=13,
             segment_type="sentence",
         )
         assert seg.n_tokens == 3
 
     def test_frozen(self):
         seg = TokenSegment(
-            token_ids=(1,), start_token=0, end_token=1,
+            token_ids=(1,),
+            start_token=0,
+            end_token=1,
             segment_type="sentence",
         )
         with pytest.raises(AttributeError):

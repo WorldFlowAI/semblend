@@ -6,6 +6,7 @@ These extend the existing PAPER_TABLES dict in paper_tables.py.
 NOTE: Do NOT execute these benchmarks without explicit go-ahead.
 Benchmark runs are managed separately.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -92,8 +93,7 @@ FUZZY_TABLES: dict[int, TableConfig] = {
             "confidence_sweep": "0.70,0.80,0.85,0.90,0.95",
         },
         description=(
-            "Quality-coverage tradeoff: PPL ratio and hit rate "
-            "at various confidence thresholds."
+            "Quality-coverage tradeoff: PPL ratio and hit rate at various confidence thresholds."
         ),
     ),
     22: TableConfig(
@@ -122,8 +122,7 @@ FUZZY_TABLES: dict[int, TableConfig] = {
         n_samples=100,
         extra_args={"cacheblend_sweep": "1"},
         description=(
-            "CacheBlend layer verification impact on PPL/TTFT "
-            "across match confidence tiers."
+            "CacheBlend layer verification impact on PPL/TTFT across match confidence tiers."
         ),
     ),
     24: TableConfig(
@@ -134,8 +133,10 @@ FUZZY_TABLES: dict[int, TableConfig] = {
         models=(QWEN_AWQ,),
         script="e2e/fuzzy_scenario_hitrate_bench.py",
         datasets=(
-            "shifted_prefix_xsum", "minor_edit_cnn",
-            "same_topic_multinews", "multiturn_wildchat",
+            "shifted_prefix_xsum",
+            "minor_edit_cnn",
+            "same_topic_multinews",
+            "multiturn_wildchat",
             "cross_instruction_rag",
         ),
         n_samples=100,

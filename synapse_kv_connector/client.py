@@ -124,9 +124,7 @@ class SynapseKVClient:
             ValueError: On invalid input.
         """
         if kv_data.dtype != np.float16:
-            raise ValueError(
-                f"kv_data must be float16, got {kv_data.dtype}"
-            )
+            raise ValueError(f"kv_data must be float16, got {kv_data.dtype}")
 
         token_hash = compute_token_hash(token_ids)
         kv_b64 = base64.standard_b64encode(kv_data.tobytes()).decode("ascii")
@@ -184,9 +182,7 @@ class SynapseKVClient:
             kv_data=kv_array.copy(),
         )
 
-    def load_kv_state_by_hash(
-        self, token_hash: str
-    ) -> LoadKvResult | None:
+    def load_kv_state_by_hash(self, token_hash: str) -> LoadKvResult | None:
         """Load a KV state block by its pre-computed token hash.
 
         Unlike ``load_kv_state``, this skips hash computation and uses

@@ -10,6 +10,7 @@ prevent semantic staleness from isolated cross-donor matches.
 
 Feature flag: SEMBLEND_MULTI_DONOR=1 to enable.
 """
+
 from __future__ import annotations
 
 import logging
@@ -122,14 +123,12 @@ def compute_multi_donor_alignment(
     Returns:
         MultiDonorAlignmentResult or None if no useful matches found.
     """
-    use_context_gate = (
-        context_gate if context_gate is not None else _CONTEXT_GATE_ENABLED
-    )
+    use_context_gate = context_gate if context_gate is not None else _CONTEXT_GATE_ENABLED
 
     # Split target into chunks
     target_chunks: list[list[int]] = []
     for i in range(0, len(target_tokens), chunk_size):
-        target_chunks.append(target_tokens[i:i + chunk_size])
+        target_chunks.append(target_tokens[i : i + chunk_size])
 
     num_target_chunks = len(target_chunks)
 
@@ -157,9 +156,7 @@ def compute_multi_donor_alignment(
                     match_type=MatchType.EXACT,
                     confidence=1.0,
                 )
-                used_donor_chunks.setdefault(loc.donor_id, set()).add(
-                    loc.chunk_idx
-                )
+                used_donor_chunks.setdefault(loc.donor_id, set()).add(loc.chunk_idx)
                 chunk_index_hits += 1
                 break
 
@@ -170,7 +167,8 @@ def compute_multi_donor_alignment(
     semantic_chunk_hits = 0
 
     unmatched_indices = [
-        t_idx for t_idx in range(num_target_chunks)
+        t_idx
+        for t_idx in range(num_target_chunks)
         if t_idx not in assignments and len(target_chunks[t_idx]) == chunk_size
     ]
 
@@ -179,14 +177,18 @@ def compute_multi_donor_alignment(
         # We need the embedder to produce per-chunk embeddings
         try:
             from semblend_core.pq_segment_store import PQSegmentStore
+
             if isinstance(pq_store, PQSegmentStore) and pq_store.size > 0:
                 # Try to get pre-computed segment embeddings for target chunks
                 # If not available, we need to embed them on the fly
-                if hasattr(pq_store, 'find_best_donor_per_chunk'):
+                if hasattr(pq_store, "find_best_donor_per_chunk"):
                     # Build query segment embeddings from target text chunks
                     # We need the embedder — check if one is available via pipeline
                     query_seg_embeddings = _get_chunk_embeddings(
-                        target_text, unmatched_indices, chunk_size, embedder,
+                        target_text,
+                        unmatched_indices,
+                        chunk_size,
+                        embedder,
                     )
                     if query_seg_embeddings is not None:
                         matches = pq_store.find_best_donor_per_chunk(
@@ -204,23 +206,22 @@ def compute_multi_donor_alignment(
                                     match_type=MatchType.FUZZY,
                                     confidence=sim,
                                 )
-                                used_donor_chunks.setdefault(
-                                    donor_id, set()
-                                ).add(donor_chunk_idx)
+                                used_donor_chunks.setdefault(donor_id, set()).add(donor_chunk_idx)
                                 semantic_chunk_hits += 1
 
                         if semantic_chunk_hits > 0:
                             logger.info(
-                                "PQ semantic matching: %d/%d chunks matched "
-                                "across donors",
-                                semantic_chunk_hits, len(unmatched_indices),
+                                "PQ semantic matching: %d/%d chunks matched across donors",
+                                semantic_chunk_hits,
+                                len(unmatched_indices),
                             )
         except Exception as e:
             logger.debug("PQ semantic matching failed: %s", e)
 
     # Update unmatched indices after semantic matching
     unmatched_indices = [
-        t_idx for t_idx in range(num_target_chunks)
+        t_idx
+        for t_idx in range(num_target_chunks)
         if t_idx not in assignments
         and t_idx not in semantic_assignments
         and len(target_chunks[t_idx]) == chunk_size
@@ -245,6 +246,7 @@ def compute_multi_donor_alignment(
         # to find donor chunks with high token overlap (O(chunk_size) per chunk).
         if not candidate_donor_ids and token_index is not None:
             from semblend_core.token_index import TokenIndex
+
             if isinstance(token_index, TokenIndex):
                 # For each target chunk, find candidate donor chunks via TokenIndex
                 for t_idx in unmatched_indices:
@@ -257,7 +259,8 @@ def compute_multi_donor_alignment(
                     logger.info(
                         "multi_donor fuzzy: TokenIndex found %d candidate donors "
                         "for %d unmatched chunks",
-                        len(candidate_donor_ids), len(unmatched_indices),
+                        len(candidate_donor_ids),
+                        len(unmatched_indices),
                     )
 
         # Fallback: brute-force Jaccard if TokenIndex unavailable
@@ -282,7 +285,7 @@ def compute_multi_donor_alignment(
             d_chunks: list[list[int]] = []
             d_starts: list[int] = []
             for j in range(0, len(donor_tokens), chunk_size):
-                d_chunks.append(donor_tokens[j:j + chunk_size])
+                d_chunks.append(donor_tokens[j : j + chunk_size])
                 d_starts.append(j)
             donor_chunk_cache[donor_id] = (d_chunks, d_starts)
 
@@ -291,9 +294,10 @@ def compute_multi_donor_alignment(
         # when the underlying content is identical.
         multi_donor_fuzzy_overlap = max(0.70, min_fuzzy_overlap - 0.20)
         logger.info(
-            "multi_donor fuzzy: checking %d unmatched chunks against %d donors "
-            "(threshold=%.2f)",
-            len(unmatched_indices), len(donor_chunk_cache), multi_donor_fuzzy_overlap,
+            "multi_donor fuzzy: checking %d unmatched chunks against %d donors (threshold=%.2f)",
+            len(unmatched_indices),
+            len(donor_chunk_cache),
+            multi_donor_fuzzy_overlap,
         )
 
         for t_idx in unmatched_indices:
@@ -304,16 +308,18 @@ def compute_multi_donor_alignment(
             for donor_id, (donor_chunks, donor_chunk_starts) in donor_chunk_cache.items():
                 used = used_donor_chunks.get(donor_id, set())
                 result = _fuzzy_match_chunk(
-                    t_chunk, donor_chunks, donor_chunk_starts,
-                    used, multi_donor_fuzzy_overlap,
+                    t_chunk,
+                    donor_chunks,
+                    donor_chunk_starts,
+                    used,
+                    multi_donor_fuzzy_overlap,
                 )
                 if result is not None:
                     d_idx, pairs = result
                     t_counts = Counter(t_chunk)
                     d_counts = Counter(donor_chunks[d_idx])
                     overlap_count = sum(
-                        min(t_counts[tok], d_counts[tok])
-                        for tok in t_counts if tok in d_counts
+                        min(t_counts[tok], d_counts[tok]) for tok in t_counts if tok in d_counts
                     )
                     overlap = overlap_count / max(len(t_chunk), 1)
                     if overlap > best_overlap:
@@ -328,9 +334,9 @@ def compute_multi_donor_alignment(
 
             if best_match is not None and best_match.donor_id is not None:
                 fuzzy_assignments[t_idx] = best_match
-                used_donor_chunks.setdefault(
-                    best_match.donor_id, set()
-                ).add(best_match.donor_chunk_idx)
+                used_donor_chunks.setdefault(best_match.donor_id, set()).add(
+                    best_match.donor_chunk_idx
+                )
 
     # Merge assignments (exact > semantic > fuzzy priority)
     all_assignments = {**fuzzy_assignments, **semantic_assignments, **assignments}
@@ -342,24 +348,22 @@ def compute_multi_donor_alignment(
         rejected = 0
 
         for t_idx, asgn in all_assignments.items():
-            has_neighbor = (
-                (t_idx - 1) in matched_set
-                or (t_idx + 1) in matched_set
-            )
+            has_neighbor = (t_idx - 1) in matched_set or (t_idx + 1) in matched_set
             if has_neighbor:
                 validated[t_idx] = asgn
             else:
                 rejected += 1
                 logger.debug(
-                    "multi_donor context_gate: rejected isolated chunk %d "
-                    "from donor %s",
-                    t_idx, asgn.donor_id,
+                    "multi_donor context_gate: rejected isolated chunk %d from donor %s",
+                    t_idx,
+                    asgn.donor_id,
                 )
 
         if rejected > 0:
             logger.info(
                 "multi_donor context_gate: rejected %d/%d isolated matches",
-                rejected, len(all_assignments),
+                rejected,
+                len(all_assignments),
             )
         all_assignments = validated
 
@@ -367,7 +371,9 @@ def compute_multi_donor_alignment(
         logger.info(
             "multi_donor_alignment: no assignments after all phases "
             "(exact=%d, semantic=%d, fuzzy=%d, total_chunks=%d)",
-            len(assignments), len(semantic_assignments), len(fuzzy_assignments),
+            len(assignments),
+            len(semantic_assignments),
+            len(fuzzy_assignments),
             num_target_chunks,
         )
         return None
@@ -425,12 +431,14 @@ def _build_composite_result(
                 exact_chunks += 1
                 for i in range(len(t_chunk)):
                     if t_start + i < len(target_tokens):
-                        slot_actions.append(MultiDonorSlotAction(
-                            action="copy_from_donor",
-                            target_pos=t_start + i,
-                            donor_pos=d_start + i,
-                            donor_id=asgn.donor_id,
-                        ))
+                        slot_actions.append(
+                            MultiDonorSlotAction(
+                                action="copy_from_donor",
+                                target_pos=t_start + i,
+                                donor_pos=d_start + i,
+                                donor_id=asgn.donor_id,
+                            )
+                        )
                         map_donor_ids.append(asgn.donor_id)
                         map_donor_positions.append(d_start + i)
                         map_target_positions.append(t_start + i)
@@ -442,10 +450,11 @@ def _build_composite_result(
                 # (handles shifted chunk boundaries where same tokens
                 # appear at different offsets within the chunk)
                 donor_tokens = donor_token_store.get(asgn.donor_id, [])
-                d_chunk = donor_tokens[d_start:d_start + chunk_size]
+                d_chunk = donor_tokens[d_start : d_start + chunk_size]
 
                 # Build donor token → position map for greedy matching
                 from collections import defaultdict
+
                 donor_positions: dict[int, list[int]] = defaultdict(list)
                 for di, tok in enumerate(d_chunk):
                     donor_positions[tok].append(di)
@@ -461,33 +470,41 @@ def _build_composite_result(
                         if idx < len(candidates):
                             d_offset = candidates[idx]
                             donor_pos_idx[tok] = idx + 1
-                            slot_actions.append(MultiDonorSlotAction(
-                                action="copy_from_donor",
-                                target_pos=t_start + i,
-                                donor_pos=d_start + d_offset,
-                                donor_id=asgn.donor_id,
-                            ))
+                            slot_actions.append(
+                                MultiDonorSlotAction(
+                                    action="copy_from_donor",
+                                    target_pos=t_start + i,
+                                    donor_pos=d_start + d_offset,
+                                    donor_id=asgn.donor_id,
+                                )
+                            )
                             map_donor_ids.append(asgn.donor_id)
                             map_donor_positions.append(d_start + d_offset)
                             map_target_positions.append(t_start + i)
                             num_reused += 1
                             continue
-                    slot_actions.append(MultiDonorSlotAction(
-                        action="recompute",
-                        target_pos=t_start + i,
-                    ))
+                    slot_actions.append(
+                        MultiDonorSlotAction(
+                            action="recompute",
+                            target_pos=t_start + i,
+                        )
+                    )
         else:
             recompute_chunks += 1
-            full_assignments.append(ChunkAssignment(
-                target_chunk_idx=t_idx,
-                match_type=MatchType.RECOMPUTE,
-            ))
+            full_assignments.append(
+                ChunkAssignment(
+                    target_chunk_idx=t_idx,
+                    match_type=MatchType.RECOMPUTE,
+                )
+            )
             for i in range(len(t_chunk)):
                 if t_start + i < len(target_tokens):
-                    slot_actions.append(MultiDonorSlotAction(
-                        action="recompute",
-                        target_pos=t_start + i,
-                    ))
+                    slot_actions.append(
+                        MultiDonorSlotAction(
+                            action="recompute",
+                            target_pos=t_start + i,
+                        )
+                    )
 
     target_len = len(target_tokens)
     reuse_ratio = num_reused / max(target_len, 1)
@@ -510,8 +527,12 @@ def _build_composite_result(
     logger.info(
         "multi_donor_alignment: %d exact + %d fuzzy + %d recompute chunks, "
         "reuse=%.3f, donors=%d, chunk_index_hits=%d",
-        exact_chunks, fuzzy_chunks, recompute_chunks,
-        reuse_ratio, len(donor_ids), chunk_index_hits,
+        exact_chunks,
+        fuzzy_chunks,
+        recompute_chunks,
+        reuse_ratio,
+        len(donor_ids),
+        chunk_index_hits,
     )
 
     return MultiDonorAlignmentResult(

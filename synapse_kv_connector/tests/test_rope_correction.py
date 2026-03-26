@@ -6,21 +6,19 @@ have been computed from scratch at the target position.
 
 The key identity: RoPE(a) × RoPE⁻¹(b) = RoPE(a - b)
 """
-import math
 
 import pytest
 import torch
 
 
-def apply_rope_from_scratch(x: torch.Tensor, positions: torch.Tensor,
-                            head_dim: int, rope_base: float = 10000.0) -> torch.Tensor:
+def apply_rope_from_scratch(
+    x: torch.Tensor, positions: torch.Tensor, head_dim: int, rope_base: float = 10000.0
+) -> torch.Tensor:
     """Apply RoPE to raw (pre-rotation) tensor at given positions.
 
     This is the reference implementation matching Qwen2/LLaMA RoPE.
     """
-    inv_freq = 1.0 / (
-        rope_base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim)
-    )
+    inv_freq = 1.0 / (rope_base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
     result = x.clone().float()
     for i, pos in enumerate(positions):
         theta = float(pos) * inv_freq
@@ -78,8 +76,10 @@ class TestRoPECorrection:
 
         # The corrected K at position 5 should match ground truth at position 10
         torch.testing.assert_close(
-            corrected[:, 5, :], k_at_10[:, 0, :],
-            atol=1e-4, rtol=1e-4,
+            corrected[:, 5, :],
+            k_at_10[:, 0, :],
+            atol=1e-4,
+            rtol=1e-4,
         )
 
     def test_exact_correction_reorder(self):
@@ -100,14 +100,19 @@ class TestRoPECorrection:
 
         # Apply RoPE correction
         corrected = rope_correct_k(
-            k_donor, donor_positions, target_positions, head_dim=head_dim,
+            k_donor,
+            donor_positions,
+            target_positions,
+            head_dim=head_dim,
         )
 
         # Each position should match the ground truth
         for i in range(seq_len):
             torch.testing.assert_close(
-                corrected[:, i, :], k_target_gt[:, i, :],
-                atol=1e-3, rtol=1e-3,
+                corrected[:, i, :],
+                k_target_gt[:, i, :],
+                atol=1e-3,
+                rtol=1e-3,
                 msg=f"Position {i}: donor_pos={donor_positions[i]}, target_pos={target_positions[i]}",
             )
 
@@ -132,8 +137,10 @@ class TestRoPECorrection:
         )
 
         torch.testing.assert_close(
-            corrected[:, 100, :], k_at_50[:, 0, :],
-            atol=1e-3, rtol=1e-3,
+            corrected[:, 100, :],
+            k_at_50[:, 0, :],
+            atol=1e-3,
+            rtol=1e-3,
         )
 
     def test_large_sequence(self):
@@ -165,7 +172,11 @@ class TestRoPECorrection:
         target_pos = torch.tensor([5, 10, 15], dtype=torch.int32)
 
         rope_correct_scatter_paged(
-            kv_cache, donor_kv, block_table, donor_pos, target_pos,
+            kv_cache,
+            donor_kv,
+            block_table,
+            donor_pos,
+            target_pos,
         )
 
         # V at target positions should match donor V exactly
@@ -173,8 +184,10 @@ class TestRoPECorrection:
             tb = int(tp) // block_size
             to_ = int(tp) % block_size
             torch.testing.assert_close(
-                kv_cache[tb, 1, :, to_, :], donor_kv[1, :, int(dp), :],
-                atol=1e-6, rtol=1e-6,
+                kv_cache[tb, 1, :, to_, :],
+                donor_kv[1, :, int(dp), :],
+                atol=1e-6,
+                rtol=1e-6,
             )
 
     def test_paged_scatter_k_corrected(self):
@@ -199,7 +212,11 @@ class TestRoPECorrection:
         target_pos = torch.tensor([target_pos_val], dtype=torch.int32)
 
         rope_correct_scatter_paged(
-            kv_cache, donor_kv, block_table, donor_pos, target_pos,
+            kv_cache,
+            donor_kv,
+            block_table,
+            donor_pos,
+            target_pos,
         )
 
         # Ground truth: K at target position 7
@@ -209,8 +226,10 @@ class TestRoPECorrection:
         to_ = target_pos_val % block_size
 
         torch.testing.assert_close(
-            kv_cache[tb, 0, :, to_, :], k_at_7[:, 0, :],
-            atol=1e-3, rtol=1e-3,
+            kv_cache[tb, 0, :, to_, :],
+            k_at_7[:, 0, :],
+            atol=1e-3,
+            rtol=1e-3,
         )
 
     def test_permute_paged_kv(self):
@@ -231,18 +250,23 @@ class TestRoPECorrection:
 
         # V at pos 1 should now contain what was at pos 0
         torch.testing.assert_close(
-            kv_cache[0, 1, :, 1, :], original_v_pos0,
-            atol=1e-6, rtol=1e-6,
+            kv_cache[0, 1, :, 1, :],
+            original_v_pos0,
+            atol=1e-6,
+            rtol=1e-6,
         )
         # V at pos 0 should now contain what was at pos 1
         torch.testing.assert_close(
-            kv_cache[0, 1, :, 0, :], original_v_pos1,
-            atol=1e-6, rtol=1e-6,
+            kv_cache[0, 1, :, 0, :],
+            original_v_pos1,
+            atol=1e-6,
+            rtol=1e-6,
         )
 
     def test_rope_correction_is_cheap(self):
         """Verify correction overhead is negligible (<1ms for 8K tokens)."""
         import time
+
         from synapse_kv_connector.rope_correction import rope_correct_k
 
         num_heads, seq_len, head_dim = 4, 8192, 128
@@ -259,7 +283,9 @@ class TestRoPECorrection:
         elapsed_ms = (time.monotonic() - t0) * 1000
 
         # CPU path may be slower than GPU; just verify it completes
-        assert elapsed_ms < 5000, f"RoPE correction took {elapsed_ms:.1f}ms (budget: <5000ms on CPU)"
+        assert elapsed_ms < 5000, (
+            f"RoPE correction took {elapsed_ms:.1f}ms (budget: <5000ms on CPU)"
+        )
 
 
 class TestRoPECorrectionComposition:
@@ -282,15 +308,18 @@ class TestRoPECorrectionComposition:
         step2 = rope_correct_k(
             step1,
             torch.tensor([3], dtype=torch.int32),
-            torch.tensor([3], dtype=torch.int32) - (torch.tensor([8], dtype=torch.int32) - torch.tensor([3], dtype=torch.int32)),
+            torch.tensor([3], dtype=torch.int32)
+            - (torch.tensor([8], dtype=torch.int32) - torch.tensor([3], dtype=torch.int32)),
             head_dim=head_dim,
         )
 
         # After round-trip, should recover original (within float precision)
         # Note: the correction modifies k at donor_pos, so check position 3
         torch.testing.assert_close(
-            step2[:, 3, :], k[:, 3, :],
-            atol=1e-3, rtol=1e-3,
+            step2[:, 3, :],
+            k[:, 3, :],
+            atol=1e-3,
+            rtol=1e-3,
         )
 
     def test_different_rope_bases(self):
@@ -301,12 +330,8 @@ class TestRoPECorrectionComposition:
             num_heads, head_dim = 2, 32
             raw_k = torch.randn(num_heads, 1, head_dim)
 
-            k_at_0 = apply_rope_from_scratch(
-                raw_k, torch.tensor([0]), head_dim, rope_base
-            )
-            k_at_10 = apply_rope_from_scratch(
-                raw_k, torch.tensor([10]), head_dim, rope_base
-            )
+            k_at_0 = apply_rope_from_scratch(raw_k, torch.tensor([0]), head_dim, rope_base)
+            k_at_10 = apply_rope_from_scratch(raw_k, torch.tensor([10]), head_dim, rope_base)
 
             k_padded = torch.zeros(num_heads, 11, head_dim)
             k_padded[:, 0, :] = k_at_0[:, 0, :]
@@ -320,8 +345,10 @@ class TestRoPECorrectionComposition:
             )
 
             torch.testing.assert_close(
-                corrected[:, 0, :], k_at_10[:, 0, :],
-                atol=1e-3, rtol=1e-3,
+                corrected[:, 0, :],
+                k_at_10[:, 0, :],
+                atol=1e-3,
+                rtol=1e-3,
                 msg=f"Failed for rope_base={rope_base}",
             )
 
@@ -376,8 +403,10 @@ class TestPositionMapping:
         )
 
         torch.testing.assert_close(
-            corrected[:, 3, :], k_at_7[:, 0, :],
-            atol=1e-3, rtol=1e-3,
+            corrected[:, 3, :],
+            k_at_7[:, 0, :],
+            atol=1e-3,
+            rtol=1e-3,
         )
 
     def test_reorder_position_map(self):
@@ -413,8 +442,10 @@ class TestPositionMapping:
 
         for i in range(seq_len):
             torch.testing.assert_close(
-                corrected[:, i, :], k_target_gt[:, i, :],
-                atol=1e-3, rtol=1e-3,
+                corrected[:, i, :],
+                k_target_gt[:, i, :],
+                atol=1e-3,
+                rtol=1e-3,
             )
 
 
@@ -436,8 +467,7 @@ class TestNoPePermutation:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Build a paged KV cache and block table for testing."""
         num_blocks = (seq_len + block_size - 1) // block_size + 2
-        kv_cache = torch.zeros(num_blocks, 2, num_heads, block_size, head_dim,
-                               dtype=torch.float16)
+        kv_cache = torch.zeros(num_blocks, 2, num_heads, block_size, head_dim, dtype=torch.float16)
         num_logical = (seq_len + block_size - 1) // block_size
         block_table = torch.arange(num_logical, dtype=torch.int32)
         return kv_cache, block_table
@@ -470,9 +500,7 @@ class TestNoPePermutation:
         kv_cache, block_table = self._build_paged_cache(num_heads, head_dim, 32, block_size)
         kv_cache[0, 0, :, 5 % block_size, :] = k_at_pos5.half()  # K at pos 5
 
-        nope_permute_paged_kv(
-            kv_cache, block_table, permutation=[(5, 5)], rope_base=10000.0
-        )
+        nope_permute_paged_kv(kv_cache, block_table, permutation=[(5, 5)], rope_base=10000.0)
 
         result = kv_cache[0, 0, :, 5 % block_size, :].float()
         torch.testing.assert_close(result, k_at_pos5, atol=5e-3, rtol=5e-3)
@@ -555,9 +583,7 @@ class TestNoPePermutation:
         v_original = torch.randn(num_heads, head_dim, dtype=torch.float16)
         kv_cache[0, 1, :, 2, :] = v_original  # V at pos 2 (block 0, offset 2)
 
-        nope_permute_paged_kv(
-            kv_cache, block_table, permutation=[(2, 10)], rope_base=10000.0
-        )
+        nope_permute_paged_kv(kv_cache, block_table, permutation=[(2, 10)], rope_base=10000.0)
 
         tb = 10 // block_size
         to_ = 10 % block_size
@@ -586,7 +612,9 @@ class TestNoPePermutation:
         k_at_src[:, 1::2] = raw_k[:, 0::2] * torch.sin(theta) + raw_k[:, 1::2] * torch.cos(theta)
 
         def make_cache():
-            kv, bt = self._build_paged_cache(num_heads, head_dim, max(tgt_pos + 16, 128), block_size)
+            kv, bt = self._build_paged_cache(
+                num_heads, head_dim, max(tgt_pos + 16, 128), block_size
+            )
             sb = src_pos // block_size
             so = src_pos % block_size
             kv[sb, 0, :, so, :] = k_at_src.half()
@@ -603,6 +631,7 @@ class TestNoPePermutation:
         torch.testing.assert_close(
             kv_n[tb, 0, :, to_, :].float(),
             kv_d[tb, 0, :, to_, :].float(),
-            atol=5e-3, rtol=5e-3,
+            atol=5e-3,
+            rtol=5e-3,
             msg=f"NoPE != delta at Δ={delta}",
         )

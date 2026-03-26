@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from synapse_kv_connector.attention_patch import (
     PrefillPatchResult,
@@ -12,10 +11,8 @@ from synapse_kv_connector.attention_patch import (
     summarize_patch,
 )
 from synapse_kv_connector.partial_attention import (
-    AttentionMode,
     LayerMask,
     PartialAttentionPlan,
-    PositionMask,
     build_attention_plan,
 )
 
@@ -40,10 +37,7 @@ def _make_plan(
             "target_pos": p,
         }
         for p in copy_positions
-    ] + [
-        {"action": "placeholder", "target_pos": p}
-        for p in placeholder_positions
-    ]
+    ] + [{"action": "placeholder", "target_pos": p} for p in placeholder_positions]
 
     return build_attention_plan(
         donor_id="test-donor",
@@ -83,20 +77,12 @@ class TestApplyKvPatch:
         result = apply_kv_patch(plan, 0, kv_cache, donor_kv)
 
         # Positions 0,1,2 should have donor values
-        np.testing.assert_array_equal(
-            result[0, 0, 0, :], np.full(head_dim, 1.0, dtype=np.float16)
-        )
-        np.testing.assert_array_equal(
-            result[0, 0, 1, :], np.full(head_dim, 2.0, dtype=np.float16)
-        )
-        np.testing.assert_array_equal(
-            result[0, 0, 2, :], np.full(head_dim, 3.0, dtype=np.float16)
-        )
+        np.testing.assert_array_equal(result[0, 0, 0, :], np.full(head_dim, 1.0, dtype=np.float16))
+        np.testing.assert_array_equal(result[0, 0, 1, :], np.full(head_dim, 2.0, dtype=np.float16))
+        np.testing.assert_array_equal(result[0, 0, 2, :], np.full(head_dim, 3.0, dtype=np.float16))
 
         # Positions 3,4,5 should remain zeros (placeholders)
-        np.testing.assert_array_equal(
-            result[0, 0, 3, :], np.zeros(head_dim, dtype=np.float16)
-        )
+        np.testing.assert_array_equal(result[0, 0, 3, :], np.zeros(head_dim, dtype=np.float16))
 
     def test_no_copy_for_full_recompute_layer(self):
         plan = _make_plan(num_layers=2)

@@ -4,6 +4,7 @@ Core pipeline logic lives in semblend_core. This module re-exports
 everything and provides a vLLM-specific factory that injects the
 CAGRA GPU-accelerated donor store when available.
 """
+
 from semblend_core.pipeline import (  # noqa: F401
     PipelineResult,
     PipelineTimings,

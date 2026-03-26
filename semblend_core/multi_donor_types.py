@@ -3,6 +3,7 @@
 Frozen immutable types for multi-donor alignment, scatter-gather KV
 assembly, and donor-aware RoPE position correction.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -11,8 +12,9 @@ from enum import Enum
 
 class MatchType(Enum):
     """How a target chunk was matched to a donor."""
-    EXACT = "exact"        # Hash-matched (O(1) ChunkIndex lookup)
-    FUZZY = "fuzzy"        # Token-overlap matched (PQ ADC fallback)
+
+    EXACT = "exact"  # Hash-matched (O(1) ChunkIndex lookup)
+    FUZZY = "fuzzy"  # Token-overlap matched (PQ ADC fallback)
     RECOMPUTE = "recompute"  # No match — fresh prefill needed
 
 
@@ -22,6 +24,7 @@ class ChunkAssignment:
 
     Produced by multi_donor_alignment for each target chunk.
     """
+
     target_chunk_idx: int
     donor_id: str | None = None
     donor_chunk_idx: int | None = None
@@ -36,6 +39,7 @@ class MultiDonorSlotAction:
     Unlike the single-donor SlotAction, this carries the donor_id
     so the connector knows WHICH donor's KV to load for each position.
     """
+
     action: str  # "copy_from_donor" | "recompute"
     target_pos: int
     donor_pos: int | None = None
@@ -50,6 +54,7 @@ class MultiDonorPositionMapping:
     and the donor that owns the KV. RoPE correction applies
     delta = target_pos - donor_pos per position.
     """
+
     donor_ids: tuple[str, ...] = ()
     donor_positions: tuple[int, ...] = ()
     target_positions: tuple[int, ...] = ()
@@ -60,16 +65,11 @@ class MultiDonorPositionMapping:
 
     @property
     def needs_correction(self) -> bool:
-        return any(
-            d != t
-            for d, t in zip(self.donor_positions, self.target_positions)
-        )
+        return any(d != t for d, t in zip(self.donor_positions, self.target_positions))
 
     def for_donor(self, donor_id: str) -> "MultiDonorPositionMapping":
         """Filter to positions from a specific donor."""
-        indices = [
-            i for i, did in enumerate(self.donor_ids) if did == donor_id
-        ]
+        indices = [i for i, did in enumerate(self.donor_ids) if did == donor_id]
         return MultiDonorPositionMapping(
             donor_ids=tuple(self.donor_ids[i] for i in indices),
             donor_positions=tuple(self.donor_positions[i] for i in indices),
@@ -93,6 +93,7 @@ class CompositeKVPlan:
         total_reuse_ratio: Combined reuse ratio across all donors.
         donors_per_composite: Number of distinct donors contributing.
     """
+
     donor_ids: tuple[str, ...] = ()
     chunk_assignments: tuple[ChunkAssignment, ...] = ()
     slot_actions: tuple[MultiDonorSlotAction, ...] = ()
@@ -105,16 +106,14 @@ class CompositeKVPlan:
     def actions_for_donor(self, donor_id: str) -> list[MultiDonorSlotAction]:
         """Get all slot actions for a specific donor."""
         return [
-            sa for sa in self.slot_actions
+            sa
+            for sa in self.slot_actions
             if sa.donor_id == donor_id and sa.action == "copy_from_donor"
         ]
 
     def recompute_positions(self) -> list[int]:
         """Get all positions needing fresh computation."""
-        return [
-            sa.target_pos for sa in self.slot_actions
-            if sa.action == "recompute"
-        ]
+        return [sa.target_pos for sa in self.slot_actions if sa.action == "recompute"]
 
 
 @dataclass(frozen=True)
@@ -124,6 +123,7 @@ class MultiDonorAlignmentResult:
     Extends single-donor AlignmentResult with per-chunk donor
     assignments and composite KV plan.
     """
+
     reuse_ratio: float
     chunk_assignments: tuple[ChunkAssignment, ...]
     composite_plan: CompositeKVPlan

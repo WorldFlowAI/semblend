@@ -28,6 +28,7 @@ Usage (inside GPU pod):
     python kv_transfer_feasibility.py --n 20 --output /tmp/feasibility.json
     python kv_transfer_feasibility.py --n 5 --quick  # Fast smoke test
 """
+
 from __future__ import annotations
 
 import argparse
@@ -54,29 +55,31 @@ INSTR_D = "Given the following document, respond to the query."
 # Model & KV utilities
 # ======================================================================
 
+
 def load_model():
     from transformers import AutoModelForCausalLM, AutoTokenizer
+
     print("Loading model...")
     t0 = time.monotonic()
     try:
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME, device_map="auto", torch_dtype=torch.float16,
-            trust_remote_code=True)
+            MODEL_NAME, device_map="auto", torch_dtype=torch.float16, trust_remote_code=True
+        )
         name = MODEL_NAME
     except Exception as e:
         print(f"  {MODEL_NAME} failed: {e}")
         tokenizer = AutoTokenizer.from_pretrained(FALLBACK_MODEL, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(
-            FALLBACK_MODEL, device_map="auto", torch_dtype=torch.float16,
-            trust_remote_code=True)
+            FALLBACK_MODEL, device_map="auto", torch_dtype=torch.float16, trust_remote_code=True
+        )
         name = FALLBACK_MODEL
     model.eval()
     cfg = model.config
     n_layers = cfg.num_hidden_layers
     n_kv = getattr(cfg, "num_key_value_heads", cfg.num_attention_heads)
     hd = cfg.hidden_size // cfg.num_attention_heads
-    print(f"  {name}: {n_layers}L, {n_kv}KV, {hd}hd ({time.monotonic()-t0:.1f}s)")
+    print(f"  {name}: {n_layers}L, {n_kv}KV, {hd}hd ({time.monotonic() - t0:.1f}s)")
     return model, tokenizer, n_layers, n_kv, hd
 
 
@@ -84,8 +87,10 @@ def get_kv(model, tokenizer, text):
     ids = tokenizer(text, return_tensors="pt").to(model.device)
     with torch.no_grad():
         out = model(**ids, use_cache=True, return_dict=True)
-    kv = [(out.past_key_values[i][0].clone(), out.past_key_values[i][1].clone())
-          for i in range(len(out.past_key_values))]
+    kv = [
+        (out.past_key_values[i][0].clone(), out.past_key_values[i][1].clone())
+        for i in range(len(out.past_key_values))
+    ]
     return kv, ids["input_ids"]
 
 
@@ -103,11 +108,12 @@ def cos_sim(a, b, start=0, end=None):
 def generate_from_kv(model, tokenizer, kv_pairs, input_ids, max_tokens=32):
     """Generate text from KV cache. Returns (text, ppl)."""
     from transformers import DynamicCache
+
     cache = DynamicCache()
     for li, (k, v) in enumerate(kv_pairs):
         cache.update(k, v, li)
     cache_len = kv_pairs[0][0].shape[2]
-    cur = input_ids[:, cache_len - 1:cache_len]
+    cur = input_ids[:, cache_len - 1 : cache_len]
     gen, tlp = [], 0.0
     with torch.no_grad():
         for _ in range(max_tokens):
@@ -162,8 +168,10 @@ def check_answer(text, ref):
 # Data loading
 # ======================================================================
 
+
 def load_triviaqa(n):
     from datasets import load_dataset
+
     print(f"Loading {n} TriviaQA pairs (4K+ chars)...")
     ds = load_dataset("trivia_qa", "rc", split="validation")
     pairs = []
@@ -189,6 +197,7 @@ def load_triviaqa(n):
 # ======================================================================
 # EXPERIMENT 1: Prefix vs middle paraphrase
 # ======================================================================
+
 
 def exp1(model, tokenizer, n_layers, pairs):
     print("\n" + "=" * 60)
@@ -224,7 +233,7 @@ def exp1(model, tokenizer, n_layers, pairs):
             rng.shuffle(rest)
             alt_ctx = ". ".join(shuffled + rest)
         else:
-            alt_ctx = ctx[::-1][:len(ctx)]  # Crude paraphrase fallback
+            alt_ctx = ctx[::-1][: len(ctx)]  # Crude paraphrase fallback
 
         d_text2 = f"{INSTR_A}\n\nContext:\n{ctx}\n\nQuestion: {q}\nAnswer:"
         t_text2 = f"{INSTR_A}\n\nContext:\n{alt_ctx}\n\nQuestion: {q}\nAnswer:"
@@ -237,7 +246,7 @@ def exp1(model, tokenizer, n_layers, pairs):
         torch.cuda.empty_cache()
 
         if (si + 1) % 5 == 0:
-            print(f"  {si+1}/{len(pairs)}")
+            print(f"  {si + 1}/{len(pairs)}")
 
     # Print results
     print(f"\n{'Layer':>5} {'PfxK':>7} {'PfxV':>7} {'MidK':>7} {'MidV':>7} {'Winner':>8}")
@@ -251,7 +260,9 @@ def exp1(model, tokenizer, n_layers, pairs):
 
     all_pv = [statistics.mean(prefix_v_by_layer[li]) for li in range(n_layers)]
     all_mv = [statistics.mean(middle_v_by_layer[li]) for li in range(n_layers)]
-    print(f"\nOverall V-sim: Prefix={statistics.mean(all_pv):.4f}, Middle={statistics.mean(all_mv):.4f}")
+    print(
+        f"\nOverall V-sim: Prefix={statistics.mean(all_pv):.4f}, Middle={statistics.mean(all_mv):.4f}"
+    )
 
     return {
         "prefix_v_mean": statistics.mean(all_pv),
@@ -264,6 +275,7 @@ def exp1(model, tokenizer, n_layers, pairs):
 # ======================================================================
 # EXPERIMENT 2: Per-chunk deviation
 # ======================================================================
+
 
 def exp2(model, tokenizer, n_layers, pairs):
     print("\n" + "=" * 60)
@@ -314,18 +326,40 @@ def exp2(model, tokenizer, n_layers, pairs):
                 break
             km = statistics.mean(all_chunk_k_sims[li][ci])
             vm = statistics.mean(all_chunk_v_sims[li][ci])
-            region = "instruction" if ci == 0 else "early doc" if ci <= 2 else "mid doc" if ci < len(all_chunk_k_sims[li]) - 2 else "late doc"
+            region = (
+                "instruction"
+                if ci == 0
+                else "early doc"
+                if ci <= 2
+                else "mid doc"
+                if ci < len(all_chunk_k_sims[li]) - 2
+                else "late doc"
+            )
             print(f"  {ci:>6} {km:>8.4f} {vm:>8.4f} {region:>15}")
 
-    return {"per_chunk_data": {str(li): {
-        "k": [statistics.mean(all_chunk_k_sims[li][ci]) for ci in range(len(all_chunk_k_sims[li])) if all_chunk_k_sims[li][ci]],
-        "v": [statistics.mean(all_chunk_v_sims[li][ci]) for ci in range(len(all_chunk_v_sims[li])) if all_chunk_v_sims[li][ci]],
-    } for li in sorted(all_chunk_k_sims.keys())}}
+    return {
+        "per_chunk_data": {
+            str(li): {
+                "k": [
+                    statistics.mean(all_chunk_k_sims[li][ci])
+                    for ci in range(len(all_chunk_k_sims[li]))
+                    if all_chunk_k_sims[li][ci]
+                ],
+                "v": [
+                    statistics.mean(all_chunk_v_sims[li][ci])
+                    for ci in range(len(all_chunk_v_sims[li]))
+                    if all_chunk_v_sims[li][ci]
+                ],
+            }
+            for li in sorted(all_chunk_k_sims.keys())
+        }
+    }
 
 
 # ======================================================================
 # EXPERIMENT 3: Neural MLP correction
 # ======================================================================
+
 
 def exp3(model, tokenizer, n_layers, head_dim, n_kv_heads, pairs):
     print("\n" + "=" * 60)
@@ -336,6 +370,7 @@ def exp3(model, tokenizer, n_layers, head_dim, n_kv_heads, pairs):
         def __init__(self, dim):
             super().__init__()
             self.net = nn.Sequential(nn.Linear(dim, dim * 2), nn.GELU(), nn.Linear(dim * 2, dim))
+
         def forward(self, x):
             return x + self.net(x)
 
@@ -362,17 +397,26 @@ def exp3(model, tokenizer, n_layers, head_dim, n_kv_heads, pairs):
             t_k = tk[li][0][0].float()
 
             # Before
-            before = F.cosine_similarity(
-                d_k[:, n_probe:ml, :].reshape(-1, head_dim),
-                t_k[:, n_probe:ml, :].reshape(-1, head_dim), dim=-1
-            ).mean().item()
+            before = (
+                F.cosine_similarity(
+                    d_k[:, n_probe:ml, :].reshape(-1, head_dim),
+                    t_k[:, n_probe:ml, :].reshape(-1, head_dim),
+                    dim=-1,
+                )
+                .mean()
+                .item()
+            )
 
             # Mean-shift
             shift = (t_k[:, :n_probe, :] - d_k[:, :n_probe, :]).mean(dim=1)
             ms = d_k[:, n_probe:ml, :] + shift.unsqueeze(1)
-            ms_sim = F.cosine_similarity(
-                ms.reshape(-1, head_dim), t_k[:, n_probe:ml, :].reshape(-1, head_dim), dim=-1
-            ).mean().item()
+            ms_sim = (
+                F.cosine_similarity(
+                    ms.reshape(-1, head_dim), t_k[:, n_probe:ml, :].reshape(-1, head_dim), dim=-1
+                )
+                .mean()
+                .item()
+            )
 
             # Neural per-head
             neural_sims = []
@@ -401,7 +445,7 @@ def exp3(model, tokenizer, n_layers, head_dim, n_kv_heads, pairs):
         torch.cuda.empty_cache()
 
         if (si + 1) % 5 == 0:
-            print(f"  {si+1}/{len(pairs)}")
+            print(f"  {si + 1}/{len(pairs)}")
 
     print(f"\n{'Layer':>6} {'Before':>9} {'MnShift':>9} {'Neural':>9} {'Δ Neural':>10}")
     summary = {}
@@ -409,7 +453,7 @@ def exp3(model, tokenizer, n_layers, head_dim, n_kv_heads, pairs):
         b = statistics.mean(results_by_layer[li]["before"])
         m = statistics.mean(results_by_layer[li]["meanshift"])
         n = statistics.mean(results_by_layer[li]["neural"])
-        print(f"{li:>6} {b:>9.4f} {m:>9.4f} {n:>9.4f} {n-b:>+10.4f}")
+        print(f"{li:>6} {b:>9.4f} {m:>9.4f} {n:>9.4f} {n - b:>+10.4f}")
         summary[li] = {"before": b, "meanshift": m, "neural": n}
 
     return summary
@@ -418,6 +462,7 @@ def exp3(model, tokenizer, n_layers, head_dim, n_kv_heads, pairs):
 # ======================================================================
 # EXPERIMENT 4: Attention sink preservation + PPL
 # ======================================================================
+
 
 def exp4(model, tokenizer, n_layers, pairs):
     print("\n" + "=" * 60)
@@ -467,7 +512,7 @@ def exp4(model, tokenizer, n_layers, pairs):
         torch.cuda.empty_cache()
 
         if (si + 1) % 3 == 0:
-            print(f"  {si+1}/10")
+            print(f"  {si + 1}/10")
 
     print(f"\n{'Strategy':<12} {'Mean PPL':>10} {'QA Match':>10} {'PPL Ratio':>10}")
     cold_mean = statistics.mean(ppl_by_strategy["cold"])
@@ -477,15 +522,21 @@ def exp4(model, tokenizer, n_layers, pairs):
         ratio = m / cold_mean if cold_mean > 0 else 0
         print(f"{name:<12} {m:>10.3f} {qa_by_strategy[name]:>10} {ratio:>10.4f}")
 
-    return {name: {
-        "mean_ppl": statistics.mean([v for v in ppl_by_strategy[name] if v < 100]) if any(v < 100 for v in ppl_by_strategy[name]) else 999,
-        "qa_matches": qa_by_strategy[name],
-    } for name in ppl_by_strategy}
+    return {
+        name: {
+            "mean_ppl": statistics.mean([v for v in ppl_by_strategy[name] if v < 100])
+            if any(v < 100 for v in ppl_by_strategy[name])
+            else 999,
+            "qa_matches": qa_by_strategy[name],
+        }
+        for name in ppl_by_strategy
+    }
 
 
 # ======================================================================
 # EXPERIMENT 5: Token overlap sweep
 # ======================================================================
+
 
 def exp5(model, tokenizer, n_layers, pairs):
     print("\n" + "=" * 60)
@@ -525,7 +576,7 @@ def exp5(model, tokenizer, n_layers, pairs):
         torch.cuda.empty_cache()
 
         if (si + 1) % 5 == 0:
-            print(f"  {si+1}/{len(pairs)}")
+            print(f"  {si + 1}/{len(pairs)}")
 
     print(f"\n{'Overlap':>8}", end="")
     for li in test_layers:
@@ -552,6 +603,7 @@ def exp5(model, tokenizer, n_layers, pairs):
 # MAIN
 # ======================================================================
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n", type=int, default=20)
@@ -575,32 +627,47 @@ def main():
     print("=" * 60)
 
     e1 = results["exp1"]
-    print(f"\n1. PREFIX vs MIDDLE: V-sim prefix={e1['prefix_v_mean']:.4f}, middle={e1['middle_v_mean']:.4f}")
-    if e1['middle_v_mean'] > e1['prefix_v_mean']:
-        print(f"   → Middle paraphrase {(e1['middle_v_mean']-e1['prefix_v_mean'])/e1['prefix_v_mean']*100:+.1f}% better — same-prefix preserves more KV")
+    print(
+        f"\n1. PREFIX vs MIDDLE: V-sim prefix={e1['prefix_v_mean']:.4f}, middle={e1['middle_v_mean']:.4f}"
+    )
+    if e1["middle_v_mean"] > e1["prefix_v_mean"]:
+        print(
+            f"   → Middle paraphrase {(e1['middle_v_mean'] - e1['prefix_v_mean']) / e1['prefix_v_mean'] * 100:+.1f}% better — same-prefix preserves more KV"
+        )
     else:
-        print("   → Prefix paraphrase unexpectedly better — autoregressive contamination less severe")
+        print(
+            "   → Prefix paraphrase unexpectedly better — autoregressive contamination less severe"
+        )
 
     e3 = results["exp3"]
     best_neural = max((v["neural"] - v["before"]) for v in e3.values())
     best_shift = max((v["meanshift"] - v["before"]) for v in e3.values())
-    print(f"\n3. NEURAL vs LINEAR: best neural Δ={best_neural:+.4f}, best shift Δ={best_shift:+.4f}")
+    print(
+        f"\n3. NEURAL vs LINEAR: best neural Δ={best_neural:+.4f}, best shift Δ={best_shift:+.4f}"
+    )
     if best_neural > best_shift + 0.01:
-        print(f"   → Neural correction captures nonlinear structure ({best_neural-best_shift:+.4f} better)")
+        print(
+            f"   → Neural correction captures nonlinear structure ({best_neural - best_shift:+.4f} better)"
+        )
     else:
-        print("   → Neural correction no better than mean-shift — deviation is not learnable from probes")
+        print(
+            "   → Neural correction no better than mean-shift — deviation is not learnable from probes"
+        )
 
     e4 = results["exp4"]
     cold_ppl = e4.get("cold", {}).get("mean_ppl", 999)
     for name in ["sink_0", "sink_4", "sink_16", "sink_64"]:
         ppl = e4.get(name, {}).get("mean_ppl", 999)
         ratio = ppl / cold_ppl if cold_ppl > 0 else 0
-        print(f"\n4. SINK {name}: PPL ratio={ratio:.4f}, QA={e4.get(name, {}).get('qa_matches', 0)}")
+        print(
+            f"\n4. SINK {name}: PPL ratio={ratio:.4f}, QA={e4.get(name, {}).get('qa_matches', 0)}"
+        )
 
     print("\n5. OVERLAP SWEEP: see detailed table above")
 
     if args.output:
         from pathlib import Path
+
         out = Path(args.output)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(results, indent=2, default=str))

@@ -28,6 +28,7 @@ not recomputing K,V for the donor-covered positions.
 Usage (run inside GPU pod):
     python kv_blending_experiment.py --n-pairs 10
 """
+
 from __future__ import annotations
 
 import argparse
@@ -110,21 +111,27 @@ def load_model(model_name: str):
 
     try:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, device_map="auto", torch_dtype=torch.float16,
+            model_name,
+            device_map="auto",
+            torch_dtype=torch.float16,
             trust_remote_code=True,
         )
     except Exception as e:
         print(f"Failed ({e}), trying {FALLBACK_MODEL}...")
         tokenizer = AutoTokenizer.from_pretrained(FALLBACK_MODEL, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(
-            FALLBACK_MODEL, device_map="auto", torch_dtype=torch.float16,
+            FALLBACK_MODEL,
+            device_map="auto",
+            torch_dtype=torch.float16,
             trust_remote_code=True,
         )
 
     model.eval()
     n_layers = model.config.num_hidden_layers
-    print(f"Loaded in {time.monotonic()-t0:.1f}s: {model.config._name_or_path}, "
-          f"{n_layers}L, {model.config.hidden_size}H")
+    print(
+        f"Loaded in {time.monotonic() - t0:.1f}s: {model.config._name_or_path}, "
+        f"{n_layers}L, {model.config.hidden_size}H"
+    )
     return model, tokenizer
 
 
@@ -190,7 +197,11 @@ def blend_kv(
 
 
 def generate_from_kv(
-    model, tokenizer, input_ids, past_kv, max_new_tokens: int = 64,
+    model,
+    tokenizer,
+    input_ids,
+    past_kv,
+    max_new_tokens: int = 64,
 ) -> tuple[str, float, float]:
     """Generate using pre-computed KV cache via manual autoregressive loop.
 
@@ -203,7 +214,7 @@ def generate_from_kv(
 
     cache_len = past_kv[0][0].shape[2]
     # Start from the last token in the cached sequence
-    current_token = input_ids[:, cache_len - 1:cache_len]
+    current_token = input_ids[:, cache_len - 1 : cache_len]
 
     # Build DynamicCache from our KV tuples
     past = DynamicCache()
@@ -242,7 +253,7 @@ def generate_from_kv(
 
     text = tokenizer.decode(generated_ids, skip_special_tokens=True)
     n = len(generated_ids)
-    ppl = math.exp(-total_lp / max(n, 1)) if n > 0 else float('inf')
+    ppl = math.exp(-total_lp / max(n, 1)) if n > 0 else float("inf")
 
     return text, ppl, time_ms
 
@@ -288,7 +299,7 @@ def cold_generate(model, tokenizer, prompt: str, max_new_tokens: int = 64):
     time_ms = (time.monotonic() - t0) * 1000
     text = tokenizer.decode(generated_ids, skip_special_tokens=True)
     n = len(generated_ids)
-    ppl = math.exp(-total_lp / max(n, 1)) if n > 0 else float('inf')
+    ppl = math.exp(-total_lp / max(n, 1)) if n > 0 else float("inf")
     return text, ppl, time_ms
 
 
@@ -300,6 +311,7 @@ def check_answer(text: str, reference: str) -> bool:
 
 def load_triviaqa(n: int):
     from datasets import load_dataset
+
     print(f"Loading {n} TriviaQA pairs...")
     ds = load_dataset("trivia_qa", "rc", split="validation")
     pairs = []
@@ -331,11 +343,14 @@ def run(n_pairs: int = 10, max_tokens: int = 64):
     uniform_alphas = [0.5] * n_layers
 
     print("\nBathtub alpha schedule (first/mid/last):")
-    print(f"  L0={bathtub_alphas[0]:.2f}, L{n_layers//2}={bathtub_alphas[n_layers//2]:.2f}, "
-          f"L{n_layers-1}={bathtub_alphas[-1]:.2f}")
+    print(
+        f"  L0={bathtub_alphas[0]:.2f}, L{n_layers // 2}={bathtub_alphas[n_layers // 2]:.2f}, "
+        f"L{n_layers - 1}={bathtub_alphas[-1]:.2f}"
+    )
 
     pairs = load_triviaqa(n_pairs)
     import random
+
     rng = random.Random(42)
 
     results: list[BlendResult] = []
@@ -344,13 +359,17 @@ def run(n_pairs: int = 10, max_tokens: int = 64):
         donor_instr, target_instr = INSTRUCTION_PAIRS[rng.randint(0, len(INSTRUCTION_PAIRS) - 1)]
 
         donor_prompt = PROMPT_TEMPLATE.format(
-            instruction=donor_instr, context=pair["context"], question=pair["question"],
+            instruction=donor_instr,
+            context=pair["context"],
+            question=pair["question"],
         )
         target_prompt = PROMPT_TEMPLATE.format(
-            instruction=target_instr, context=pair["context"], question=pair["question"],
+            instruction=target_instr,
+            context=pair["context"],
+            question=pair["question"],
         )
 
-        print(f"\n--- Sample {idx+1}/{len(pairs)}: {pair['question'][:60]}... ---")
+        print(f"\n--- Sample {idx + 1}/{len(pairs)}: {pair['question'][:60]}... ---")
         print(f"  Answer: {pair['answer']}")
 
         # Extract KV for both
@@ -363,7 +382,11 @@ def run(n_pairs: int = 10, max_tokens: int = 64):
         # Condition B: Pure donor KV injection
         try:
             donor_text, donor_ppl, _ = generate_from_kv(
-                model, tokenizer, target_ids, donor_kv, max_tokens,
+                model,
+                tokenizer,
+                target_ids,
+                donor_kv,
+                max_tokens,
             )
         except Exception as e:
             print(f"  Donor inject failed: {e}")
@@ -373,7 +396,11 @@ def run(n_pairs: int = 10, max_tokens: int = 64):
         blended_bt = blend_kv(donor_kv, target_kv, bathtub_alphas)
         try:
             bt_text, bt_ppl, blend_ms = generate_from_kv(
-                model, tokenizer, target_ids, blended_bt, max_tokens,
+                model,
+                tokenizer,
+                target_ids,
+                blended_bt,
+                max_tokens,
             )
         except Exception as e:
             print(f"  Bathtub blend failed: {e}")
@@ -383,7 +410,11 @@ def run(n_pairs: int = 10, max_tokens: int = 64):
         blended_uni = blend_kv(donor_kv, target_kv, uniform_alphas)
         try:
             uni_text, uni_ppl, _ = generate_from_kv(
-                model, tokenizer, target_ids, blended_uni, max_tokens,
+                model,
+                tokenizer,
+                target_ids,
+                blended_uni,
+                max_tokens,
             )
         except Exception as e:
             print(f"  Uniform blend failed: {e}")
@@ -395,11 +426,15 @@ def run(n_pairs: int = 10, max_tokens: int = 64):
             bk = blended_bt[li2][0]
             tk = target_kv[li2][0]
             ml = min(bk.shape[2], tk.shape[2])
-            sim = F.cosine_similarity(
-                bk[0, :, :ml, :].reshape(-1, bk.shape[-1]).float(),
-                tk[0, :, :ml, :].reshape(-1, tk.shape[-1]).float(),
-                dim=-1,
-            ).mean().item()
+            sim = (
+                F.cosine_similarity(
+                    bk[0, :, :ml, :].reshape(-1, bk.shape[-1]).float(),
+                    tk[0, :, :ml, :].reshape(-1, tk.shape[-1]).float(),
+                    dim=-1,
+                )
+                .mean()
+                .item()
+            )
             layer_sims.append(sim)
 
         cold_match = check_answer(cold_text, pair["answer"])
@@ -407,24 +442,37 @@ def run(n_pairs: int = 10, max_tokens: int = 64):
         bt_match = check_answer(bt_text, pair["answer"])
         uni_match = check_answer(uni_text, pair["answer"])
 
-        print(f"  Cold:     PPL={cold_ppl:.2f}  QA={'Y' if cold_match else 'N'}  {cold_text[:50]}...")
-        print(f"  Donor:    PPL={donor_ppl:.2f}  QA={'Y' if donor_match else 'N'}  {donor_text[:50]}...")
+        print(
+            f"  Cold:     PPL={cold_ppl:.2f}  QA={'Y' if cold_match else 'N'}  {cold_text[:50]}..."
+        )
+        print(
+            f"  Donor:    PPL={donor_ppl:.2f}  QA={'Y' if donor_match else 'N'}  {donor_text[:50]}..."
+        )
         print(f"  Bathtub:  PPL={bt_ppl:.2f}  QA={'Y' if bt_match else 'N'}  {bt_text[:50]}...")
         print(f"  Uniform:  PPL={uni_ppl:.2f}  QA={'Y' if uni_match else 'N'}  {uni_text[:50]}...")
 
-        results.append(BlendResult(
-            sample_id=f"triviaqa_{idx}",
-            question=pair["question"],
-            reference=pair["answer"],
-            cold_text=cold_text, donor_text=donor_text,
-            bathtub_blend_text=bt_text, uniform_blend_text=uni_text,
-            cold_ppl=cold_ppl, donor_ppl=donor_ppl,
-            bathtub_blend_ppl=bt_ppl, uniform_blend_ppl=uni_ppl,
-            cold_match=cold_match, donor_match=donor_match,
-            bathtub_match=bt_match, uniform_match=uni_match,
-            cold_ms=cold_ms, blend_ms=blend_ms,
-            bathtub_layer_sims=layer_sims,
-        ))
+        results.append(
+            BlendResult(
+                sample_id=f"triviaqa_{idx}",
+                question=pair["question"],
+                reference=pair["answer"],
+                cold_text=cold_text,
+                donor_text=donor_text,
+                bathtub_blend_text=bt_text,
+                uniform_blend_text=uni_text,
+                cold_ppl=cold_ppl,
+                donor_ppl=donor_ppl,
+                bathtub_blend_ppl=bt_ppl,
+                uniform_blend_ppl=uni_ppl,
+                cold_match=cold_match,
+                donor_match=donor_match,
+                bathtub_match=bt_match,
+                uniform_match=uni_match,
+                cold_ms=cold_ms,
+                blend_ms=blend_ms,
+                bathtub_layer_sims=layer_sims,
+            )
+        )
 
         del donor_kv, target_kv, blended_bt, blended_uni
         torch.cuda.empty_cache()
@@ -444,14 +492,22 @@ def run(n_pairs: int = 10, max_tokens: int = 64):
     print(f"\nSamples: {n}")
     print(f"\n{'Condition':<18} {'Mean PPL':>10} {'QA Match':>10} {'Rate':>8}")
     print("-" * 50)
-    print(f"{'Cold':<18} {safe_mean([r.cold_ppl for r in results]):>10.3f} "
-          f"{sum(r.cold_match for r in results):>10} {sum(r.cold_match for r in results)/n:>7.0%}")
-    print(f"{'Pure donor':<18} {safe_mean([r.donor_ppl for r in results]):>10.3f} "
-          f"{sum(r.donor_match for r in results):>10} {sum(r.donor_match for r in results)/n:>7.0%}")
-    print(f"{'Bathtub blend':<18} {safe_mean([r.bathtub_blend_ppl for r in results]):>10.3f} "
-          f"{sum(r.bathtub_match for r in results):>10} {sum(r.bathtub_match for r in results)/n:>7.0%}")
-    print(f"{'Uniform blend':<18} {safe_mean([r.uniform_blend_ppl for r in results]):>10.3f} "
-          f"{sum(r.uniform_match for r in results):>10} {sum(r.uniform_match for r in results)/n:>7.0%}")
+    print(
+        f"{'Cold':<18} {safe_mean([r.cold_ppl for r in results]):>10.3f} "
+        f"{sum(r.cold_match for r in results):>10} {sum(r.cold_match for r in results) / n:>7.0%}"
+    )
+    print(
+        f"{'Pure donor':<18} {safe_mean([r.donor_ppl for r in results]):>10.3f} "
+        f"{sum(r.donor_match for r in results):>10} {sum(r.donor_match for r in results) / n:>7.0%}"
+    )
+    print(
+        f"{'Bathtub blend':<18} {safe_mean([r.bathtub_blend_ppl for r in results]):>10.3f} "
+        f"{sum(r.bathtub_match for r in results):>10} {sum(r.bathtub_match for r in results) / n:>7.0%}"
+    )
+    print(
+        f"{'Uniform blend':<18} {safe_mean([r.uniform_blend_ppl for r in results]):>10.3f} "
+        f"{sum(r.uniform_match for r in results):>10} {sum(r.uniform_match for r in results) / n:>7.0%}"
+    )
 
     # PPL ratios
     if valid:
@@ -482,7 +538,9 @@ def run(n_pairs: int = 10, max_tokens: int = 64):
         cold_qa = sum(r.cold_match for r in results) / n
         bt_qa = sum(r.bathtub_match for r in results) / n
         print(f"Bathtub PPL ratio: {bt_mean:.4f} {'PASS' if bt_mean <= 1.065 else 'FAIL'}")
-        print(f"QA degradation: {cold_qa - bt_qa:+.0%} {'PASS' if (cold_qa - bt_qa) <= 0.05 else 'FAIL'}")
+        print(
+            f"QA degradation: {cold_qa - bt_qa:+.0%} {'PASS' if (cold_qa - bt_qa) <= 0.05 else 'FAIL'}"
+        )
         if bt_mean <= 1.065 and (cold_qa - bt_qa) <= 0.05:
             print("KV BLENDING: FEASIBLE")
         else:

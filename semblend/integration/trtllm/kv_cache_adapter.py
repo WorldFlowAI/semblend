@@ -15,6 +15,7 @@ data transposition needed.
 This is the same approach used for vLLM's flash_attn layout detection
 in apply_rope_delta_inplace (rope_correction.py:749).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ class KVCacheStrides:
     These strides are passed directly to Triton kernels, allowing
     them to work with any KV cache memory layout without transposition.
     """
+
     kv_stride_block: int
     kv_stride_kv: int
     kv_stride_head: int
@@ -46,6 +48,7 @@ class KVCacheLayout:
         head_dim: Dimension per attention head.
         layout_name: Human-readable layout identifier.
     """
+
     num_blocks: int
     num_kv_heads: int
     tokens_per_block: int
@@ -73,16 +76,13 @@ def detect_trtllm_layout(kv_tensor: Any) -> KVCacheLayout:
     """
     if kv_tensor.ndim != 5:
         raise ValueError(
-            f"Expected 5D KV cache tensor, got {kv_tensor.ndim}D: "
-            f"shape={tuple(kv_tensor.shape)}"
+            f"Expected 5D KV cache tensor, got {kv_tensor.ndim}D: shape={tuple(kv_tensor.shape)}"
         )
 
     shape = tuple(kv_tensor.shape)
 
     if shape[1] != 2:
-        raise ValueError(
-            f"Expected dim[1]=2 (K,V), got {shape[1]}: shape={shape}"
-        )
+        raise ValueError(f"Expected dim[1]=2 (K,V), got {shape[1]}: shape={shape}")
 
     # TRT-LLM: [num_blocks, 2, tokens_per_block, num_kv_heads, head_dim]
     num_blocks = shape[0]
@@ -124,8 +124,8 @@ def trtllm_kv_strides(kv_tensor: Any) -> KVCacheStrides:
     return KVCacheStrides(
         kv_stride_block=kv_tensor.stride(0),
         kv_stride_kv=kv_tensor.stride(1),
-        kv_stride_pos=kv_tensor.stride(2),   # tokens_per_block dim
-        kv_stride_head=kv_tensor.stride(3),   # num_kv_heads dim
+        kv_stride_pos=kv_tensor.stride(2),  # tokens_per_block dim
+        kv_stride_head=kv_tensor.stride(3),  # num_kv_heads dim
         kv_stride_dim=kv_tensor.stride(4),
     )
 
@@ -146,8 +146,8 @@ def vllm_kv_strides(kv_tensor: Any) -> KVCacheStrides:
     return KVCacheStrides(
         kv_stride_block=kv_tensor.stride(0),
         kv_stride_kv=kv_tensor.stride(1),
-        kv_stride_head=kv_tensor.stride(2),   # num_heads dim
-        kv_stride_pos=kv_tensor.stride(3),    # block_size dim
+        kv_stride_head=kv_tensor.stride(2),  # num_heads dim
+        kv_stride_pos=kv_tensor.stride(3),  # block_size dim
         kv_stride_dim=kv_tensor.stride(4),
     )
 

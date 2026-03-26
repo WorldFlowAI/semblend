@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import struct
 from unittest.mock import MagicMock, patch
 
@@ -17,7 +16,6 @@ from synapse_kv_connector.client import (
     SynapseKVClient,
     compute_token_hash,
 )
-
 
 # ---------------------------------------------------------------------------
 # Token hash tests
@@ -76,9 +74,7 @@ class TestBase64Roundtrip:
         """Small float16 array survives base64 encode/decode."""
         original = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float16)
         encoded = base64.standard_b64encode(original.tobytes()).decode("ascii")
-        decoded = np.frombuffer(
-            base64.standard_b64decode(encoded), dtype=np.float16
-        )
+        decoded = np.frombuffer(base64.standard_b64decode(encoded), dtype=np.float16)
         np.testing.assert_array_equal(original, decoded)
 
     def test_roundtrip_shaped(self) -> None:
@@ -88,9 +84,7 @@ class TestBase64Roundtrip:
         original = np.random.randn(*shape).astype(np.float16)
 
         encoded = base64.standard_b64encode(original.tobytes()).decode("ascii")
-        decoded = np.frombuffer(
-            base64.standard_b64decode(encoded), dtype=np.float16
-        ).reshape(shape)
+        decoded = np.frombuffer(base64.standard_b64decode(encoded), dtype=np.float16).reshape(shape)
 
         np.testing.assert_array_equal(original, decoded)
 
@@ -98,9 +92,9 @@ class TestBase64Roundtrip:
         """All-zero tensor roundtrips correctly."""
         original = np.zeros((2, 2, 4, 16, 64), dtype=np.float16)
         encoded = base64.standard_b64encode(original.tobytes()).decode("ascii")
-        decoded = np.frombuffer(
-            base64.standard_b64decode(encoded), dtype=np.float16
-        ).reshape(original.shape)
+        decoded = np.frombuffer(base64.standard_b64decode(encoded), dtype=np.float16).reshape(
+            original.shape
+        )
         np.testing.assert_array_equal(original, decoded)
 
 
@@ -243,9 +237,7 @@ class TestDeleteKvState:
     """Tests for delete_kv_state."""
 
     @patch("synapse_kv_connector.client.requests.Session")
-    def test_returns_true_on_success(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_returns_true_on_success(self, mock_session_cls: MagicMock) -> None:
         """delete_kv_state returns True on 204 No Content."""
         mock_session = MagicMock()
         mock_response = MagicMock()
@@ -257,9 +249,7 @@ class TestDeleteKvState:
         assert client.delete_kv_state([1, 2, 3]) is True
 
     @patch("synapse_kv_connector.client.requests.Session")
-    def test_returns_false_on_404(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_returns_false_on_404(self, mock_session_cls: MagicMock) -> None:
         """delete_kv_state returns False when entry not found."""
         mock_session = MagicMock()
         mock_response = MagicMock()
@@ -280,9 +270,7 @@ class TestGetStats:
     """Tests for get_stats response parsing."""
 
     @patch("synapse_kv_connector.client.requests.Session")
-    def test_parses_stats_response(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_parses_stats_response(self, mock_session_cls: MagicMock) -> None:
         """get_stats correctly parses the gateway response."""
         mock_session = MagicMock()
         mock_response = MagicMock()
@@ -320,9 +308,7 @@ class TestLoadKvStateByHash:
         num_layers, num_heads, num_tokens, head_dim = 2, 4, 5, 64
         shape = (num_layers, 2, num_heads, num_tokens, head_dim)
         original = np.random.randn(*shape).astype(np.float16)
-        kv_b64 = base64.standard_b64encode(original.tobytes()).decode(
-            "ascii"
-        )
+        kv_b64 = base64.standard_b64encode(original.tobytes()).decode("ascii")
 
         mock_session = MagicMock()
         mock_response = MagicMock()
@@ -365,9 +351,7 @@ class TestLoadKvStateByHash:
         assert result is None
 
     @patch("synapse_kv_connector.client.requests.Session")
-    def test_does_not_compute_hash(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_does_not_compute_hash(self, mock_session_cls: MagicMock) -> None:
         """Verifies the hash is used as-is without recomputation."""
         mock_session = MagicMock()
         mock_response = MagicMock()

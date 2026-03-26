@@ -1,10 +1,10 @@
 """Tests for KVTensorStore — direct KV tensor storage for semantic tier."""
+
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
-from semblend_core.kv_tensor_store import KVTensorStore, SearchResult
+from semblend_core.kv_tensor_store import KVTensorStore
 
 
 def _make_embedding(dim: int = 384, seed: int = 0) -> np.ndarray:

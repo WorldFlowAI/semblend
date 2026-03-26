@@ -20,6 +20,7 @@ Usage:
     result = store.search(query_embedding, top_k=5)
     kv = store.get_kv(result[0].entry_id, layers=[0, 1, 27])
 """
+
 from __future__ import annotations
 
 import logging
@@ -70,9 +71,7 @@ class KVTensorStore:
     max_entries: int = 100
     max_cpu_bytes: int = 16 * 1024**3  # 16 GB default
     _entries: dict[str, KVEntry] = field(default_factory=dict)
-    _kv_data: dict[str, dict[int, tuple[np.ndarray, np.ndarray]]] = field(
-        default_factory=dict
-    )
+    _kv_data: dict[str, dict[int, tuple[np.ndarray, np.ndarray]]] = field(default_factory=dict)
     _embeddings: np.ndarray | None = field(default=None, repr=False)
     _entry_ids: list[str] = field(default_factory=list)
     _total_bytes: int = field(default=0)
@@ -101,9 +100,7 @@ class KVTensorStore:
         token_tuple = tuple(token_ids)
 
         # Calculate size
-        size_bytes = sum(
-            k.nbytes + v.nbytes for k, v in kv_tensors.values()
-        )
+        size_bytes = sum(k.nbytes + v.nbytes for k, v in kv_tensors.values())
 
         # Evict if needed
         while (
@@ -119,7 +116,8 @@ class KVTensorStore:
             if first_k.shape[0] != n_tokens:
                 logger.warning(
                     "KV shape[0]=%d != n_tokens=%d",
-                    first_k.shape[0], n_tokens,
+                    first_k.shape[0],
+                    n_tokens,
                 )
 
         entry = KVEntry(
@@ -142,7 +140,10 @@ class KVTensorStore:
 
         logger.debug(
             "KVTensorStore: added %s (%d tokens, %d layers, %.1f MB)",
-            entry_id, n_tokens, n_layers, size_bytes / 1024**2,
+            entry_id,
+            n_tokens,
+            n_layers,
+            size_bytes / 1024**2,
         )
         return entry_id
 
@@ -188,20 +189,20 @@ class KVTensorStore:
             return []
 
         valid_sims = similarities[valid_indices]
-        top_indices = valid_indices[
-            np.argsort(-valid_sims)[:top_k]
-        ]
+        top_indices = valid_indices[np.argsort(-valid_sims)[:top_k]]
 
         results = []
         for idx in top_indices:
             eid = self._entry_ids[idx]
             entry = self._entries[eid]
-            results.append(SearchResult(
-                entry_id=eid,
-                similarity=float(similarities[idx]),
-                n_tokens=entry.n_tokens,
-                model_id=entry.model_id,
-            ))
+            results.append(
+                SearchResult(
+                    entry_id=eid,
+                    similarity=float(similarities[idx]),
+                    n_tokens=entry.n_tokens,
+                    model_id=entry.model_id,
+                )
+            )
 
         return results
 
@@ -264,9 +265,7 @@ class KVTensorStore:
             self._index_dirty = False
             return
 
-        self._embeddings = np.stack(
-            [self._entries[eid].embedding for eid in self._entry_ids]
-        )
+        self._embeddings = np.stack([self._entries[eid].embedding for eid in self._entry_ids])
         self._index_dirty = False
 
     def _evict_oldest(self) -> None:
@@ -274,8 +273,6 @@ class KVTensorStore:
         if not self._entries:
             return
 
-        oldest_id = min(
-            self._entries, key=lambda eid: self._entries[eid].created_at
-        )
+        oldest_id = min(self._entries, key=lambda eid: self._entries[eid].created_at)
         self.remove(oldest_id)
         logger.debug("KVTensorStore: evicted %s (LRU)", oldest_id)

@@ -3,6 +3,7 @@
 Unit tests with mock KVCacheManager -- no TRT-LLM or GPU required.
 Tests the inject/register/correct lifecycle and pipeline integration.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -11,6 +12,7 @@ import pytest
 
 try:
     import torch
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -40,7 +42,11 @@ class MockKVCacheManager:
             # TRT-LLM layout: [num_blocks, 2, tokens_per_block, num_kv_heads, head_dim]
             self._buffers = [
                 torch.zeros(
-                    num_blocks, 2, tokens_per_block, num_kv_heads, head_dim,
+                    num_blocks,
+                    2,
+                    tokens_per_block,
+                    num_kv_heads,
+                    head_dim,
                     dtype=torch.float16,
                 )
                 for _ in range(num_layers)
@@ -57,6 +63,7 @@ class TestTRTLLMPyTorchBackendInit:
 
     def test_import(self):
         from semblend.integration.trtllm.pytorch_backend import TRTLLMPyTorchBackend
+
         assert TRTLLMPyTorchBackend is not None
 
     def test_init_defaults(self):
@@ -183,6 +190,7 @@ class TestModelEngineHook:
         from semblend.integration.trtllm.model_engine_hook import (
             SemBlendModelEngineHook,
         )
+
         assert SemBlendModelEngineHook is not None
 
     def test_detect_approach_enqueue(self):
@@ -275,6 +283,7 @@ class TestPostPrefillRoPEHook:
         from semblend.integration.trtllm.model_engine_hook import (
             PostPrefillRoPEHook,
         )
+
         assert PostPrefillRoPEHook is not None
 
     def test_skip_without_flag(self):

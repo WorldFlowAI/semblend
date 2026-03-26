@@ -27,9 +27,10 @@ Environment variables:
     SEMBLEND_EMBEDDER=minilm        Embedder type (minilm, jaccard, onnx_gpu)
     SEMBLEND_FUZZY_CHUNKS=1         Enable fuzzy chunk matching
 """
+
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.3.1"
 
 # Re-export core public API from semblend_core
 from semblend_core.alignment import (
@@ -53,7 +54,6 @@ from semblend_core.donor_store import DonorMatch, DonorNode, DonorStore
 from semblend_core.embedder import (
     EmbedderType,
     JaccardEmbedder,
-    JinaEmbedder,
     MiniLMEmbedder,
     OnnxGpuEmbedder,
     create_embedder,
@@ -102,7 +102,6 @@ __all__ = [
     # Embedder
     "EmbedderType",
     "JaccardEmbedder",
-    "JinaEmbedder",
     "MiniLMEmbedder",
     "OnnxGpuEmbedder",
     "create_embedder",

@@ -15,6 +15,7 @@ Usage:
         embedding = embedder.embed(seg.text)
         # Match against donor segments by cosine similarity
 """
+
 from __future__ import annotations
 
 import re
@@ -53,16 +54,14 @@ class TokenSegment:
 # Sentence boundary pattern: period/question/exclamation followed by
 # space and uppercase letter (or end of string). Handles abbreviations
 # like "e.g." and "Dr." by requiring uppercase after boundary.
-_SENTENCE_RE = re.compile(
-    r'(?<=[.!?])\s+(?=[A-Z])'
-)
+_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
 
 # Paragraph boundary: two or more newlines
-_PARAGRAPH_RE = re.compile(r'\n\s*\n')
+_PARAGRAPH_RE = re.compile(r"\n\s*\n")
 
 # Instruction delimiter: common instruction/document separators
 _INSTRUCTION_RE = re.compile(
-    r'(?:^|\n)(?:###|---|===|\*\*\*|```)\s*(?:\n|$)',
+    r"(?:^|\n)(?:###|---|===|\*\*\*|```)\s*(?:\n|$)",
     re.MULTILINE,
 )
 
@@ -121,13 +120,15 @@ def segment_tokens(
     """
     text_segments = segment_text(text, mode=mode)
     if not text_segments:
-        return [TokenSegment(
-            token_ids=tuple(token_ids),
-            start_token=0,
-            end_token=len(token_ids),
-            segment_type=mode,
-            text=text,
-        )]
+        return [
+            TokenSegment(
+                token_ids=tuple(token_ids),
+                start_token=0,
+                end_token=len(token_ids),
+                segment_type=mode,
+                text=text,
+            )
+        ]
 
     # Map text segments to token positions
     token_segments = []
@@ -142,21 +143,21 @@ def segment_tokens(
 
         # Find where this segment's tokens start in the full sequence
         # by matching the first few tokens
-        best_pos = _find_token_start(
-            token_ids, seg_tokens, search_start=token_pos
-        )
+        best_pos = _find_token_start(token_ids, seg_tokens, search_start=token_pos)
         if best_pos < 0:
             best_pos = token_pos
 
         end_pos = min(best_pos + n, len(token_ids))
 
-        token_segments.append(TokenSegment(
-            token_ids=tuple(token_ids[best_pos:end_pos]),
-            start_token=best_pos,
-            end_token=end_pos,
-            segment_type=seg.segment_type,
-            text=seg.text,
-        ))
+        token_segments.append(
+            TokenSegment(
+                token_ids=tuple(token_ids[best_pos:end_pos]),
+                start_token=best_pos,
+                end_token=end_pos,
+                segment_type=seg.segment_type,
+                text=seg.text,
+            )
+        )
         token_pos = end_pos
 
     # Merge small segments
@@ -185,12 +186,14 @@ def _split_sentences(text: str) -> list[TextSegment]:
             if start < 0:
                 start = pos
             end = start + len(part_stripped)
-            segments.append(TextSegment(
-                text=part_stripped,
-                start_char=start,
-                end_char=end,
-                segment_type="sentence",
-            ))
+            segments.append(
+                TextSegment(
+                    text=part_stripped,
+                    start_char=start,
+                    end_char=end,
+                    segment_type="sentence",
+                )
+            )
             pos = end
     return segments
 
@@ -207,12 +210,14 @@ def _split_paragraphs(text: str) -> list[TextSegment]:
             if start < 0:
                 start = pos
             end = start + len(part_stripped)
-            segments.append(TextSegment(
-                text=part_stripped,
-                start_char=start,
-                end_char=end,
-                segment_type="paragraph",
-            ))
+            segments.append(
+                TextSegment(
+                    text=part_stripped,
+                    start_char=start,
+                    end_char=end,
+                    segment_type="paragraph",
+                )
+            )
             pos = end
     return segments
 
@@ -229,12 +234,14 @@ def _split_instruction(text: str) -> list[TextSegment]:
             if start < 0:
                 start = pos
             end = start + len(part_stripped)
-            segments.append(TextSegment(
-                text=part_stripped,
-                start_char=start,
-                end_char=end,
-                segment_type="instruction",
-            ))
+            segments.append(
+                TextSegment(
+                    text=part_stripped,
+                    start_char=start,
+                    end_char=end,
+                    segment_type="instruction",
+                )
+            )
             pos = end
     return segments
 
@@ -262,12 +269,14 @@ def _normalize_segments(
             buffer_text = buffer_text + " " + seg.text
 
         if len(buffer_text) >= min_chars:
-            merged.append(TextSegment(
-                text=buffer_text,
-                start_char=buffer_start,
-                end_char=seg.end_char,
-                segment_type=mode,
-            ))
+            merged.append(
+                TextSegment(
+                    text=buffer_text,
+                    start_char=buffer_start,
+                    end_char=seg.end_char,
+                    segment_type=mode,
+                )
+            )
             buffer_text = ""
 
     # Flush remaining buffer
@@ -282,12 +291,14 @@ def _normalize_segments(
                 segment_type=mode,
             )
         else:
-            merged.append(TextSegment(
-                text=buffer_text,
-                start_char=buffer_start,
-                end_char=segments[-1].end_char,
-                segment_type=mode,
-            ))
+            merged.append(
+                TextSegment(
+                    text=buffer_text,
+                    start_char=buffer_start,
+                    end_char=segments[-1].end_char,
+                    segment_type=mode,
+                )
+            )
 
     # Split large segments
     result = []
@@ -316,18 +327,20 @@ def _split_large_text(
 
         # Try to break at a sentence boundary
         if end < len(text):
-            last_period = text.rfind('. ', pos, end)
+            last_period = text.rfind(". ", pos, end)
             if last_period > pos + max_chars // 2:
                 end = last_period + 1
 
         chunk = text[pos:end].strip()
         if chunk:
-            result.append(TextSegment(
-                text=chunk,
-                start_char=seg.start_char + pos,
-                end_char=seg.start_char + end,
-                segment_type=mode,
-            ))
+            result.append(
+                TextSegment(
+                    text=chunk,
+                    start_char=seg.start_char + pos,
+                    end_char=seg.start_char + end,
+                    segment_type=mode,
+                )
+            )
         pos = end
 
     return result
@@ -420,12 +433,14 @@ def _split_token_segment(
     while pos < len(ids):
         end = min(pos + max_tokens, len(ids))
         chunk_ids = ids[pos:end]
-        result.append(TokenSegment(
-            token_ids=chunk_ids,
-            start_token=seg.start_token + pos,
-            end_token=seg.start_token + end,
-            segment_type=mode,
-        ))
+        result.append(
+            TokenSegment(
+                token_ids=chunk_ids,
+                start_token=seg.start_token + pos,
+                end_token=seg.start_token + end,
+                segment_type=mode,
+            )
+        )
         pos = end
 
     return result

@@ -17,6 +17,7 @@ Memory: ~50 bytes per entry. 100K donors × 30 chunks × 256 tokens
 
 Thread-safe with the same RW lock pattern as ChunkIndex.
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ChunkRef:
     """Reference to a specific chunk within a donor."""
+
     donor_id: str
     chunk_idx: int
 
@@ -77,7 +79,7 @@ class TokenIndex:
         chunk_refs: list[tuple[set[int], ChunkRef]] = []
 
         for chunk_idx in range(0, len(token_ids), self._chunk_size):
-            chunk = token_ids[chunk_idx:chunk_idx + self._chunk_size]
+            chunk = token_ids[chunk_idx : chunk_idx + self._chunk_size]
             if len(chunk) < self._chunk_size // 2:
                 continue  # Skip very short trailing chunks
             token_set = set(chunk)
@@ -154,8 +156,7 @@ class TokenIndex:
 
         # Filter by minimum shared tokens and sort
         candidates = [
-            (ref, count) for ref, count in candidate_counts.items()
-            if count >= min_shared
+            (ref, count) for ref, count in candidate_counts.items() if count >= min_shared
         ]
         candidates.sort(key=lambda x: x[1], reverse=True)
 

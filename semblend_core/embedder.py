@@ -8,6 +8,7 @@ Resolution chain:
   2. MiniLM CPU embedding -> 384-dim vector (~5ms)
   3. Fallback: Jaccard similarity on token IDs (0ms, less accurate)
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 class EmbedderType(Enum):
     MINILM = "minilm"
-    JINA = "jina"
     JACCARD = "jaccard"
 
 
@@ -51,6 +51,7 @@ class MiniLMEmbedder:
             t0 = time.monotonic()
             try:
                 import torch
+
                 if torch.cuda.is_available():
                     # Use last available GPU to avoid contending with inference model
                     gpu_count = torch.cuda.device_count()
@@ -64,7 +65,8 @@ class MiniLMEmbedder:
             self._available = True
             logger.info(
                 "MiniLM embedder loaded: %s (%.0fms)",
-                self.MODEL_NAME, self._load_time_ms,
+                self.MODEL_NAME,
+                self._load_time_ms,
             )
         except ImportError:
             logger.warning("sentence-transformers not installed - MiniLM disabled")
@@ -80,8 +82,8 @@ class MiniLMEmbedder:
         return self.DIMENSION
 
     # Segmented embedding parameters
-    MAX_TOKENS = 512       # MiniLM native context window
-    OVERLAP_TOKENS = 64    # overlap between adjacent segments
+    MAX_TOKENS = 512  # MiniLM native context window
+    OVERLAP_TOKENS = 64  # overlap between adjacent segments
     MIN_SEGMENT_TOKENS = 32  # skip trailing segments shorter than this
 
     def embed(self, text: str) -> np.ndarray | None:
@@ -129,7 +131,7 @@ class MiniLMEmbedder:
 
         segments = []
         for start in range(0, len(full_ids), stride):
-            chunk_ids = full_ids[start:start + usable]
+            chunk_ids = full_ids[start : start + usable]
             if len(chunk_ids) < self.MIN_SEGMENT_TOKENS:
                 break
             chunk_text = tokenizer.decode(chunk_ids, skip_special_tokens=True)
@@ -160,7 +162,9 @@ class MiniLMEmbedder:
         return pooled / max(norm, 1e-12)
 
     def embed_with_segments(
-        self, text: str, chunk_size: int = 256,
+        self,
+        text: str,
+        chunk_size: int = 256,
     ) -> "EmbedResult | None":
         """Embed text with per-segment embeddings aligned to KV block boundaries.
 
@@ -238,49 +242,6 @@ class MiniLMEmbedder:
         return EmbedResult(pooled=pooled, segments=segments)
 
 
-class JinaEmbedder:
-    """HTTP-based jina-v4 embedder (kept for benchmarks and fallback)."""
-
-    DIMENSION = 1024
-
-    def __init__(self, url: str | None = None) -> None:
-        self._url = url or os.environ.get(
-            "SEMBLEND_JINA_URL", "http://synapse-staging-jina-v4:8080"
-        )
-        self._available = bool(self._url)
-
-    @property
-    def available(self) -> bool:
-        return self._available
-
-    @property
-    def dimension(self) -> int:
-        return self.DIMENSION
-
-    def embed(self, text: str) -> np.ndarray | None:
-        """Embed text via jina-v4 HTTP endpoint."""
-        if not self._available or not text.strip():
-            return None
-
-        try:
-            import requests
-
-            resp = requests.post(
-                f"{self._url}/embed",
-                json={"inputs": [text[:2000]]},
-                timeout=10.0,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list) and data:
-                    vec = data[0] if isinstance(data[0], list) else data
-                    return np.array(vec, dtype=np.float32)
-        except Exception:
-            logger.warning("Jina embedding failed", exc_info=True)
-
-        return None
-
-
 class OnnxGpuEmbedder:
     """ONNX Runtime GPU embedder for MiniLM — ~2ms vs 58ms on CPU.
 
@@ -341,7 +302,9 @@ class OnnxGpuEmbedder:
             self._available = True
             logger.info(
                 "ONNX GPU embedder loaded: %s on %s (%.0fms)",
-                self.MODEL_NAME, actual_provider, self._load_time_ms,
+                self.MODEL_NAME,
+                actual_provider,
+                self._load_time_ms,
             )
         except ImportError:
             logger.warning("onnxruntime not installed - ONNX GPU embedder disabled")
@@ -388,9 +351,8 @@ class OnnxGpuEmbedder:
                 str(onnx_path),
                 input_names=input_names,
                 output_names=["last_hidden_state"],
-                dynamic_axes={
-                    name: {0: "batch", 1: "seq"} for name in input_names
-                } | {"last_hidden_state": {0: "batch", 1: "seq"}},
+                dynamic_axes={name: {0: "batch", 1: "seq"} for name in input_names}
+                | {"last_hidden_state": {0: "batch", 1: "seq"}},
                 opset_version=14,
             )
             logger.info("Exported ONNX model to %s", onnx_path)
@@ -409,8 +371,8 @@ class OnnxGpuEmbedder:
         return self.DIMENSION
 
     # Segmented embedding parameters
-    MAX_TOKENS = 256       # model context window per segment
-    OVERLAP_TOKENS = 64    # overlap between adjacent segments
+    MAX_TOKENS = 256  # model context window per segment
+    OVERLAP_TOKENS = 64  # overlap between adjacent segments
     MIN_SEGMENT_TOKENS = 32  # skip trailing segments shorter than this
 
     def embed(self, text: str) -> np.ndarray | None:
@@ -443,7 +405,9 @@ class OnnxGpuEmbedder:
             n_seg = max(1, (len(full_ids) - usable) // (usable - self.OVERLAP_TOKENS) + 2)
             logger.debug(
                 "ONNX GPU embed took %.1fms (%d tokens, %d segments)",
-                elapsed_ms, len(full_ids), n_seg,
+                elapsed_ms,
+                len(full_ids),
+                n_seg,
             )
 
         return embedding
@@ -471,7 +435,7 @@ class OnnxGpuEmbedder:
 
         segments = []
         for start in range(0, len(full_ids), stride):
-            chunk_ids = full_ids[start:start + usable]
+            chunk_ids = full_ids[start : start + usable]
             if len(chunk_ids) < self.MIN_SEGMENT_TOKENS:
                 break
             chunk_text = self._tokenizer.decode(chunk_ids, skip_special_tokens=True)
@@ -532,7 +496,9 @@ class OnnxGpuEmbedder:
         return normalized  # [batch, 384] or [1, 384]
 
     def embed_with_segments(
-        self, text: str, chunk_size: int = 256,
+        self,
+        text: str,
+        chunk_size: int = 256,
     ) -> "EmbedResult | None":
         """Embed text with per-segment embeddings aligned to KV block boundaries.
 
@@ -636,7 +602,8 @@ class E5SmallEmbedder:
             self._available = True
             logger.info(
                 "E5-small embedder loaded: %s (%.0fms)",
-                self.MODEL_NAME, self._load_time_ms,
+                self.MODEL_NAME,
+                self._load_time_ms,
             )
         except ImportError:
             logger.warning("sentence-transformers not installed - E5 disabled")
@@ -697,11 +664,11 @@ class JaccardEmbedder:
 
 def create_embedder(
     embedder_type: str | None = None,
-) -> MiniLMEmbedder | OnnxGpuEmbedder | E5SmallEmbedder | JinaEmbedder | JaccardEmbedder:
+) -> MiniLMEmbedder | OnnxGpuEmbedder | E5SmallEmbedder | JaccardEmbedder:
     """Create an embedder based on configuration.
 
     Args:
-        embedder_type: "onnx-gpu", "minilm", "e5", "jina", "jaccard", or None (auto from env).
+        embedder_type: "onnx-gpu", "minilm", "e5", "jaccard", or None (auto from env).
 
     Returns:
         Embedder instance.
@@ -710,9 +677,6 @@ def create_embedder(
 
     if choice == "jaccard":
         return JaccardEmbedder()
-
-    if choice == "jina":
-        return JinaEmbedder()
 
     if choice in ("e5", "e5-small", "e5_small"):
         embedder = E5SmallEmbedder()
@@ -732,6 +696,7 @@ def create_embedder(
         # Auto-detect: try ONNX GPU first for lower latency
         try:
             import torch
+
             if torch.cuda.is_available():
                 onnx_embedder = OnnxGpuEmbedder()
                 if onnx_embedder.available:
@@ -742,6 +707,6 @@ def create_embedder(
 
     embedder = MiniLMEmbedder()
     if not embedder.available:
-        logger.warning("MiniLM unavailable, falling back to Jina")
-        return JinaEmbedder()
+        logger.warning("MiniLM unavailable, falling back to Jaccard")
+        return JaccardEmbedder()
     return embedder

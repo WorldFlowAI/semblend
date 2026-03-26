@@ -17,6 +17,7 @@ Architecture:
 
 This module requires SGLang to be installed and is loaded at runtime.
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,9 +32,7 @@ logger = logging.getLogger("semblend.sglang.radix")
 
 if not logger.handlers:
     _handler = logging.StreamHandler()
-    _handler.setFormatter(
-        logging.Formatter("%(levelname)s %(name)s: %(message)s")
-    )
+    _handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
     logger.addHandler(_handler)
     logger.setLevel(logging.INFO)
 
@@ -65,11 +64,7 @@ def _sample_token_ids(token_ids: list[int]) -> list[int]:
     tail = _MAX_DECODE_TOKENS - head - mid_w
     mid_start = (n - mid_w) // 2
 
-    return (
-        token_ids[:head]
-        + token_ids[mid_start:mid_start + mid_w]
-        + token_ids[n - tail:]
-    )
+    return token_ids[:head] + token_ids[mid_start : mid_start + mid_w] + token_ids[n - tail :]
 
 
 # ---------------------------------------------------------------------------
@@ -100,9 +95,8 @@ def _get_tokenizer():
 
     try:
         from transformers import AutoTokenizer
-        _tokenizer_instance = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=True
-        )
+
+        _tokenizer_instance = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         logger.info(f"SemBlend tokenizer loaded: {model_name}")
     except Exception as e:
         logger.error(f"Failed to load tokenizer for {model_name}: {e}")
@@ -325,16 +319,10 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
 
-            self._semblend_enabled = (
-                os.environ.get("SEMBLEND_ENABLED", "1") == "1"
-            )
+            self._semblend_enabled = os.environ.get("SEMBLEND_ENABLED", "1") == "1"
             self._semblend_donor_store = _SemBlendDonorStore(
-                max_entries=int(
-                    os.environ.get("SEMBLEND_MAX_DONORS", "1000")
-                ),
-                min_similarity=float(
-                    os.environ.get("SEMBLEND_MIN_SIMILARITY", "0.60")
-                ),
+                max_entries=int(os.environ.get("SEMBLEND_MAX_DONORS", "1000")),
+                min_similarity=float(os.environ.get("SEMBLEND_MIN_SIMILARITY", "0.60")),
             )
             self._semblend_embedder = None
             self._semblend_stats = {
@@ -355,11 +343,10 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
             """Lazily initialize the MiniLM embedder."""
             if self._semblend_embedder is None:
                 from semblend_core.embedder import create_embedder
+
                 embedder_type = os.environ.get("SEMBLEND_EMBEDDER", "minilm")
                 self._semblend_embedder = create_embedder(embedder_type)
-                logger.info(
-                    f"SemBlend embedder initialized: {embedder_type}"
-                )
+                logger.info(f"SemBlend embedder initialized: {embedder_type}")
             return self._semblend_embedder
 
         def _embed_tokens(self, token_ids: list[int]) -> Optional[np.ndarray]:
@@ -395,8 +382,7 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
                 return base_result
 
             return self._try_semantic_match(
-                token_ids, matched_len, base_result,
-                target_len=len(token_ids), **kwargs
+                token_ids, matched_len, base_result, target_len=len(token_ids), **kwargs
             )
 
         def _try_semantic_match(
@@ -425,8 +411,7 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
                     return base_result
 
                 return self._lookup_donor_in_tree(
-                    donor, matched_len, base_result, t0,
-                    target_len=target_len, **kwargs
+                    donor, matched_len, base_result, t0, target_len=target_len, **kwargs
                 )
 
             except Exception as e:
@@ -451,9 +436,7 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
             """
             try:
                 donor_token_ids = list(donor.token_ids)
-                donor_result = super().match_prefix(
-                    donor_token_ids, **kwargs
-                )
+                donor_result = super().match_prefix(donor_token_ids, **kwargs)
                 donor_matched = _get_matched_length(donor_result)
 
                 # Cap reuse to target request length minus a safety
@@ -463,7 +446,7 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
                     max_reuse = max(target_len - 1, 0)
                     if isinstance(donor_result, tuple) and len(donor_result) >= 2:
                         prefix_tensor = donor_result[0]
-                        if hasattr(prefix_tensor, '__len__') and len(prefix_tensor) > max_reuse:
+                        if hasattr(prefix_tensor, "__len__") and len(prefix_tensor) > max_reuse:
                             donor_result = (prefix_tensor[:max_reuse], donor_result[1])
                             donor_matched = max_reuse
                             logger.info(
@@ -495,9 +478,7 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
 
             self._register_donor_from_req(args, kwargs)
 
-        def _register_donor_from_req(
-            self, args: tuple, kwargs: dict
-        ) -> None:
+        def _register_donor_from_req(self, args: tuple, kwargs: dict) -> None:
             """Extract token IDs from a finished request and register."""
             req = args[0] if args else kwargs.get("req")
             if req is None:
@@ -512,9 +493,7 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
                 if embedding is None:
                     return
 
-                self._semblend_donor_store.add_donor(
-                    tuple(token_ids), embedding
-                )
+                self._semblend_donor_store.add_donor(tuple(token_ids), embedding)
                 self._semblend_stats["donors_registered"] += 1
 
             except Exception as e:
@@ -537,3 +516,23 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
             }
 
     return SemBlendRadixCache
+
+
+def create_semblend_radix_cache(
+    base_cache_cls: type,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Convenience factory: create a SemBlendRadixCache instance.
+
+    Combines ``get_semblend_radix_cache_class`` and instantiation in one call.
+
+    Args:
+        base_cache_cls: SGLang's RadixCache class (or LMCRadixCache).
+        *args, **kwargs: Forwarded to the RadixCache constructor.
+
+    Returns:
+        A SemBlendRadixCache instance.
+    """
+    cls = get_semblend_radix_cache_class(base_cache_cls)
+    return cls(*args, **kwargs)

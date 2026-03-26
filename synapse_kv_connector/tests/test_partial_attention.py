@@ -6,8 +6,6 @@ import numpy as np
 
 from synapse_kv_connector.partial_attention import (
     AttentionMode,
-    LayerMask,
-    PartialAttentionPlan,
     PositionMask,
     build_attention_plan,
     compute_attention_mask,
@@ -148,9 +146,7 @@ class TestComputeAttentionMask:
         mask = compute_attention_mask(plan, layer_idx=0)
         assert mask.shape == (5,)
         assert mask.dtype == bool
-        np.testing.assert_array_equal(
-            mask, [False, False, True, False, False]
-        )
+        np.testing.assert_array_equal(mask, [False, False, True, False, False])
 
     def test_full_recompute_layer_mask(self) -> None:
         """Full recompute layer has all True."""
@@ -261,9 +257,7 @@ class TestPositionMask:
     """Tests for PositionMask dataclass."""
 
     def test_reuse_mask(self) -> None:
-        mask = PositionMask(
-            target_pos=0, mode=AttentionMode.REUSE, donor_pos=3
-        )
+        mask = PositionMask(target_pos=0, mode=AttentionMode.REUSE, donor_pos=3)
         assert mask.target_pos == 0
         assert mask.mode == AttentionMode.REUSE
         assert mask.donor_pos == 3

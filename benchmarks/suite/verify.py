@@ -8,6 +8,7 @@ Usage:
 
 Called automatically by reproduce.py before each benchmark run.
 """
+
 from __future__ import annotations
 
 import logging
@@ -81,9 +82,9 @@ def verify_k8s_pod_code(
     for path in pipeline_paths:
         try:
             result = subprocess.run(
-                ["kubectl", "exec", "-n", namespace, pod_name, "--",
-                 "test", "-f", path],
-                capture_output=True, timeout=10,
+                ["kubectl", "exec", "-n", namespace, pod_name, "--", "test", "-f", path],
+                capture_output=True,
+                timeout=10,
             )
             if result.returncode == 0:
                 pipeline_path = path
@@ -104,9 +105,21 @@ def verify_k8s_pod_code(
     # Check 1: No sentence sorting (exclude comments)
     try:
         result = subprocess.run(
-            ["kubectl", "exec", "-n", namespace, pod_name, "--",
-             "grep", "-cP", r"^\s*parts\.sort\(\)", pipeline_path],
-            capture_output=True, text=True, timeout=10,
+            [
+                "kubectl",
+                "exec",
+                "-n",
+                namespace,
+                pod_name,
+                "--",
+                "grep",
+                "-cP",
+                r"^\s*parts\.sort\(\)",
+                pipeline_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         sort_count = int(result.stdout.strip()) if result.returncode == 0 else 0
         no_sort = sort_count == 0
@@ -123,9 +136,21 @@ def verify_k8s_pod_code(
     # Check 2: Full-document embedding (max_chars >= 100K)
     try:
         result = subprocess.run(
-            ["kubectl", "exec", "-n", namespace, pod_name, "--",
-             "grep", "-c", "200.000\\|200000", pipeline_path],
-            capture_output=True, text=True, timeout=10,
+            [
+                "kubectl",
+                "exec",
+                "-n",
+                namespace,
+                pod_name,
+                "--",
+                "grep",
+                "-c",
+                "200.000\\|200000",
+                pipeline_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         full_doc_count = int(result.stdout.strip()) if result.returncode == 0 else 0
         full_doc = full_doc_count > 0
@@ -142,10 +167,20 @@ def verify_k8s_pod_code(
     # Check 3: Patched LMCache (PR #2803 SemanticLookupProvider)
     try:
         result = subprocess.run(
-            ["kubectl", "exec", "-n", namespace, pod_name, "--",
-             "python3", "-c",
-             "from lmcache.v1.lookup_client.semantic_provider import SemanticLookupProvider; print('ok')"],
-            capture_output=True, text=True, timeout=10,
+            [
+                "kubectl",
+                "exec",
+                "-n",
+                namespace,
+                pod_name,
+                "--",
+                "python3",
+                "-c",
+                "from lmcache.v1.lookup_client.semantic_provider import SemanticLookupProvider; print('ok')",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         has_lmcache_pr = result.returncode == 0
         checks["lmcache_semantic_provider"] = has_lmcache_pr
@@ -161,12 +196,22 @@ def verify_k8s_pod_code(
     # Check 4: Patched LMCache post-load hook (PR #2804)
     try:
         result = subprocess.run(
-            ["kubectl", "exec", "-n", namespace, pod_name, "--",
-             "python3", "-c",
-             "import lmcache; import inspect; "
-             "src = inspect.getsource(lmcache); "
-             "print('ok' if 'post_load' in src or 'on_load_complete' in src else 'missing')"],
-            capture_output=True, text=True, timeout=10,
+            [
+                "kubectl",
+                "exec",
+                "-n",
+                namespace,
+                pod_name,
+                "--",
+                "python3",
+                "-c",
+                "import lmcache; import inspect; "
+                "src = inspect.getsource(lmcache); "
+                "print('ok' if 'post_load' in src or 'on_load_complete' in src else 'missing')",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         has_post_load = result.returncode == 0 and "ok" in result.stdout
         checks["lmcache_post_load_hook"] = has_post_load
@@ -175,18 +220,28 @@ def verify_k8s_pod_code(
                 "MISSING PR: LMCache post-load hook not found. "
                 "Install from WorldFlowAI/LMCache@semblend/post-load-hook (PR #2804)."
             )
-    except Exception as e:
+    except Exception:
         checks["lmcache_post_load_hook"] = False
 
     # Check 5: ONNX GPU embedding must be active (not CPU fallback)
     try:
         result = subprocess.run(
-            ["kubectl", "exec", "-n", namespace, pod_name, "--",
-             "python3", "-c",
-             "from semblend_core.embedder import OnnxGPUEmbedder; "
-             "e = OnnxGPUEmbedder(); "
-             "print('gpu' if e.available else 'cpu_fallback')"],
-            capture_output=True, text=True, timeout=30,
+            [
+                "kubectl",
+                "exec",
+                "-n",
+                namespace,
+                pod_name,
+                "--",
+                "python3",
+                "-c",
+                "from semblend_core.embedder import OnnxGPUEmbedder; "
+                "e = OnnxGPUEmbedder(); "
+                "print('gpu' if e.available else 'cpu_fallback')",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         is_gpu = result.returncode == 0 and "gpu" in result.stdout
         checks["onnx_gpu_embed"] = is_gpu
@@ -203,11 +258,21 @@ def verify_k8s_pod_code(
     # Check 5b: Fuzzy matching must be enabled and functional
     try:
         result = subprocess.run(
-            ["kubectl", "exec", "-n", namespace, pod_name, "--",
-             "python3", "-c",
-             "from synapse_kv_connector.alignment import FuzzyMatchConfig, "
-             "compute_fuzzy_chunk_alignment; print('ok')"],
-            capture_output=True, text=True, timeout=10,
+            [
+                "kubectl",
+                "exec",
+                "-n",
+                namespace,
+                pod_name,
+                "--",
+                "python3",
+                "-c",
+                "from synapse_kv_connector.alignment import FuzzyMatchConfig, "
+                "compute_fuzzy_chunk_alignment; print('ok')",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         has_fuzzy = result.returncode == 0
         checks["fuzzy_matching"] = has_fuzzy
@@ -223,11 +288,21 @@ def verify_k8s_pod_code(
     # Check 5b: Fuzzy-aware bathtub curve
     try:
         result = subprocess.run(
-            ["kubectl", "exec", "-n", namespace, pod_name, "--",
-             "python3", "-c",
-             "import inspect; from synapse_kv_connector.bathtub import compute_layer_deviations; "
-             "print('ok' if 'fuzzy_fraction' in inspect.getsource(compute_layer_deviations) else 'missing')"],
-            capture_output=True, text=True, timeout=10,
+            [
+                "kubectl",
+                "exec",
+                "-n",
+                namespace,
+                pod_name,
+                "--",
+                "python3",
+                "-c",
+                "import inspect; from synapse_kv_connector.bathtub import compute_layer_deviations; "
+                "print('ok' if 'fuzzy_fraction' in inspect.getsource(compute_layer_deviations) else 'missing')",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         has_fuzzy_bathtub = result.returncode == 0 and "ok" in result.stdout
         checks["fuzzy_bathtub"] = has_fuzzy_bathtub
@@ -236,15 +311,26 @@ def verify_k8s_pod_code(
                 "MISSING: Bathtub curve not fuzzy-aware. "
                 "Overlay semblend_core/bathtub.py into the connector."
             )
-    except Exception as e:
+    except Exception:
         checks["fuzzy_bathtub"] = False
 
     # Check 6: GPU must be A100 (not A10G)
     try:
         result = subprocess.run(
-            ["kubectl", "exec", "-n", namespace, pod_name, "--",
-             "nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=10,
+            [
+                "kubectl",
+                "exec",
+                "-n",
+                namespace,
+                pod_name,
+                "--",
+                "nvidia-smi",
+                "--query-gpu=name",
+                "--format=csv,noheader",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if result.returncode == 0:
             gpu_name = result.stdout.strip()
@@ -266,10 +352,20 @@ def verify_k8s_pod_code(
     version = "unknown"
     try:
         result = subprocess.run(
-            ["kubectl", "exec", "-n", namespace, pod_name, "--",
-             "python3", "-c",
-             "from importlib.metadata import version; print(version('semblend'))"],
-            capture_output=True, text=True, timeout=10,
+            [
+                "kubectl",
+                "exec",
+                "-n",
+                namespace,
+                pod_name,
+                "--",
+                "python3",
+                "-c",
+                "from importlib.metadata import version; print(version('semblend'))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if result.returncode == 0:
             version = result.stdout.strip()
@@ -323,7 +419,9 @@ def verify_all_pods(
 
     print("\n" + "=" * 70)
     all_passed = all(r.passed for r in results)
-    print(f"VERDICT: {'ALL CLEAR — safe to benchmark' if all_passed else 'BLOCKED — fix errors before benchmarking'}")
+    print(
+        f"VERDICT: {'ALL CLEAR — safe to benchmark' if all_passed else 'BLOCKED — fix errors before benchmarking'}"
+    )
     print("=" * 70)
 
     return results

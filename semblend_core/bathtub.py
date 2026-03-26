@@ -6,6 +6,7 @@ Implements SemBlend paper Eq. 4:
 Early and late transformer layers deviate most between semantically similar prompts,
 while middle layers are stable and shareable.
 """
+
 from __future__ import annotations
 
 import math
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class LayerDeviation:
     """Predicted deviation for a single transformer layer."""
+
     layer_idx: int
     deviation_score: float
     should_recompute: bool
@@ -24,12 +26,13 @@ class LayerDeviation:
 @dataclass(frozen=True)
 class BathtubPreset:
     """Per-model bathtub curve parameters."""
+
     num_layers: int
     sigma_base: float
     sigma_e: float  # early-layer amplitude
-    tau_e: float    # early-layer decay
+    tau_e: float  # early-layer decay
     sigma_l: float  # late-layer amplitude
-    tau_l: float    # late-layer decay
+    tau_l: float  # late-layer decay
     position_tau: float = 128.0
     fuzzy_alpha: float = 0.15
 
@@ -37,6 +40,7 @@ class BathtubPreset:
 @dataclass(frozen=True)
 class RecomputeConfig:
     """Configurable layer recomputation settings for any model/engine/deployment."""
+
     threshold: float | None = None
     adaptive_base: float = 0.3
     adaptive_scale: float = 0.4
@@ -57,11 +61,13 @@ class RecomputeConfig:
         threshold = float(threshold_str) if threshold_str else None
         force_layers = (
             tuple(int(x) for x in force_layers_str.split(",") if x.strip())
-            if force_layers_str else None
+            if force_layers_str
+            else None
         )
         skip_layers = (
             tuple(int(x) for x in skip_layers_str.split(",") if x.strip())
-            if skip_layers_str else None
+            if skip_layers_str
+            else None
         )
 
         return RecomputeConfig(
@@ -72,7 +78,9 @@ class RecomputeConfig:
             skip_recompute_layers=skip_layers,
             max_recompute_fraction=float(os.environ.get("SEMBLEND_MAX_RECOMPUTE_FRACTION", "0.25")),
             fuzzy_alpha=float(os.environ.get("SEMBLEND_FUZZY_ALPHA", "0.15")),
-            confidence_penalty_scale=float(os.environ.get("SEMBLEND_CONFIDENCE_PENALTY_SCALE", "0.15")),
+            confidence_penalty_scale=float(
+                os.environ.get("SEMBLEND_CONFIDENCE_PENALTY_SCALE", "0.15")
+            ),
             force_verify_on_fuzzy=os.environ.get("SEMBLEND_FORCE_VERIFY_FUZZY", "1") == "1",
         )
 
@@ -91,21 +99,45 @@ class RecomputeConfig:
 PRESETS: dict[str, BathtubPreset] = {
     # Qwen family: funnel pattern — late layers critical
     "qwen2.5-1.5b": BathtubPreset(
-        num_layers=28, sigma_base=0.12, sigma_e=0.15, tau_e=3.0,
-        sigma_l=0.35, tau_l=3.0, position_tau=192.0, fuzzy_alpha=0.15,
+        num_layers=28,
+        sigma_base=0.12,
+        sigma_e=0.15,
+        tau_e=3.0,
+        sigma_l=0.35,
+        tau_l=3.0,
+        position_tau=192.0,
+        fuzzy_alpha=0.15,
     ),
     "qwen2.5-7b": BathtubPreset(
-        num_layers=28, sigma_base=0.12, sigma_e=0.15, tau_e=3.0,
-        sigma_l=0.35, tau_l=3.0, position_tau=192.0, fuzzy_alpha=0.15,
+        num_layers=28,
+        sigma_base=0.12,
+        sigma_e=0.15,
+        tau_e=3.0,
+        sigma_l=0.35,
+        tau_l=3.0,
+        position_tau=192.0,
+        fuzzy_alpha=0.15,
     ),
     # LLaMA family: inverted funnel — early layers critical
     "llama": BathtubPreset(
-        num_layers=32, sigma_base=0.12, sigma_e=0.45, tau_e=2.5,
-        sigma_l=0.15, tau_l=4.0, position_tau=128.0, fuzzy_alpha=0.12,
+        num_layers=32,
+        sigma_base=0.12,
+        sigma_e=0.45,
+        tau_e=2.5,
+        sigma_l=0.15,
+        tau_l=4.0,
+        position_tau=128.0,
+        fuzzy_alpha=0.12,
     ),
     "default": BathtubPreset(
-        num_layers=32, sigma_base=0.12, sigma_e=0.35, tau_e=3.0,
-        sigma_l=0.20, tau_l=4.0, position_tau=128.0, fuzzy_alpha=0.15,
+        num_layers=32,
+        sigma_base=0.12,
+        sigma_e=0.35,
+        tau_e=3.0,
+        sigma_l=0.20,
+        tau_l=4.0,
+        position_tau=128.0,
+        fuzzy_alpha=0.15,
     ),
 }
 
@@ -234,7 +266,9 @@ def compute_layer_deviations(
         effective_threshold = config.threshold
     elif similarity is not None:
         effective_threshold = adaptive_threshold(
-            similarity, base=config.adaptive_base, scale=config.adaptive_scale,
+            similarity,
+            base=config.adaptive_base,
+            scale=config.adaptive_scale,
         )
     else:
         effective_threshold = threshold
@@ -276,11 +310,13 @@ def compute_layer_deviations(
         if config.skip_recompute_layers and i in config.skip_recompute_layers:
             should_recompute = False
 
-        deviations.append(LayerDeviation(
-            layer_idx=i,
-            deviation_score=score,
-            should_recompute=should_recompute,
-        ))
+        deviations.append(
+            LayerDeviation(
+                layer_idx=i,
+                deviation_score=score,
+                should_recompute=should_recompute,
+            )
+        )
 
     # Force-verify edge layers for fuzzy matches with low confidence
     if fuzzy_fraction > 0 and config.force_verify_on_fuzzy and mean_fuzzy_confidence < 0.92:

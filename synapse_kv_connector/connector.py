@@ -47,7 +47,6 @@ from synapse_kv_connector.client import SynapseKVClient
 from synapse_kv_connector.partial_attention import (
     PartialAttentionPlan,
     build_attention_plan,
-    compute_donor_kv_indices,
 )
 from synapse_kv_connector.segment_client import (
     KvTransferPlan,
@@ -240,21 +239,17 @@ class SynapseKVConnector:
             self._last_transfer_plan = None  # consume to prevent stale reuse
             try:
                 logger.debug(
-                    "Loading donor KV for Tier 3 transfer: "
-                    "donor=%s, copy %d/%d positions",
+                    "Loading donor KV for Tier 3 transfer: donor=%s, copy %d/%d positions",
                     plan.donor_id,
                     plan.num_copied,
                     plan.target_len,
                 )
 
                 # Load donor KV tensors by hash
-                donor_result = self._token_client.load_kv_state_by_hash(
-                    plan.donor_id
-                )
+                donor_result = self._token_client.load_kv_state_by_hash(plan.donor_id)
                 if donor_result is None:
                     logger.warning(
-                        "Donor KV not found for hash=%s, "
-                        "falling back to full prefill",
+                        "Donor KV not found for hash=%s, falling back to full prefill",
                         plan.donor_id,
                     )
                     return None
@@ -275,20 +270,15 @@ class SynapseKVConnector:
                 # Contiguous prefix [0,1,...,N-1] uses fast 1:1 copy
                 # and doesn't need PartialAttention masks.
                 copy_positions = sorted(plan.copy_positions)
-                is_contiguous_prefix = copy_positions == list(
-                    range(len(copy_positions))
-                )
+                is_contiguous_prefix = copy_positions == list(range(len(copy_positions)))
 
                 if is_contiguous_prefix:
                     # Fast path: contiguous prefix, 1:1 donor→target
                     for target_pos in copy_positions:
                         if target_pos < donor_kv.shape[3]:
-                            output[:, :, :, target_pos, :] = (
-                                donor_kv[:, :, :, target_pos, :]
-                            )
+                            output[:, :, :, target_pos, :] = donor_kv[:, :, :, target_pos, :]
                     logger.debug(
-                        "Tier 3 KV loaded (contiguous prefix): "
-                        "%d/%d positions from donor=%s",
+                        "Tier 3 KV loaded (contiguous prefix): %d/%d positions from donor=%s",
                         len(copy_positions),
                         target_len,
                         plan.donor_id,
@@ -298,9 +288,7 @@ class SynapseKVConnector:
                     # donor_pos → target_pos mapping, then build a
                     # PartialAttention plan so the vLLM worker knows
                     # which positions need fresh Q,K,V computation.
-                    self._apply_sparse_kv_copy(
-                        output, donor_kv, plan, n_layers
-                    )
+                    self._apply_sparse_kv_copy(output, donor_kv, plan, n_layers)
                     logger.debug(
                         "Tier 3 KV loaded (sparse, PartialAttention): "
                         "%d/%d positions from donor=%s, "
@@ -382,20 +370,12 @@ class SynapseKVConnector:
                     "target_pos": tp,
                 }
                 for tp in plan.copy_positions
-            ] + [
-                {"action": "placeholder", "target_pos": tp}
-                for tp in plan.placeholder_positions
-            ]
+            ] + [{"action": "placeholder", "target_pos": tp} for tp in plan.placeholder_positions]
 
         # Copy donor KV at mapped positions
         for target_pos, donor_pos in copy_map.items():
-            if (
-                donor_pos < donor_kv.shape[3]
-                and target_pos < output.shape[3]
-            ):
-                output[:, :, :, target_pos, :] = (
-                    donor_kv[:, :, :, donor_pos, :]
-                )
+            if donor_pos < donor_kv.shape[3] and target_pos < output.shape[3]:
+                output[:, :, :, target_pos, :] = donor_kv[:, :, :, donor_pos, :]
 
         # Build PartialAttention plan for the vLLM attention kernel
         self._last_attention_plan = build_attention_plan(

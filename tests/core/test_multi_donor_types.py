@@ -1,4 +1,5 @@
 """Tests for multi-donor frozen data structures and attention plan builder."""
+
 import numpy as np
 import pytest
 
@@ -244,7 +245,9 @@ class TestBuildMultiDonorAttentionPlan:
             {"action": "copy_from_donor", "targetPos": 3, "donorPos": 10, "donorId": "d2"},
         ]
         plan = build_multi_donor_attention_plan(
-            target_len=4, slot_actions=slot_actions, num_layers=2,
+            target_len=4,
+            slot_actions=slot_actions,
+            num_layers=2,
         )
         assert plan.donor_id == "d1"
 
@@ -311,7 +314,9 @@ class TestExtendSegments:
         from semblend_core.pq_segment_store import PQSegmentStore
 
         store = PQSegmentStore(
-            max_entries=100, max_segments_per_entry=10, train_threshold=1000,
+            max_entries=100,
+            max_segments_per_entry=10,
+            train_threshold=1000,
         )
         rng = np.random.RandomState(42)
 

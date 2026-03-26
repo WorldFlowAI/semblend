@@ -165,12 +165,8 @@ def build_attention_plan(
 
         if layer_hints and layer_idx < len(layer_hints):
             hint = layer_hints[layer_idx]
-            recompute_all = hint.get(
-                "recomputeAll", hint.get("recompute_all", False)
-            )
-            deviation_score = hint.get(
-                "deviationScore", hint.get("deviation_score", 0.0)
-            )
+            recompute_all = hint.get("recomputeAll", hint.get("recompute_all", False))
+            deviation_score = hint.get("deviationScore", hint.get("deviation_score", 0.0))
 
         if recompute_all:
             num_full_layers += 1
@@ -217,9 +213,7 @@ def build_attention_plan(
         full_work = num_full_layers * target_len
         total_possible = num_layers * target_len
         computation_ratio = (
-            (partial_work + full_work) / total_possible
-            if total_possible > 0
-            else 1.0
+            (partial_work + full_work) / total_possible if total_possible > 0 else 1.0
         )
     else:
         computation_ratio = 1.0
@@ -372,32 +366,31 @@ def build_multi_donor_attention_plan(
 
         if layer_hints and layer_idx < len(layer_hints):
             hint = layer_hints[layer_idx]
-            recompute_all = hint.get(
-                "recomputeAll", hint.get("recompute_all", False)
-            )
-            deviation_score = hint.get(
-                "deviationScore", hint.get("deviation_score", 0.0)
-            )
+            recompute_all = hint.get("recomputeAll", hint.get("recompute_all", False))
+            deviation_score = hint.get("deviationScore", hint.get("deviation_score", 0.0))
 
         if recompute_all:
             num_full_layers += 1
             full_masks = [
-                PositionMask(target_pos=i, mode=AttentionMode.FULL)
-                for i in range(target_len)
+                PositionMask(target_pos=i, mode=AttentionMode.FULL) for i in range(target_len)
             ]
-            layer_masks.append(LayerMask(
-                layer_idx=layer_idx,
-                recompute_all=True,
-                deviation_score=deviation_score,
-                position_masks=full_masks,
-            ))
+            layer_masks.append(
+                LayerMask(
+                    layer_idx=layer_idx,
+                    recompute_all=True,
+                    deviation_score=deviation_score,
+                    position_masks=full_masks,
+                )
+            )
         else:
-            layer_masks.append(LayerMask(
-                layer_idx=layer_idx,
-                recompute_all=False,
-                deviation_score=deviation_score,
-                position_masks=list(position_masks),
-            ))
+            layer_masks.append(
+                LayerMask(
+                    layer_idx=layer_idx,
+                    recompute_all=False,
+                    deviation_score=deviation_score,
+                    position_masks=list(position_masks),
+                )
+            )
 
     num_reuse = len(copy_positions)
     num_partial = len(placeholder_positions)
@@ -412,6 +405,7 @@ def build_multi_donor_attention_plan(
     # Primary donor_id from donor_map (most frequent)
     if donor_map:
         from collections import Counter
+
         donor_counts = Counter(donor_map.values())
         primary_donor_id = donor_counts.most_common(1)[0][0]
     else:
@@ -423,9 +417,7 @@ def build_multi_donor_attention_plan(
         full_work = num_full_layers * target_len
         total_possible = num_layers * target_len
         computation_ratio = (
-            (partial_work + full_work) / total_possible
-            if total_possible > 0
-            else 1.0
+            (partial_work + full_work) / total_possible if total_possible > 0 else 1.0
         )
     else:
         computation_ratio = 1.0

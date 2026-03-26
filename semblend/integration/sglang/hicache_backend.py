@@ -21,6 +21,7 @@ Environment variables:
     SEMBLEND_MIN_SIMILARITY=0.60    Cosine similarity threshold
     SEMBLEND_EMBEDDER=minilm        Embedder type
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,9 +36,7 @@ logger = logging.getLogger("semblend.sglang")
 
 if not logger.handlers:
     _handler = logging.StreamHandler()
-    _handler.setFormatter(
-        logging.Formatter("%(levelname)s %(name)s: %(message)s")
-    )
+    _handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
     logger.addHandler(_handler)
     logger.setLevel(logging.INFO)
 
@@ -55,6 +54,7 @@ def _get_hicache_storage_base():
     """Lazily import SGLang's HiCacheStorage ABC."""
     try:
         from sglang.srt.mem_cache.hicache_storage import HiCacheStorage
+
         return HiCacheStorage
     except ImportError:
         raise ImportError(
@@ -76,6 +76,7 @@ class _SemBlendDonorIndex:
         min_similarity: float = 0.60,
     ) -> None:
         import threading
+
         self._max_entries = max_entries
         self._min_similarity = min_similarity
         self._entries: OrderedDict[str, tuple[np.ndarray, list[int], float]] = OrderedDict()
@@ -155,9 +156,7 @@ class SemBlendHiCacheStorage:
 
         self._config = storage_config
         self._enabled = os.environ.get("SEMBLEND_ENABLED", "1") == "1"
-        self._min_similarity = float(
-            os.environ.get("SEMBLEND_MIN_SIMILARITY", "0.60")
-        )
+        self._min_similarity = float(os.environ.get("SEMBLEND_MIN_SIMILARITY", "0.60"))
 
         # Semantic donor index
         self._donor_index = _SemBlendDonorIndex(
@@ -190,6 +189,7 @@ class SemBlendHiCacheStorage:
         """Lazily initialize the embedder."""
         if self._embedder is None:
             from semblend_core.embedder import create_embedder
+
             self._embedder = create_embedder(self._embedder_type)
             logger.info(f"SemBlend embedder initialized: {self._embedder_type}")
         return self._embedder

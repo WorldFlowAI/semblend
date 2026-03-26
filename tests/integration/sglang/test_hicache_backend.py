@@ -1,11 +1,11 @@
 """Tests for SemBlend SGLang HiCacheStorage backend."""
+
 from __future__ import annotations
 
 import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
 
 
 class TestSemBlendHiCacheStorageImport:
@@ -13,10 +13,12 @@ class TestSemBlendHiCacheStorageImport:
 
     def test_import(self):
         from semblend.integration.sglang.hicache_backend import SemBlendHiCacheStorage
+
         assert SemBlendHiCacheStorage is not None
 
     def test_donor_index_import(self):
         from semblend.integration.sglang.hicache_backend import _SemBlendDonorIndex
+
         assert _SemBlendDonorIndex is not None
 
 
@@ -25,12 +27,14 @@ class TestSemBlendDonorIndex:
 
     def test_empty_index(self):
         from semblend.integration.sglang.hicache_backend import _SemBlendDonorIndex
+
         index = _SemBlendDonorIndex(max_entries=10, min_similarity=0.5)
         assert index.size == 0
         assert index.find_semantic_match(np.random.randn(384).astype(np.float32)) is None
 
     def test_register_and_find(self):
         from semblend.integration.sglang.hicache_backend import _SemBlendDonorIndex
+
         index = _SemBlendDonorIndex(max_entries=10, min_similarity=0.5)
 
         # Register a donor
@@ -45,6 +49,7 @@ class TestSemBlendDonorIndex:
 
     def test_threshold_filtering(self):
         from semblend.integration.sglang.hicache_backend import _SemBlendDonorIndex
+
         index = _SemBlendDonorIndex(max_entries=10, min_similarity=0.95)
 
         # Register a donor
@@ -60,6 +65,7 @@ class TestSemBlendDonorIndex:
 
     def test_lru_eviction(self):
         from semblend.integration.sglang.hicache_backend import _SemBlendDonorIndex
+
         index = _SemBlendDonorIndex(max_entries=3, min_similarity=0.5)
 
         for i in range(5):
@@ -70,6 +76,7 @@ class TestSemBlendDonorIndex:
 
     def test_duplicate_registration(self):
         from semblend.integration.sglang.hicache_backend import _SemBlendDonorIndex
+
         index = _SemBlendDonorIndex(max_entries=10, min_similarity=0.5)
 
         emb = np.random.randn(384).astype(np.float32)

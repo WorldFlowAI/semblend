@@ -10,6 +10,7 @@ Usage (programmatic):
 
 See also: ``launch_semblend_sglang.py`` for a turnkey entry point.
 """
+
 from __future__ import annotations
 
 import logging
@@ -18,9 +19,7 @@ logger = logging.getLogger("semblend.sglang.patcher")
 
 if not logger.handlers:
     _handler = logging.StreamHandler()
-    _handler.setFormatter(
-        logging.Formatter("%(levelname)s %(name)s: %(message)s")
-    )
+    _handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
     logger.addHandler(_handler)
     logger.setLevel(logging.INFO)
 
@@ -39,8 +38,7 @@ def patch_radix_cache() -> None:
         from sglang.srt.mem_cache import radix_cache as rc_mod
     except ImportError as exc:
         raise ImportError(
-            "SGLang is required for SemBlend RadixCache patching. "
-            "Install with: pip install sglang"
+            "SGLang is required for SemBlend RadixCache patching. Install with: pip install sglang"
         ) from exc
 
     from .radix_backend import get_semblend_radix_cache_class
@@ -49,7 +47,4 @@ def patch_radix_cache() -> None:
     patched_cls = get_semblend_radix_cache_class(original_cls)
     rc_mod.RadixCache = patched_cls
 
-    logger.info(
-        f"Patched RadixCache: {original_cls.__name__} -> "
-        f"{patched_cls.__name__}"
-    )
+    logger.info(f"Patched RadixCache: {original_cls.__name__} -> {patched_cls.__name__}")

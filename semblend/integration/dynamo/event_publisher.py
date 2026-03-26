@@ -18,6 +18,7 @@ Event schema for semantic events (published to semblend.semantic.events):
 
 Requires: dynamo Python bindings (pip install nvidia-dynamo)
 """
+
 from __future__ import annotations
 
 import json
@@ -128,6 +129,7 @@ class SemBlendEventPublisher:
 
             # Embed text (match pipeline preprocessing)
             from semblend_core.pipeline import _order_invariant_text
+
             processed_text = _order_invariant_text(text)
             embedding = embedder.embed(processed_text)
             if embedding is None:
@@ -135,9 +137,8 @@ class SemBlendEventPublisher:
 
             # Build semantic event
             import hashlib
-            token_hash = hashlib.md5(
-                str(token_ids[:256]).encode()
-            ).hexdigest()[:16]
+
+            token_hash = hashlib.md5(str(token_ids[:256]).encode()).hexdigest()[:16]
 
             event = {
                 "type": "stored",
@@ -176,6 +177,7 @@ class SemBlendEventPublisher:
             return self._embedder
 
         from semblend_core.embedder import create_embedder
+
         self._embedder = create_embedder(self._embedder_type)
         return self._embedder
 
@@ -190,9 +192,7 @@ class SemBlendEventPublisher:
 
             # Synchronous NATS client for fire-and-forget publishing
             loop = asyncio.new_event_loop()
-            self._nats_client = loop.run_until_complete(
-                nats.connect(self._nats_url)
-            )
+            self._nats_client = loop.run_until_complete(nats.connect(self._nats_url))
             logger.info("NATS connected: %s", self._nats_url)
         except Exception as e:
             logger.warning("NATS connection failed: %s", e)
@@ -204,9 +204,8 @@ class SemBlendEventPublisher:
             return None
         try:
             from transformers import AutoTokenizer
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_name, trust_remote_code=True
-            )
+
+            tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
             max_decode = 2000
             sampled = token_ids[:max_decode]
             return tokenizer.decode(sampled, skip_special_tokens=True)

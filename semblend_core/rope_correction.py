@@ -41,6 +41,7 @@ Usage:
 
     # Toggle via env var: SEMBLEND_USE_NOPE=1
 """
+
 from __future__ import annotations
 
 import logging
@@ -128,11 +129,7 @@ if HAS_TRITON:
             return
 
         # Compute base offsets
-        donor_base = (
-            kv_idx * d_stride_kv
-            + head_idx * d_stride_head
-            + d_pos * d_stride_seq
-        )
+        donor_base = kv_idx * d_stride_kv + head_idx * d_stride_head + d_pos * d_stride_seq
         target_base = (
             physical_block * kv_stride_block
             + kv_idx * kv_stride_kv
@@ -144,9 +141,7 @@ if HAS_TRITON:
             # V: direct copy (no position encoding)
             offsets = tl.arange(0, BLOCK_HALF * 2)
             mask = offsets < head_dim
-            vals = tl.load(
-                donor_kv_ptr + donor_base + offsets * d_stride_dim, mask=mask
-            )
+            vals = tl.load(donor_kv_ptr + donor_base + offsets * d_stride_dim, mask=mask)
             tl.store(
                 kv_cache_ptr + target_base + offsets * kv_stride_dim,
                 vals,
@@ -274,9 +269,14 @@ def rope_correct_scatter_paged(
         )
     else:
         _rope_correct_scatter_paged_cpu(
-            kv_cache, donor_kv, block_table,
-            donor_positions, target_positions, inv_freq,
-            block_size, head_dim,
+            kv_cache,
+            donor_kv,
+            block_table,
+            donor_positions,
+            target_positions,
+            inv_freq,
+            block_size,
+            head_dim,
         )
 
     return kv_cache
@@ -325,9 +325,7 @@ def _rope_correct_scatter_paged_cpu(
         k_corrected[:, 0::2] = k_corrected_even
         k_corrected[:, 1::2] = k_corrected_odd
 
-        kv_cache[physical_block, 0, :, offset, :] = k_corrected.to(
-            kv_cache.dtype
-        )
+        kv_cache[physical_block, 0, :, offset, :] = k_corrected.to(kv_cache.dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -365,8 +363,7 @@ def rope_correct_k(
     dtype = k_tensor.dtype
 
     inv_freq = 1.0 / (
-        rope_base
-        ** (torch.arange(0, head_dim, 2, dtype=torch.float32, device=device) / head_dim)
+        rope_base ** (torch.arange(0, head_dim, 2, dtype=torch.float32, device=device) / head_dim)
     )
 
     deltas = (target_positions - donor_positions).float()  # [num_pairs]
@@ -434,12 +431,8 @@ def permute_paged_kv_with_rope(
     # Layout: [num_blocks, 2, num_heads, block_size, head_dim]
     _, _, num_heads, block_size, head_dim = kv_cache.shape
 
-    src_pos_list = torch.tensor(
-        [p[0] for p in permutation], dtype=torch.long, device=device
-    )
-    tgt_pos_list = torch.tensor(
-        [p[1] for p in permutation], dtype=torch.long, device=device
-    )
+    src_pos_list = torch.tensor([p[0] for p in permutation], dtype=torch.long, device=device)
+    tgt_pos_list = torch.tensor([p[1] for p in permutation], dtype=torch.long, device=device)
 
     # Deduplicate source positions for batch read
     unique_src, inverse_idx = torch.unique(src_pos_list, return_inverse=True)
@@ -464,11 +457,7 @@ def permute_paged_kv_with_rope(
     # K: vectorized RoPE correction
     deltas = (tgt_pos_list - src_pos_list).float()  # [n]
     inv_freq = 1.0 / (
-        rope_base
-        ** (
-            torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)
-            / head_dim
-        )
+        rope_base ** (torch.arange(0, head_dim, 2, dtype=torch.float32, device=device) / head_dim)
     )
 
     # theta: [n, head_dim//2]
@@ -510,10 +499,10 @@ if HAS_TRITON:
     def _nope_permute_paged_kernel(
         # Pointers
         kv_cache_ptr,
-        src_kv_ptr,           # Source K snapshot [num_pairs, num_heads, head_dim]
+        src_kv_ptr,  # Source K snapshot [num_pairs, num_heads, head_dim]
         block_table_ptr,
-        src_pos_ptr,          # Source positions [num_pairs] int32
-        tgt_pos_ptr,          # Target positions [num_pairs] int32
+        src_pos_ptr,  # Source positions [num_pairs] int32
+        tgt_pos_ptr,  # Target positions [num_pairs] int32
         inv_freq_ptr,
         # Dimensions
         num_pairs: tl.constexpr,
@@ -565,12 +554,12 @@ if HAS_TRITON:
 
         # Load pre-snapshotted K_with_rope from src_kv buffer
         src_base = pair_idx * s_stride_pair + head_idx * s_stride_head
-        k_even = tl.load(
-            src_kv_ptr + src_base + even_offsets * s_stride_dim, mask=half_mask
-        ).to(tl.float32)
-        k_odd = tl.load(
-            src_kv_ptr + src_base + odd_offsets * s_stride_dim, mask=half_mask
-        ).to(tl.float32)
+        k_even = tl.load(src_kv_ptr + src_base + even_offsets * s_stride_dim, mask=half_mask).to(
+            tl.float32
+        )
+        k_odd = tl.load(src_kv_ptr + src_base + odd_offsets * s_stride_dim, mask=half_mask).to(
+            tl.float32
+        )
 
         # Step 1: Strip RoPE(-src_pos) → K_raw
         # RoPE(-θ) rotation: [cos θ, sin θ; -sin θ, cos θ]
@@ -638,10 +627,7 @@ def nope_permute_paged_kv(
 
     inv_freq = 1.0 / (
         rope_base
-        ** (
-            torch.arange(0, head_dim, 2, dtype=torch.float32, device=kv_cache.device)
-            / head_dim
-        )
+        ** (torch.arange(0, head_dim, 2, dtype=torch.float32, device=kv_cache.device) / head_dim)
     )
 
     # Snapshot source K values before any writes (prevents overwrite-before-read)
@@ -699,9 +685,14 @@ def nope_permute_paged_kv(
         )
     else:
         _nope_permute_paged_kv_cpu(
-            kv_cache, src_kv, block_table,
-            src_pos_t, tgt_pos_t, inv_freq,
-            block_size, head_dim,
+            kv_cache,
+            src_kv,
+            block_table,
+            src_pos_t,
+            tgt_pos_t,
+            inv_freq,
+            block_size,
+            head_dim,
         )
 
 
@@ -746,9 +737,7 @@ def apply_rope_delta_inplace(
     # Auto-detect layout
     # vLLM: [2, num_blocks, block_size, num_kv_heads, head_dim]
     # Standard: [num_blocks, 2, num_heads, block_size, head_dim]
-    is_vllm_layout = kv_cache.shape[0] == 2 and (
-        kv_cache.ndim == 5 and kv_cache.shape[1] != 2
-    )
+    is_vllm_layout = kv_cache.shape[0] == 2 and (kv_cache.ndim == 5 and kv_cache.shape[1] != 2)
 
     if is_vllm_layout:
         head_dim = kv_cache.shape[4]
@@ -758,11 +747,7 @@ def apply_rope_delta_inplace(
         block_size = kv_cache.shape[3]
 
     inv_freq = 1.0 / (
-        rope_base
-        ** (
-            torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)
-            / head_dim
-        )
+        rope_base ** (torch.arange(0, head_dim, 2, dtype=torch.float32, device=device) / head_dim)
     )
 
     theta = float(delta) * inv_freq

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -21,7 +20,6 @@ from synapse_kv_connector.segment_client import (
     SynapseSegmentClient,
     compute_segment_hash,
 )
-
 
 # ---------------------------------------------------------------------------
 # Segment hash tests
@@ -125,9 +123,7 @@ class TestStoreSegmentKvRequest:
         assert isinstance(body["kvData"], str)
 
     @patch("synapse_kv_connector.segment_client.requests.Session")
-    def test_optional_fields_omitted(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_optional_fields_omitted(self, mock_session_cls: MagicMock) -> None:
         """Optional embedding and textPreview are omitted when None."""
         mock_session = MagicMock()
         mock_response = MagicMock()
@@ -231,9 +227,7 @@ class TestLoadSegmentKvResponse:
         assert client.load_segment_kv("nonexistent") is None
 
     @patch("synapse_kv_connector.segment_client.requests.Session")
-    def test_parses_response_without_embedding(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_parses_response_without_embedding(self, mock_session_cls: MagicMock) -> None:
         """load_segment_kv handles missing embedding field."""
         kv_b64 = base64.standard_b64encode(b"\x00" * 16).decode("ascii")
 
@@ -267,9 +261,7 @@ class TestDeleteSegmentKv:
     """Tests for delete_segment_kv."""
 
     @patch("synapse_kv_connector.segment_client.requests.Session")
-    def test_returns_true_on_success(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_returns_true_on_success(self, mock_session_cls: MagicMock) -> None:
         """delete_segment_kv returns True on 204."""
         mock_session = MagicMock()
         mock_response = MagicMock()
@@ -281,9 +273,7 @@ class TestDeleteSegmentKv:
         assert client.delete_segment_kv("abc123") is True
 
     @patch("synapse_kv_connector.segment_client.requests.Session")
-    def test_returns_false_on_404(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_returns_false_on_404(self, mock_session_cls: MagicMock) -> None:
         """delete_segment_kv returns False when not found."""
         mock_session = MagicMock()
         mock_response = MagicMock()
@@ -339,9 +329,7 @@ class TestSearchSegments:
         assert body["tenantId"] == "my-tenant"
 
     @patch("synapse_kv_connector.segment_client.requests.Session")
-    def test_parses_search_results(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_parses_search_results(self, mock_session_cls: MagicMock) -> None:
         """search_segments correctly parses the response."""
         mock_session = MagicMock()
         mock_response = MagicMock()
@@ -386,9 +374,7 @@ class TestSearchSegments:
         assert hit1.text_preview is None
 
     @patch("synapse_kv_connector.segment_client.requests.Session")
-    def test_omits_segment_type_when_none(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_omits_segment_type_when_none(self, mock_session_cls: MagicMock) -> None:
         """search_segments omits segmentType when not specified."""
         mock_session = MagicMock()
         mock_response = MagicMock()
@@ -422,9 +408,7 @@ class TestSegmentGetStats:
     """Tests for get_stats response parsing."""
 
     @patch("synapse_kv_connector.segment_client.requests.Session")
-    def test_parses_stats_with_type_counts(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_parses_stats_with_type_counts(self, mock_session_cls: MagicMock) -> None:
         """get_stats correctly parses stats with type breakdowns."""
         mock_session = MagicMock()
         mock_response = MagicMock()
@@ -458,9 +442,7 @@ class TestSegmentGetStats:
         assert stats.type_counts[1].count == 15
 
     @patch("synapse_kv_connector.segment_client.requests.Session")
-    def test_parses_stats_without_type_counts(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_parses_stats_without_type_counts(self, mock_session_cls: MagicMock) -> None:
         """get_stats handles missing typeCounts gracefully."""
         mock_session = MagicMock()
         mock_response = MagicMock()
@@ -541,9 +523,7 @@ class TestRequestTransferPlan:
         assert len(plan.slot_actions) == 2
 
     @patch("synapse_kv_connector.segment_client.requests.Session")
-    def test_includes_layer_deviations(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_includes_layer_deviations(self, mock_session_cls: MagicMock) -> None:
         """request_transfer_plan includes layer deviations when given."""
         mock_session = MagicMock()
         mock_response = MagicMock()
@@ -745,9 +725,7 @@ class TestInsertDeltaNode:
         assert resp["treeSize"] == 1
 
     @patch("synapse_kv_connector.segment_client.requests.Session")
-    def test_omits_embedding_when_none(
-        self, mock_session_cls: MagicMock
-    ) -> None:
+    def test_omits_embedding_when_none(self, mock_session_cls: MagicMock) -> None:
         """insert_delta_node omits embedding when not provided."""
         mock_session = MagicMock()
         mock_response = MagicMock()

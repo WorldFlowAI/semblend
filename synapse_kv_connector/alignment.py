@@ -3,6 +3,7 @@
 All alignment logic lives in the shared semblend_core package.
 This module re-exports everything for existing import paths.
 """
+
 from semblend_core.alignment import (  # noqa: F401
     DEFAULT_CHUNK_SIZE,
     AlignmentResult,

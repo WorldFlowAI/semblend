@@ -11,6 +11,7 @@ Memory at 100K donors (~30 segments each):
 Training: Codebook trained lazily from first N donors (default 500).
 Before training, falls back to buffered float32 with exact cosine.
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,6 +31,7 @@ DEFAULT_D_SUB = 8  # dimensions per sub-vector
 @dataclass
 class PQCodebook:
     """Product quantization codebook with M sub-quantizers, K centroids each."""
+
     centroids: np.ndarray  # [M, K, d_sub] float32
     n_subquantizers: int = DEFAULT_M
     n_centroids: int = DEFAULT_K
@@ -63,25 +65,23 @@ def train_pq_codebook(
     n_samples, dim = embeddings.shape
     d_sub = dim // n_subquantizers
     if dim % n_subquantizers != 0:
-        raise ValueError(
-            f"dim={dim} not divisible by n_subquantizers={n_subquantizers}"
-        )
+        raise ValueError(f"dim={dim} not divisible by n_subquantizers={n_subquantizers}")
 
     rng = np.random.RandomState(seed)
     centroids = np.zeros((n_subquantizers, n_centroids, d_sub), dtype=np.float32)
 
     for m in range(n_subquantizers):
-        sub_vectors = embeddings[:, m * d_sub:(m + 1) * d_sub].copy()
+        sub_vectors = embeddings[:, m * d_sub : (m + 1) * d_sub].copy()
 
         # K-means for this sub-quantizer
         # Initialize centroids with k-means++
         indices = [rng.randint(n_samples)]
         for _ in range(1, min(n_centroids, n_samples)):
             dists = np.min(
-                np.stack([
-                    np.sum((sub_vectors - sub_vectors[idx]) ** 2, axis=1)
-                    for idx in indices
-                ], axis=0),
+                np.stack(
+                    [np.sum((sub_vectors - sub_vectors[idx]) ** 2, axis=1) for idx in indices],
+                    axis=0,
+                ),
                 axis=0,
             )
             probs = dists / (dists.sum() + 1e-12)
@@ -96,7 +96,7 @@ def train_pq_codebook(
         for _ in range(n_iter):
             # Assign
             diffs = sub_vectors[:, None, :] - centers[None, :, :]  # [N, K, d]
-            sq_dists = np.sum(diffs ** 2, axis=2)  # [N, K]
+            sq_dists = np.sum(diffs**2, axis=2)  # [N, K]
             assignments = np.argmin(sq_dists, axis=1)  # [N]
 
             # Update
@@ -118,7 +118,10 @@ def train_pq_codebook(
 
     logger.info(
         "PQ codebook trained: M=%d, K=%d, d_sub=%d from %d samples",
-        n_subquantizers, n_centroids, d_sub, n_samples,
+        n_subquantizers,
+        n_centroids,
+        d_sub,
+        n_samples,
     )
     return PQCodebook(
         centroids=centroids,
@@ -141,7 +144,7 @@ def pq_encode(embedding: np.ndarray, codebook: PQCodebook) -> np.ndarray:
     """
     codes = np.zeros(codebook.n_subquantizers, dtype=np.uint8)
     for m in range(codebook.n_subquantizers):
-        sub = embedding[m * codebook.d_sub:(m + 1) * codebook.d_sub]
+        sub = embedding[m * codebook.d_sub : (m + 1) * codebook.d_sub]
         dists = np.sum((codebook.centroids[m] - sub) ** 2, axis=1)
         codes[m] = np.argmin(dists)
     return codes
@@ -160,7 +163,7 @@ def pq_encode_batch(embeddings: np.ndarray, codebook: PQCodebook) -> np.ndarray:
     n = embeddings.shape[0]
     codes = np.zeros((n, codebook.n_subquantizers), dtype=np.uint8)
     for m in range(codebook.n_subquantizers):
-        subs = embeddings[:, m * codebook.d_sub:(m + 1) * codebook.d_sub]
+        subs = embeddings[:, m * codebook.d_sub : (m + 1) * codebook.d_sub]
         # [N, 1, d] - [1, K, d] -> [N, K, d] -> [N, K]
         dists = np.sum(
             (subs[:, None, :] - codebook.centroids[m][None, :, :]) ** 2,
@@ -185,7 +188,7 @@ def adc_distance_table(query: np.ndarray, codebook: PQCodebook) -> np.ndarray:
     """
     table = np.zeros((codebook.n_subquantizers, codebook.n_centroids), dtype=np.float32)
     for m in range(codebook.n_subquantizers):
-        sub = query[m * codebook.d_sub:(m + 1) * codebook.d_sub]
+        sub = query[m * codebook.d_sub : (m + 1) * codebook.d_sub]
         table[m] = np.sum((codebook.centroids[m] - sub) ** 2, axis=1)
     return table
 
@@ -290,7 +293,9 @@ class PQSegmentStore:
     def nbytes(self) -> int:
         if self.codebook_trained:
             total_segs = sum(self._segment_counts.values())
-            return total_segs * self._n_subquantizers + (self._codebook.nbytes if self._codebook else 0)
+            return total_segs * self._n_subquantizers + (
+                self._codebook.nbytes if self._codebook else 0
+            )
         else:
             return sum(arr.nbytes for arr in self._buffer.values())
 
@@ -337,9 +342,10 @@ class PQSegmentStore:
             # Wrap around: resize
             new_size = max(self._codes.shape[0] * 2, end)
             new_codes = np.zeros(
-                (new_size, self._n_subquantizers), dtype=np.uint8,
+                (new_size, self._n_subquantizers),
+                dtype=np.uint8,
             )
-            new_codes[:self._codes.shape[0]] = self._codes
+            new_codes[: self._codes.shape[0]] = self._codes
             self._codes = new_codes
             self._codes[offset:end] = codes
 
@@ -351,7 +357,8 @@ class PQSegmentStore:
         all_segments = np.vstack(list(self._buffer.values()))
         logger.info(
             "Training PQ codebook from %d segments across %d donors",
-            all_segments.shape[0], len(self._buffer),
+            all_segments.shape[0],
+            len(self._buffer),
         )
 
         self._codebook = train_pq_codebook(
@@ -411,9 +418,10 @@ class PQSegmentStore:
                     else:
                         new_size = max(self._codes.shape[0] * 2, append_end)
                         resized = np.zeros(
-                            (new_size, self._n_subquantizers), dtype=np.uint8,
+                            (new_size, self._n_subquantizers),
+                            dtype=np.uint8,
                         )
-                        resized[:self._codes.shape[0]] = self._codes
+                        resized[: self._codes.shape[0]] = self._codes
                         self._codes = resized
                         self._codes[append_start:append_end] = new_codes
 
@@ -474,7 +482,7 @@ class PQSegmentStore:
         if donor_id in self._segment_counts and self._codebook is not None:
             offset = self._donor_offsets[donor_id]
             n_seg = self._segment_counts[donor_id]
-            donor_codes = self._codes[offset:offset + n_seg]
+            donor_codes = self._codes[offset : offset + n_seg]
             return self._adc_segment_score(query_segments, donor_codes)
 
         # Check buffer (pre-training)
@@ -485,7 +493,9 @@ class PQSegmentStore:
         return 0.0
 
     def _adc_segment_score(
-        self, query_segments: np.ndarray, donor_codes: np.ndarray,
+        self,
+        query_segments: np.ndarray,
+        donor_codes: np.ndarray,
     ) -> float:
         """Segment similarity using ADC. Returns mean best-match cosine."""
         n_query = query_segments.shape[0]
@@ -493,14 +503,18 @@ class PQSegmentStore:
 
         for i in range(n_query):
             sims = adc_cosine_similarities(
-                query_segments[i], donor_codes, self._codebook,
+                query_segments[i],
+                donor_codes,
+                self._codebook,
             )
             total_sim += float(np.max(sims))
 
         return total_sim / max(n_query, 1)
 
     def _exact_segment_score(
-        self, query_segments: np.ndarray, donor_segments: np.ndarray,
+        self,
+        query_segments: np.ndarray,
+        donor_segments: np.ndarray,
     ) -> float:
         """Segment similarity using exact cosine. Returns mean best-match."""
         # [Q, D] @ [D, S] -> [Q, S]
@@ -513,7 +527,7 @@ class PQSegmentStore:
         if donor_id in self._segment_counts:
             offset = self._donor_offsets[donor_id]
             n_seg = self._segment_counts[donor_id]
-            return self._codes[offset:offset + n_seg].copy()
+            return self._codes[offset : offset + n_seg].copy()
         return None
 
     def find_best_donor_per_chunk(
@@ -551,7 +565,7 @@ class PQSegmentStore:
                     if n_seg == 0:
                         continue
 
-                    donor_codes = self._codes[offset:offset + n_seg]
+                    donor_codes = self._codes[offset : offset + n_seg]
                     sq_dists = adc_distances(table, donor_codes)
                     # Convert to cosine similarity (assumes L2-normalized)
                     sims = 1.0 - sq_dists / 2.0
@@ -585,7 +599,9 @@ class PQSegmentStore:
         matched = sum(1 for r in results if r is not None)
         logger.debug(
             "find_best_donor_per_chunk: %d/%d chunks matched (threshold=%.2f)",
-            matched, n_query, min_similarity,
+            matched,
+            n_query,
+            min_similarity,
         )
         return results
 
@@ -612,7 +628,7 @@ class PQSegmentStore:
             n_seg = self._segment_counts[donor_id]
             if chunk_idx >= n_seg:
                 return 0.0
-            code = self._codes[offset + chunk_idx:offset + chunk_idx + 1]
+            code = self._codes[offset + chunk_idx : offset + chunk_idx + 1]
             sims = adc_cosine_similarities(query_segment, code, self._codebook)
             return float(sims[0])
 

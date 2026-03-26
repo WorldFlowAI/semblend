@@ -1,10 +1,10 @@
 """Tests for donor_store.py and simhash.py."""
+
 from __future__ import annotations
 
 import time
 
 import numpy as np
-
 
 # ---------------------------------------------------------------------------
 # SimHash tests
@@ -100,12 +100,14 @@ def _make_store(n: int = 0, dim: int = 384, max_entries: int = 1000):
         tokens = list(range(i * 10, i * 10 + 100))
         emb = np.random.randn(dim).astype(np.float32)
         emb /= np.linalg.norm(emb)
-        store.add_donor(DonorNode(
-            request_id=f"req-{i}",
-            token_ids=tokens,
-            embedding=emb,
-            timestamp=float(i),
-        ))
+        store.add_donor(
+            DonorNode(
+                request_id=f"req-{i}",
+                token_ids=tokens,
+                embedding=emb,
+                timestamp=float(i),
+            )
+        )
 
     return store
 
@@ -129,12 +131,14 @@ def test_donor_store_add_and_find():
     emb = np.random.randn(384).astype(np.float32)
     emb /= np.linalg.norm(emb)
 
-    store.add_donor(DonorNode(
-        request_id="donor-1",
-        token_ids=tokens,
-        embedding=emb.copy(),
-        timestamp=1.0,
-    ))
+    store.add_donor(
+        DonorNode(
+            request_id="donor-1",
+            token_ids=tokens,
+            embedding=emb.copy(),
+            timestamp=1.0,
+        )
+    )
 
     # Query with same tokens (but slightly different to avoid exact-match skip)
     query_tokens = list(range(100))
@@ -185,12 +189,14 @@ def test_donor_store_no_self_match():
     emb = np.random.randn(384).astype(np.float32)
     emb /= np.linalg.norm(emb)
 
-    store.add_donor(DonorNode(
-        request_id="self",
-        token_ids=tokens,
-        embedding=emb.copy(),
-        timestamp=1.0,
-    ))
+    store.add_donor(
+        DonorNode(
+            request_id="self",
+            token_ids=tokens,
+            embedding=emb.copy(),
+            timestamp=1.0,
+        )
+    )
 
     result = store.find_donor(
         query_embedding=emb,
@@ -221,12 +227,14 @@ def test_donor_store_no_embedding_fallback():
 
     store = _make_store(0)
     tokens = list(range(100))
-    store.add_donor(DonorNode(
-        request_id="no-emb",
-        token_ids=tokens,
-        embedding=None,
-        timestamp=1.0,
-    ))
+    store.add_donor(
+        DonorNode(
+            request_id="no-emb",
+            token_ids=tokens,
+            embedding=None,
+            timestamp=1.0,
+        )
+    )
 
     query = list(range(100))
     query[50] = 999

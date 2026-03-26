@@ -20,6 +20,7 @@ Usage:
     # Compare results after running
     python -m benchmarks.suite.compare --results-dir benchmarks/results/v0.2.0
 """
+
 from __future__ import annotations
 
 import argparse
@@ -62,11 +63,18 @@ def build_command(
         if table.script == "suite/cli.py":
             # Use the benchmark suite runner
             cmd = [
-                sys.executable, "-m", "benchmarks.suite", "run",
-                "--endpoint", endpoint,
-                "--model", model,
-                "--output-dir", output_dir,
-                "--run-name", f"table_{table.table_number}",
+                sys.executable,
+                "-m",
+                "benchmarks.suite",
+                "run",
+                "--endpoint",
+                endpoint,
+                "--model",
+                model,
+                "--output-dir",
+                output_dir,
+                "--run-name",
+                f"table_{table.table_number}",
             ]
             if table.datasets:
                 cmd.extend(["--datasets", *table.datasets])
@@ -77,9 +85,12 @@ def build_command(
         else:
             # Use legacy e2e scripts
             cmd = [
-                sys.executable, script_path,
-                "--endpoint", endpoint,
-                "--model", model,
+                sys.executable,
+                script_path,
+                "--endpoint",
+                endpoint,
+                "--model",
+                model,
             ]
             if table.context_lengths:
                 for length in table.context_lengths:
@@ -108,7 +119,11 @@ def run_table(
     out_path.mkdir(parents=True, exist_ok=True)
 
     commands = build_command(
-        table, endpoint, model_override, autoresearch_dir, output_dir,
+        table,
+        endpoint,
+        model_override,
+        autoresearch_dir,
+        output_dir,
     )
     result_files = []
 
@@ -116,10 +131,7 @@ def run_table(
 
     for cmd in commands:
         model = _extract_model_from_cmd(cmd)
-        logger.info(
-            f"Table {table.table_number}: {table.title} "
-            f"(model={model})"
-        )
+        logger.info(f"Table {table.table_number}: {table.title} (model={model})")
         logger.info(f"  Command: {' '.join(cmd)}")
 
         try:
@@ -135,11 +147,13 @@ def run_table(
             )
 
             if result.returncode != 0:
-                logger.error(
-                    f"  FAILED (exit {result.returncode}): {result.stderr[:500]}"
-                )
+                logger.error(f"  FAILED (exit {result.returncode}): {result.stderr[:500]}")
                 error_path = _save_error_record(
-                    table, model, result.stderr, metadata, out_path,
+                    table,
+                    model,
+                    result.stderr,
+                    metadata,
+                    out_path,
                 )
                 result_files.append(error_path)
                 continue
@@ -236,22 +250,17 @@ def print_plan(
 
         print(f"--- {priority.value.upper()} ({len(group)} tables) ---")
         for table in group:
-            models_str = ", ".join(
-                m.split("/")[-1] for m in table.models
-            )
+            models_str = ", ".join(m.split("/")[-1] for m in table.models)
             engine_str = table.engine.value
-            print(
-                f"  Table {table.table_number:2d}: {table.title}"
-            )
-            print(
-                f"           Engine={engine_str}  Models={models_str}  "
-                f"N={table.n_samples}"
-            )
+            print(f"  Table {table.table_number:2d}: {table.title}")
+            print(f"           Engine={engine_str}  Models={models_str}  N={table.n_samples}")
             if table.notes:
                 print(f"           NOTE: {table.notes}")
 
             commands = build_command(
-                table, endpoint, autoresearch_dir=autoresearch_dir,
+                table,
+                endpoint,
+                autoresearch_dir=autoresearch_dir,
                 output_dir=output_dir,
             )
             for cmd in commands:
@@ -293,9 +302,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--autoresearch-dir",
-        default=str(
-            Path.home() / "dev" / "worldflowai" / "autoresearch-semblend"
-        ),
+        default=str(Path.home() / "dev" / "worldflowai" / "autoresearch-semblend"),
         help="Path to autoresearch-semblend repo",
     )
     parser.add_argument(
@@ -333,7 +340,8 @@ def main() -> None:
         help="K8s pod names to verify before running (auto-detected if omitted)",
     )
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="Enable debug logging",
     )

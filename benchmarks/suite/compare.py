@@ -8,6 +8,7 @@ Usage:
         --results-dir benchmarks/results/v0.2.0 \\
         --tables 3 5 8 12
 """
+
 from __future__ import annotations
 
 import json
@@ -136,16 +137,24 @@ def compare_table_3(result: dict) -> list[MetricDelta]:
         repro = results_by_key.get(key, {})
 
         if repro:
-            deltas.append(_compute_delta(
-                "speedup", label,
-                paper_entry.speedup, repro.get("speedup", 0),
-                higher_is_better=True,
-            ))
-            deltas.append(_compute_delta(
-                "hit_rate", label,
-                paper_entry.hit_rate, repro.get("hit_rate", 0),
-                higher_is_better=True,
-            ))
+            deltas.append(
+                _compute_delta(
+                    "speedup",
+                    label,
+                    paper_entry.speedup,
+                    repro.get("speedup", 0),
+                    higher_is_better=True,
+                )
+            )
+            deltas.append(
+                _compute_delta(
+                    "hit_rate",
+                    label,
+                    paper_entry.hit_rate,
+                    repro.get("hit_rate", 0),
+                    higher_is_better=True,
+                )
+            )
 
     return deltas
 
@@ -171,16 +180,24 @@ def compare_table_12(result: dict) -> list[MetricDelta]:
         if not repro:
             continue
 
-        deltas.append(_compute_delta(
-            "hit_rate", paper_entry.dataset,
-            paper_entry.hit_rate, repro.get("hit_rate", 0),
-            higher_is_better=True,
-        ))
-        deltas.append(_compute_delta(
-            "mean_speedup", paper_entry.dataset,
-            paper_entry.mean_speedup, repro.get("mean_speedup", 0),
-            higher_is_better=True,
-        ))
+        deltas.append(
+            _compute_delta(
+                "hit_rate",
+                paper_entry.dataset,
+                paper_entry.hit_rate,
+                repro.get("hit_rate", 0),
+                higher_is_better=True,
+            )
+        )
+        deltas.append(
+            _compute_delta(
+                "mean_speedup",
+                paper_entry.dataset,
+                paper_entry.mean_speedup,
+                repro.get("mean_speedup", 0),
+                higher_is_better=True,
+            )
+        )
 
     return deltas
 
@@ -210,26 +227,38 @@ def compare_table_generic_ttft(
             key = (paper_entry.dataset, paper_entry.context_length)
             repro = results_by_key.get(key, {})
             if repro:
-                deltas.append(_compute_delta(
-                    "speedup", label,
-                    paper_entry.speedup, repro.get("speedup", 0),
-                    higher_is_better=True,
-                ))
-                deltas.append(_compute_delta(
-                    "hit_rate", label,
-                    paper_entry.hit_rate, repro.get("hit_rate", 0),
-                    higher_is_better=True,
-                ))
+                deltas.append(
+                    _compute_delta(
+                        "speedup",
+                        label,
+                        paper_entry.speedup,
+                        repro.get("speedup", 0),
+                        higher_is_better=True,
+                    )
+                )
+                deltas.append(
+                    _compute_delta(
+                        "hit_rate",
+                        label,
+                        paper_entry.hit_rate,
+                        repro.get("hit_rate", 0),
+                        higher_is_better=True,
+                    )
+                )
         elif isinstance(paper_entry, TTFTEntry):
             label = f"{paper_entry.context_length // 1024}K"
             key = ("", paper_entry.context_length)
             repro = results_by_key.get(key, {})
             if repro:
-                deltas.append(_compute_delta(
-                    "speedup", label,
-                    paper_entry.speedup, repro.get("speedup", 0),
-                    higher_is_better=True,
-                ))
+                deltas.append(
+                    _compute_delta(
+                        "speedup",
+                        label,
+                        paper_entry.speedup,
+                        repro.get("speedup", 0),
+                        higher_is_better=True,
+                    )
+                )
 
     return deltas
 
@@ -263,11 +292,15 @@ def compare_table_ppl(
         repro = results_by_key.get(key, {})
 
         if repro:
-            deltas.append(_compute_delta(
-                "ppl_ratio", label,
-                paper_entry.ppl_ratio, repro.get("ppl_ratio", 0),
-                higher_is_better=False,  # Lower PPL ratio = better
-            ))
+            deltas.append(
+                _compute_delta(
+                    "ppl_ratio",
+                    label,
+                    paper_entry.ppl_ratio,
+                    repro.get("ppl_ratio", 0),
+                    higher_is_better=False,  # Lower PPL ratio = better
+                )
+            )
 
     return deltas
 
@@ -330,13 +363,15 @@ def compare_all(
     for tn in tables_to_check:
         files = find_result_files(results_dir, tn)
         if not files:
-            comparisons.append(TableComparison(
-                table_number=tn,
-                title=get_reference(tn).title if get_reference(tn) else f"Table {tn}",
-                deltas=[],
-                missing_data=True,
-                notes="No result files found.",
-            ))
+            comparisons.append(
+                TableComparison(
+                    table_number=tn,
+                    title=get_reference(tn).title if get_reference(tn) else f"Table {tn}",
+                    deltas=[],
+                    missing_data=True,
+                    notes="No result files found.",
+                )
+            )
             continue
 
         # Use the most recent file
@@ -358,26 +393,30 @@ def format_comparison_markdown(comparisons: list[TableComparison]) -> str:
     total_regressions = sum(c.regression_count for c in comparisons)
     missing = sum(1 for c in comparisons if c.missing_data)
 
-    lines.extend([
-        "## Summary",
-        "",
-        f"- **Tables compared:** {len(comparisons) - missing}/{len(comparisons)}",
-        f"- **Metrics evaluated:** {total_metrics}",
-        f"- **Regressions (>{REGRESSION_THRESHOLD * 100:.0f}%):** {total_regressions}",
-        f"- **Missing data:** {missing} tables",
-        "",
-    ])
+    lines.extend(
+        [
+            "## Summary",
+            "",
+            f"- **Tables compared:** {len(comparisons) - missing}/{len(comparisons)}",
+            f"- **Metrics evaluated:** {total_metrics}",
+            f"- **Regressions (>{REGRESSION_THRESHOLD * 100:.0f}%):** {total_regressions}",
+            f"- **Missing data:** {missing} tables",
+            "",
+        ]
+    )
 
     # Per-table details
     for comp in comparisons:
-        status = "MISSING" if comp.missing_data else (
-            "REGRESSION" if comp.has_regressions else "OK"
+        status = (
+            "MISSING" if comp.missing_data else ("REGRESSION" if comp.has_regressions else "OK")
         )
 
-        lines.extend([
-            f"## Table {comp.table_number}: {comp.title} [{status}]",
-            "",
-        ])
+        lines.extend(
+            [
+                f"## Table {comp.table_number}: {comp.title} [{status}]",
+                "",
+            ]
+        )
 
         if comp.missing_data:
             lines.append(f"_{comp.notes}_\n")
@@ -387,10 +426,12 @@ def format_comparison_markdown(comparisons: list[TableComparison]) -> str:
             lines.append("_No metrics to compare._\n")
             continue
 
-        lines.extend([
-            "| Metric | Context | Paper | v0.2.0 | Delta | % | Flag |",
-            "|--------|---------|-------|--------|-------|---|------|",
-        ])
+        lines.extend(
+            [
+                "| Metric | Context | Paper | v0.2.0 | Delta | % | Flag |",
+                "|--------|---------|-------|--------|-------|---|------|",
+            ]
+        )
 
         for d in comp.deltas:
             flag = "REGR" if d.is_regression else ""
@@ -404,10 +445,12 @@ def format_comparison_markdown(comparisons: list[TableComparison]) -> str:
 
     # Regression details
     if total_regressions > 0:
-        lines.extend([
-            "## Regressions Requiring Investigation",
-            "",
-        ])
+        lines.extend(
+            [
+                "## Regressions Requiring Investigation",
+                "",
+            ]
+        )
         for comp in comparisons:
             for d in comp.deltas:
                 if d.is_regression:

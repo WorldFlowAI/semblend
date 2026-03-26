@@ -16,6 +16,7 @@ But operates at the Dynamo routing layer, making it engine-agnostic.
 
 Requires: dynamo Python bindings (pip install nvidia-dynamo)
 """
+
 from __future__ import annotations
 
 import logging
@@ -81,8 +82,7 @@ class SemBlendKvIndexerWrapper:
         }
 
         logger.info(
-            "SemBlend KvIndexer wrapper initialized: "
-            "block_size=%d, min_sim=%.2f, min_overlap=%.2f",
+            "SemBlend KvIndexer wrapper initialized: block_size=%d, min_sim=%.2f, min_overlap=%.2f",
             kv_block_size,
             min_similarity,
             min_overlap_ratio,
@@ -281,9 +281,7 @@ class SemBlendKvIndexerWrapper:
         self._pipeline = SemBlendPipeline(
             max_donors=self._max_donors,
             min_similarity=self._min_similarity,
-            min_reuse_ratio=float(
-                os.environ.get("SEMBLEND_MIN_REUSE_RATIO", "0.50")
-            ),
+            min_reuse_ratio=float(os.environ.get("SEMBLEND_MIN_REUSE_RATIO", "0.50")),
             embedder_type=self._embedder_type,
             model_name=self._model_name,
             chunk_size=self._kv_block_size,
@@ -303,9 +301,8 @@ class SemBlendKvIndexerWrapper:
 
         try:
             from transformers import AutoTokenizer
-            self._tokenizer = AutoTokenizer.from_pretrained(
-                model_name, trust_remote_code=True
-            )
+
+            self._tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         except Exception as e:
             logger.error("Failed to load tokenizer: %s", e)
         return self._tokenizer
@@ -325,9 +322,7 @@ class SemBlendKvIndexerWrapper:
             tail = max_decode - head - mid_w
             mid_start = (n - mid_w) // 2
             sampled = (
-                token_ids[:head]
-                + token_ids[mid_start:mid_start + mid_w]
-                + token_ids[n - tail:]
+                token_ids[:head] + token_ids[mid_start : mid_start + mid_w] + token_ids[n - tail :]
             )
         return tokenizer.decode(sampled, skip_special_tokens=True)
 

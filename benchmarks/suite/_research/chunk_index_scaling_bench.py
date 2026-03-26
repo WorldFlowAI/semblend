@@ -21,6 +21,7 @@ Usage:
         --scales 1000 5000 10000 \
         --output-dir benchmarks/results/v0.3.0/chunk_index_scaling
 """
+
 from __future__ import annotations
 
 import argparse
@@ -47,6 +48,7 @@ FIND_MATCHING_ITERATIONS = 200
 @dataclass(frozen=True)
 class ScaleResult:
     """Results for a single scale point."""
+
     n_donors: int
     n_entries: int  # Total chunk entries in index
     n_unique_hashes: int
@@ -65,6 +67,7 @@ def _measure_memory_mb() -> float:
     """Get current process RSS in MB."""
     try:
         import resource
+
         usage = resource.getrusage(resource.RUSAGE_SELF)
         return usage.ru_maxrss / 1024.0  # macOS returns KB
     except Exception:
@@ -115,14 +118,20 @@ def _run_scale_point(n_donors: int) -> ScaleResult:
 
     logger.info(
         "  Entries: %d, Unique hashes: %d, Memory: %.1f MB (est: %.1f MB)",
-        n_entries, n_unique, memory_actual, memory_estimated,
+        n_entries,
+        n_unique,
+        memory_actual,
+        memory_estimated,
     )
 
     # --- Measure single chunk lookup latency ---
     # Look up chunks from donors at various positions in the index
     lookup_latencies: list[float] = []
     sample_donors = [
-        n_donors // 4, n_donors // 2, 3 * n_donors // 4, n_donors - 1,
+        n_donors // 4,
+        n_donors // 2,
+        3 * n_donors // 4,
+        n_donors - 1,
     ]
 
     for _ in range(LOOKUP_ITERATIONS):
@@ -141,11 +150,13 @@ def _run_scale_point(n_donors: int) -> ScaleResult:
         # Target shares ~50% chunks with a random donor + 50% novel
         donor_idx = n_donors // 2
         donor_tokens = _make_donor_tokens(donor_idx)
-        novel_tokens = list(range(
-            n_donors * TOKENS_PER_DONOR,
-            n_donors * TOKENS_PER_DONOR + TOKENS_PER_DONOR // 2,
-        ))
-        target = donor_tokens[:TOKENS_PER_DONOR // 2] + novel_tokens
+        novel_tokens = list(
+            range(
+                n_donors * TOKENS_PER_DONOR,
+                n_donors * TOKENS_PER_DONOR + TOKENS_PER_DONOR // 2,
+            )
+        )
+        target = donor_tokens[: TOKENS_PER_DONOR // 2] + novel_tokens
 
         t0 = time.monotonic()
         idx.find_matching_chunks(target)
@@ -177,15 +188,18 @@ def _run_scale_point(n_donors: int) -> ScaleResult:
 
     logger.info(
         "  add_donor: %.1f us mean, %.1f us p95",
-        result.add_donor_mean_us, result.add_donor_p95_us,
+        result.add_donor_mean_us,
+        result.add_donor_p95_us,
     )
     logger.info(
         "  lookup_chunk: %.1f us mean, %.1f us p95",
-        result.lookup_chunk_mean_us, result.lookup_chunk_p95_us,
+        result.lookup_chunk_mean_us,
+        result.lookup_chunk_p95_us,
     )
     logger.info(
         "  find_matching: %.1f us mean, %.1f us p95",
-        result.find_matching_mean_us, result.find_matching_p95_us,
+        result.find_matching_mean_us,
+        result.find_matching_p95_us,
     )
 
     return result
@@ -255,8 +269,10 @@ def run_benchmark(
 
     # Print scaling table
     print("\n=== ChunkIndex Scaling Benchmark ===\n")
-    print(f"{'Donors':>10} {'Entries':>10} {'Memory MB':>10} "
-          f"{'Add (us)':>10} {'Lookup (us)':>12} {'Find (us)':>12}")
+    print(
+        f"{'Donors':>10} {'Entries':>10} {'Memory MB':>10} "
+        f"{'Add (us)':>10} {'Lookup (us)':>12} {'Find (us)':>12}"
+    )
     print("-" * 76)
     for r in results:
         print(
@@ -284,12 +300,15 @@ def main() -> None:
         description="ChunkIndex scaling benchmark: memory + latency curves",
     )
     parser.add_argument(
-        "--scales", type=int, nargs="+",
+        "--scales",
+        type=int,
+        nargs="+",
         default=[10_000, 50_000, 100_000],
         help="Donor counts to benchmark (default: 10000 50000 100000)",
     )
     parser.add_argument(
-        "--output-dir", type=str,
+        "--output-dir",
+        type=str,
         default="benchmarks/results/v0.3.0/chunk_index_scaling",
     )
     parser.add_argument("--dry-run", action="store_true")

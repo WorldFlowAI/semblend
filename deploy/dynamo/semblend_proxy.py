@@ -18,15 +18,13 @@ This is functionally equivalent to SemanticKvIndexer in the Rust crate.
 Usage:
     python semblend_proxy.py --backend http://dynamo-frontend:8000 --port 8080
 """
+
 from __future__ import annotations
 
 import argparse
-import asyncio
-import json
 import logging
 import os
 import time
-from typing import AsyncIterator
 
 import aiohttp
 from aiohttp import web
@@ -64,6 +62,7 @@ async def init_pipeline():
 
     try:
         from transformers import AutoTokenizer
+
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         logger.info("Tokenizer loaded: %s", model_name)
     except Exception as e:
@@ -102,7 +101,10 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             donor_found = True
             logger.info(
                 "SemBlend HIT: sim=%.3f reuse=%.2f donors=%d (%.1fms)",
-                result.similarity, result.reuse_ratio, pipeline.donor_count, embed_ms,
+                result.similarity,
+                result.reuse_ratio,
+                pipeline.donor_count,
+                embed_ms,
             )
         else:
             stats["semantic_misses"] += 1
@@ -170,10 +172,12 @@ async def handle_proxy(request: web.Request) -> web.Response:
 
 async def handle_stats(request: web.Request) -> web.Response:
     """Return SemBlend proxy stats."""
-    return web.json_response({
-        **stats,
-        "donor_store_size": pipeline.donor_count if pipeline else 0,
-    })
+    return web.json_response(
+        {
+            **stats,
+            "donor_store_size": pipeline.donor_count if pipeline else 0,
+        }
+    )
 
 
 def main():

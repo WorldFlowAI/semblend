@@ -16,5 +16,6 @@ def __getattr__(name: str):
     """Lazy import — only load torch/vllm/lmcache when vLLM requests the connector."""
     if name == "SemBlendConnectorV1":
         from synapse_kv_connector.semblend_connector import SemBlendConnectorV1
+
         return SemBlendConnectorV1
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

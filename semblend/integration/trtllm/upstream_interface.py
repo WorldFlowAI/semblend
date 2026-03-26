@@ -12,6 +12,7 @@ The interfaces are minimal (2 ABCs, ~4 methods total) to minimize the
 surface area of the upstream change while enabling full semantic cache
 functionality.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -38,6 +39,7 @@ class SemanticMatchResult:
         donor_id: Optional identifier for the matched donor request.
         metadata: Optional engine-specific metadata for the match.
     """
+
     donor_token_ids: list[int]
     similarity: float
     reuse_ratio: float

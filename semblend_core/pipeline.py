@@ -12,6 +12,7 @@ Total overhead: ~8ms (excluding KV load from CPU offload).
 Backend-agnostic: accepts an optional SemBlendBackend instance to
 parameterize chunk_size and other engine-specific settings.
 """
+
 from __future__ import annotations
 
 import logging
@@ -49,6 +50,7 @@ def _order_invariant_text(text: str, max_chars: int | None = None) -> str:
 @dataclass
 class PipelineTimings:
     """Per-stage latency breakdown in milliseconds."""
+
     embed_ms: float = 0.0
     lookup_ms: float = 0.0
     align_ms: float = 0.0
@@ -64,6 +66,7 @@ class PositionMapping:
     should be placed at target_pos[i] in the target sequence, with K
     corrected by RoPE(target_pos[i] - donor_pos[i]).
     """
+
     donor_positions: list[int] = field(default_factory=list)
     target_positions: list[int] = field(default_factory=list)
 
@@ -74,15 +77,13 @@ class PositionMapping:
     @property
     def needs_correction(self) -> bool:
         """True if any position pair has a non-zero delta."""
-        return any(
-            d != t
-            for d, t in zip(self.donor_positions, self.target_positions)
-        )
+        return any(d != t for d, t in zip(self.donor_positions, self.target_positions))
 
 
 @dataclass
 class PipelineResult:
     """Result of the SemBlend pipeline for a single request."""
+
     found: bool
     donor_id: str | None = None
     similarity: float = 0.0
@@ -101,12 +102,6 @@ class PipelineResult:
     composite_plan: object | None = None  # CompositeKVPlan when multi-donor
     multi_donor_position_map: object | None = None  # MultiDonorPositionMapping
     chunk_fast_path_used: bool = False
-    # SemShareKV fields (mode="semshare")
-    mode: str = "chunk"  # "chunk" or "semshare"
-    semshare_schedule: object | None = None  # LayerSchedule
-    kv_rearrange_plan: object | None = None  # KVRearrangePlan
-    hd_detection: object | None = None  # HDDetectionResult
-    token_match_ratio: float = 0.0
 
 
 class SemBlendPipeline:
@@ -122,7 +117,7 @@ class SemBlendPipeline:
         max_donors: Maximum entries in the donor store.
         min_similarity: Minimum cosine similarity for donor candidates.
         min_reuse_ratio: Minimum alignment reuse ratio.
-        embedder_type: "minilm", "jina", or "jaccard".
+        embedder_type: "minilm", "onnx-gpu", "e5", or "jaccard".
         model_name: Model name for bathtub curve preset lookup.
         backend: Optional SemBlendBackend for engine-specific settings.
         chunk_size: KV block size override (default from backend or 256).
@@ -153,9 +148,11 @@ class SemBlendPipeline:
         self._pq_store = None
 
         # FM1 ablation: set SEMBLEND_USE_ALIGNMENT=0 to disable RoPE delta correction
-        self._use_alignment = os.environ.get(
-            "SEMBLEND_USE_ALIGNMENT", "1"
-        ).strip() not in ("0", "false", "False")
+        self._use_alignment = os.environ.get("SEMBLEND_USE_ALIGNMENT", "1").strip() not in (
+            "0",
+            "false",
+            "False",
+        )
         if not self._use_alignment:
             logger.warning(
                 "[SemBlend] SEMBLEND_USE_ALIGNMENT=0: "
@@ -163,40 +160,22 @@ class SemBlendPipeline:
             )
 
         # Chunk fast path: skip MiniLM when ChunkIndex finds >=3 matching chunks
-        self._chunk_fast_path = os.environ.get(
-            "SEMBLEND_CHUNK_FAST_PATH", "1"
-        ).strip() not in ("0", "false", "False")
+        self._chunk_fast_path = os.environ.get("SEMBLEND_CHUNK_FAST_PATH", "1").strip() not in (
+            "0",
+            "false",
+            "False",
+        )
 
         # Multi-donor composite KV injection
-        self._multi_donor = os.environ.get(
-            "SEMBLEND_MULTI_DONOR", "0"
-        ).strip() in ("1", "true", "True")
-
-        # SemShareKV selective recompute: enhances existing bathtub plan
-        # with per-token graduated recomputation (requires semshare module)
-        self._selective_recompute = os.environ.get(
-            "SEMBLEND_SELECTIVE_RECOMPUTE", "0"
-        ).strip() in ("1", "true", "True")
-        if self._selective_recompute:
-            try:
-                from semblend_core.semshare.config import SemShareConfig  # noqa: F401
-            except ImportError:
-                logger.warning(
-                    "SEMBLEND_SELECTIVE_RECOMPUTE=1 but semshare module not installed. "
-                    "Disabling selective recompute."
-                )
-                self._selective_recompute = False
-
-        # Pipeline mode (chunk is the only production mode)
-        self._mode = "chunk"
-        self._semshare_config = None
-        self._lsh_index = None
+        self._multi_donor = os.environ.get("SEMBLEND_MULTI_DONOR", "0").strip() in (
+            "1",
+            "true",
+            "True",
+        )
 
         # Minimum ChunkIndex hits to trigger fast path (skip embedding)
         try:
-            self._fast_path_min_hits = int(
-                os.environ.get("SEMBLEND_FAST_PATH_MIN_HITS", "3")
-            )
+            self._fast_path_min_hits = int(os.environ.get("SEMBLEND_FAST_PATH_MIN_HITS", "3"))
         except ValueError:
             logger.warning("Invalid SEMBLEND_FAST_PATH_MIN_HITS, defaulting to 3")
             self._fast_path_min_hits = 3
@@ -219,6 +198,7 @@ class SemBlendPipeline:
             self._donor_store = donor_store
         else:
             from semblend_core.donor_store import DonorStore
+
             self._donor_store = DonorStore(
                 max_entries=max_donors,
                 embedding_dim=self._embedder.dimension,
@@ -230,6 +210,7 @@ class SemBlendPipeline:
         if enable_pq_segments and os.environ.get("SEMBLEND_SEGMENT_EMBEDDINGS", "1") == "1":
             try:
                 from semblend_core.pq_segment_store import PQSegmentStore
+
                 pq_train = int(os.environ.get("SEMBLEND_PQ_TRAIN_THRESHOLD", "500"))
                 self._pq_store = PQSegmentStore(
                     max_entries=max_donors,
@@ -293,16 +274,22 @@ class SemBlendPipeline:
 
         try:
             return self._find_donor_inner(
-                token_ids, prompt_text, top_k, timings, t_start,
+                token_ids,
+                prompt_text,
+                top_k,
+                timings,
+                t_start,
             )
         except Exception as e:
             logger.error(
                 "SemBlend pipeline error (graceful degradation → cold prefill): %s",
-                e, exc_info=True,
+                e,
+                exc_info=True,
             )
             timings.total_ms = (time.monotonic() - t_start) * 1000
             try:
                 from semblend_core.metrics import METRICS
+
                 METRICS.record_pipeline_error(stage="pipeline")
             except Exception:
                 pass
@@ -322,16 +309,20 @@ class SemBlendPipeline:
     ) -> PipelineResult:
         """Inner pipeline logic (may raise exceptions)."""
         # Stage 0: ChunkIndex fast path — skip embedding if >=N chunks match
-        if self._chunk_fast_path and hasattr(self._donor_store, 'chunk_index'):
+        if self._chunk_fast_path and hasattr(self._donor_store, "chunk_index"):
             chunk_index = self._donor_store.chunk_index
             if chunk_index.num_donors > 0:
                 chunk_matches = chunk_index.find_matching_chunks(
-                    token_ids, min_matches=1,
+                    token_ids,
+                    min_matches=1,
                 )
                 if len(chunk_matches) >= self._fast_path_min_hits:
                     # Fast path: try multi-donor alignment directly
                     fast_result = self._try_chunk_fast_path(
-                        token_ids, chunk_matches, timings, t_start,
+                        token_ids,
+                        chunk_matches,
+                        timings,
+                        t_start,
                     )
                     if fast_result is not None:
                         return fast_result
@@ -347,6 +338,7 @@ class SemBlendPipeline:
         timings.embed_ms = (time.monotonic() - t0) * 1000
         try:
             from semblend_core.metrics import METRICS
+
             METRICS.record_embedding_latency(timings.embed_ms)
         except Exception:
             pass
@@ -355,7 +347,10 @@ class SemBlendPipeline:
         if self._multi_donor:
             try:
                 multi_result = self._try_multi_donor(
-                    token_ids, timings, t_start, prompt_text=prompt_text,
+                    token_ids,
+                    timings,
+                    t_start,
+                    prompt_text=prompt_text,
                 )
                 if multi_result is not None:
                     return multi_result
@@ -377,9 +372,11 @@ class SemBlendPipeline:
             # scan donors for high token overlap via fuzzy chunk alignment.
             # This catches shifted-prefix where instruction differs enough
             # to drop cosine below 0.60 but article content is 95%+ identical.
-            if self._chunk_fast_path and hasattr(self._donor_store, 'chunk_index'):
+            if self._chunk_fast_path and hasattr(self._donor_store, "chunk_index"):
                 fuzzy_result = self._try_fuzzy_overlap_fallback(
-                    token_ids, timings, t_start,
+                    token_ids,
+                    timings,
+                    t_start,
                 )
                 if fuzzy_result is not None:
                     return fuzzy_result
@@ -387,6 +384,7 @@ class SemBlendPipeline:
             timings.total_ms = (time.monotonic() - t_start) * 1000
             try:
                 from semblend_core.metrics import METRICS
+
                 METRICS.record_pipeline_result(hit=False)
             except Exception:
                 pass
@@ -453,11 +451,13 @@ class SemBlendPipeline:
         # Build slot actions in the format expected by partial_attention
         slot_actions = []
         for sa in match.alignment.slot_actions:
-            slot_actions.append({
-                "action": sa.action.value,
-                "targetPos": sa.target_pos,
-                "donorPos": sa.donor_pos,
-            })
+            slot_actions.append(
+                {
+                    "action": sa.action.value,
+                    "targetPos": sa.target_pos,
+                    "donorPos": sa.donor_pos,
+                }
+            )
 
         layer_dev_dicts = [
             {
@@ -477,13 +477,15 @@ class SemBlendPipeline:
                     position_map.donor_positions.append(sa.donor_pos)
                     position_map.target_positions.append(sa.target_pos)
         else:
-            n = sum(1 for sa in match.alignment.slot_actions
-                    if sa.action.value == "copy_from_donor")
+            n = sum(
+                1 for sa in match.alignment.slot_actions if sa.action.value == "copy_from_donor"
+            )
             position_map.donor_positions = list(range(n))
             position_map.target_positions = list(range(n))
 
         try:
             from semblend_core.metrics import METRICS
+
             METRICS.record_pipeline_result(
                 hit=True,
                 similarity=match.similarity,
@@ -491,9 +493,7 @@ class SemBlendPipeline:
                 fuzzy_chunks=getattr(match.alignment, "fuzzy_chunks", 0),
             )
             METRICS.record_donor_store_size(
-                len(self._donor_store._entries)
-                if hasattr(self._donor_store, "_entries")
-                else 0
+                len(self._donor_store._entries) if hasattr(self._donor_store, "_entries") else 0
             )
         except Exception:
             pass
@@ -548,11 +548,13 @@ class SemBlendPipeline:
 
         if not matches:
             timings.total_ms = (time.monotonic() - t_start) * 1000
-            return [PipelineResult(
-                found=False,
-                timings=timings,
-                rejection_reason="no_donor_match",
-            )]
+            return [
+                PipelineResult(
+                    found=False,
+                    timings=timings,
+                    rejection_reason="no_donor_match",
+                )
+            ]
 
         # Build PipelineResult for each candidate
         results = []
@@ -569,11 +571,13 @@ class SemBlendPipeline:
 
             slot_actions = []
             for sa in match.alignment.slot_actions:
-                slot_actions.append({
-                    "action": sa.action.value,
-                    "targetPos": sa.target_pos,
-                    "donorPos": sa.donor_pos,
-                })
+                slot_actions.append(
+                    {
+                        "action": sa.action.value,
+                        "targetPos": sa.target_pos,
+                        "donorPos": sa.donor_pos,
+                    }
+                )
 
             layer_dev_dicts = [
                 {
@@ -591,8 +595,9 @@ class SemBlendPipeline:
                         position_map.donor_positions.append(sa.donor_pos)
                         position_map.target_positions.append(sa.target_pos)
             else:
-                n = sum(1 for sa in match.alignment.slot_actions
-                        if sa.action.value == "copy_from_donor")
+                n = sum(
+                    1 for sa in match.alignment.slot_actions if sa.action.value == "copy_from_donor"
+                )
                 position_map.donor_positions = list(range(n))
                 position_map.target_positions = list(range(n))
 
@@ -602,17 +607,19 @@ class SemBlendPipeline:
                 total_ms=(time.monotonic() - t_start) * 1000,
             )
 
-            results.append(PipelineResult(
-                found=True,
-                donor_id=match.donor.request_id,
-                similarity=match.similarity,
-                reuse_ratio=match.alignment.reuse_ratio,
-                donor_tokens=match.donor.token_ids,
-                slot_actions=slot_actions,
-                layer_deviations=layer_dev_dicts,
-                position_map=position_map,
-                timings=result_timings,
-            ))
+            results.append(
+                PipelineResult(
+                    found=True,
+                    donor_id=match.donor.request_id,
+                    similarity=match.similarity,
+                    reuse_ratio=match.alignment.reuse_ratio,
+                    donor_tokens=match.donor.token_ids,
+                    slot_actions=slot_actions,
+                    layer_deviations=layer_dev_dicts,
+                    position_map=position_map,
+                    timings=result_timings,
+                )
+            )
 
         return results
 
@@ -647,7 +654,8 @@ class SemBlendPipeline:
             # Try embed_with_segments for PQ store integration
             if self._pq_store and hasattr(self._embedder, "embed_with_segments"):
                 result = self._embedder.embed_with_segments(
-                    text, chunk_size=self._chunk_size,
+                    text,
+                    chunk_size=self._chunk_size,
                 )
                 if result is not None:
                     embedding = np.asarray(result.pooled, dtype=np.float32)
@@ -715,10 +723,13 @@ class SemBlendPipeline:
             num_layers = self._detect_num_layers()
 
             # Infer target/donor lengths from slot actions
-            target_len = max(
-                (sa["targetPos"] for sa in pipeline_result.slot_actions),
-                default=0,
-            ) + 1
+            target_len = (
+                max(
+                    (sa["targetPos"] for sa in pipeline_result.slot_actions),
+                    default=0,
+                )
+                + 1
+            )
             donor_len = len(pipeline_result.donor_tokens)
 
             plan = build_attention_plan(
@@ -732,115 +743,19 @@ class SemBlendPipeline:
                 num_layers=num_layers,
             )
 
-            # Optionally enhance with SemShareKV selective recompute
-            if self._selective_recompute and plan is not None:
-                plan = self._apply_selective_recompute(
-                    plan, pipeline_result, num_layers,
-                    copy_positions, placeholder_positions,
-                )
-
             logger.info(
-                "PartialAttention plan: reuse=%d, partial=%d, "
-                "full_layers=%d/%d, comp_ratio=%.2f, selective=%s",
+                "PartialAttention plan: reuse=%d, partial=%d, full_layers=%d/%d, comp_ratio=%.2f",
                 plan.num_reuse_positions,
                 plan.num_partial_positions,
                 plan.num_full_layers,
                 num_layers,
                 plan.computation_ratio,
-                self._selective_recompute,
             )
             return plan
 
         except Exception:
-            logger.warning(
-                "Failed to build PartialAttention plan", exc_info=True
-            )
+            logger.warning("Failed to build PartialAttention plan", exc_info=True)
             return None
-
-    def _apply_selective_recompute(
-        self,
-        plan: object,
-        pipeline_result: PipelineResult,
-        num_layers: int,
-        copy_positions: list[int],
-        placeholder_positions: list[int],
-    ) -> object:
-        """Enhance a bathtub plan with SemShareKV selective recompute.
-
-        Uses token match quality as a proxy for HD detection (since we
-        don't have layer 1 KV at plan time). Tokens with lower alignment
-        confidence get higher recompute priority.
-        """
-        try:
-            from semblend_core.semshare.config import SemShareConfig
-            from semblend_core.semshare.hd_detector import HDDetectionResult
-            from semblend_core.semshare.layer_schedule import compute_layer_schedule
-            from semblend_core.semshare.selective_attention import (
-                enhance_plan_with_selective_recompute,
-            )
-
-            target_len = plan.target_len
-            if target_len <= 0:
-                return plan
-
-            # Estimate HD mask from alignment confidence:
-            # Positions with recompute action or low fuzzy confidence → HD
-            hd_mask = []
-            deviation_scores = []
-            for i in range(target_len):
-                is_placeholder = i in set(placeholder_positions)
-                # Use fuzzy confidence as deviation proxy
-                # Lower confidence → higher deviation → more likely HD
-                dev = 1.0 - pipeline_result.fuzzy_confidence if is_placeholder else 0.0
-
-                # Also check slot actions for confidence info
-                for sa in pipeline_result.slot_actions:
-                    pos = sa.get("targetPos", sa.get("target_pos", -1))
-                    if pos == i:
-                        if sa.get("action") == "recompute":
-                            dev = 1.0
-                        elif sa.get("confidence", 1.0) < 0.8:
-                            dev = max(dev, 0.5)
-                        break
-
-                hd_mask.append(dev > 0.3)
-                deviation_scores.append(dev)
-
-            config = self._semshare_config or SemShareConfig()
-            hd_result = HDDetectionResult(
-                hd_mask=tuple(hd_mask),
-                deviation_scores=tuple(deviation_scores),
-                hd_threshold=0.3,
-                hd_fraction=sum(hd_mask) / target_len if target_len > 0 else 0.0,
-            )
-
-            schedule = compute_layer_schedule(
-                hd_result,
-                num_layers=num_layers,
-                config=config,
-                unmatched_positions=tuple(placeholder_positions),
-            )
-
-            enhanced = enhance_plan_with_selective_recompute(
-                plan, schedule, hd_result,
-            )
-
-            logger.info(
-                "Selective recompute applied: comp_ratio %.2f → %.2f, "
-                "hd_tokens=%d/%d",
-                plan.computation_ratio,
-                enhanced.computation_ratio,
-                sum(hd_mask),
-                target_len,
-            )
-            return enhanced
-
-        except Exception:
-            logger.warning(
-                "Selective recompute enhancement failed, using bathtub plan",
-                exc_info=True,
-            )
-            return plan
 
     # ------------------------------------------------------------------
     # Fuzzy overlap fallback — scan donors when embedding similarity fails
@@ -882,9 +797,7 @@ class SemBlendPipeline:
             best_donor_id = None
 
             # Use relaxed overlap threshold for fallback (primary uses 0.90)
-            fallback_overlap = float(
-                os.environ.get("SEMBLEND_FUZZY_FALLBACK_OVERLAP", "0.80")
-            )
+            fallback_overlap = float(os.environ.get("SEMBLEND_FUZZY_FALLBACK_OVERLAP", "0.80"))
 
             for donor_id in donor_ids:
                 donor_tokens = all_donors[donor_id]
@@ -914,18 +827,25 @@ class SemBlendPipeline:
                 logger.info(
                     "fuzzy_overlap_fallback: no donor with reuse >= %.2f "
                     "(best=%.2f, scanned %d donors, %.1fms)",
-                    self._min_reuse_ratio, best_reuse, len(donor_ids), fallback_ms,
+                    self._min_reuse_ratio,
+                    best_reuse,
+                    len(donor_ids),
+                    fallback_ms,
                 )
                 return None
 
             logger.info(
                 "fuzzy_overlap_fallback: found donor %s with reuse=%.2f "
                 "(scanned %d donors, %.1fms)",
-                best_donor_id, best_reuse, len(donor_ids), fallback_ms,
+                best_donor_id,
+                best_reuse,
+                len(donor_ids),
+                fallback_ms,
             )
 
             # Build result using the fuzzy alignment
             from semblend_core.donor_store import DonorMatch
+
             donor_node = self._donor_store.get_donor(best_donor_id)
             if donor_node is None:
                 return None
@@ -938,7 +858,11 @@ class SemBlendPipeline:
 
             # Continue with the standard pipeline from Stage 4 (bathtub)
             return self._build_result_from_match(
-                match, token_ids, timings, t_start, fallback_ms,
+                match,
+                token_ids,
+                timings,
+                t_start,
+                fallback_ms,
             )
 
         except Exception as e:
@@ -966,7 +890,8 @@ class SemBlendPipeline:
         if fuzzy_chunks > 0 and exact_chunks == 0 and alignment.reuse_ratio < 0.30:
             timings.total_ms = (time.monotonic() - t_start) * 1000
             return PipelineResult(
-                found=False, timings=timings,
+                found=False,
+                timings=timings,
                 rejection_reason="fuzzy_low_reuse",
             )
 
@@ -996,12 +921,14 @@ class SemBlendPipeline:
 
         slot_actions = []
         for sa in alignment.slot_actions:
-            slot_actions.append({
-                "action": sa.action.value,
-                "targetPos": sa.target_pos,
-                "donorPos": sa.donor_pos,
-                "confidence": getattr(sa, "confidence", 1.0),
-            })
+            slot_actions.append(
+                {
+                    "action": sa.action.value,
+                    "targetPos": sa.target_pos,
+                    "donorPos": sa.donor_pos,
+                    "confidence": getattr(sa, "confidence", 1.0),
+                }
+            )
 
         layer_deviations = [
             {
@@ -1013,6 +940,7 @@ class SemBlendPipeline:
         ]
 
         from semblend_core.pipeline import PositionMapping
+
         position_map = PositionMapping()
         for sa in alignment.slot_actions:
             if sa.action.value == "copy_from_donor" and sa.donor_pos != sa.target_pos:
@@ -1063,8 +991,11 @@ class SemBlendPipeline:
 
         timings.embed_ms = 0.0  # Skipped embedding!
         return self._build_multi_donor_result(
-            result, timings, t_start,
-            similarity=1.0, chunk_fast_path_used=True,
+            result,
+            timings,
+            t_start,
+            similarity=1.0,
+            chunk_fast_path_used=True,
         )
 
     def _try_multi_donor(
@@ -1096,11 +1027,15 @@ class SemBlendPipeline:
         timings.lookup_ms = lookup_ms
 
         fuzzy_fraction = result.fuzzy_chunks / max(
-            result.exact_chunks + result.fuzzy_chunks, 1,
+            result.exact_chunks + result.fuzzy_chunks,
+            1,
         )
         return self._build_multi_donor_result(
-            result, timings, t_start,
-            similarity=0.0, fuzzy_fraction=fuzzy_fraction,
+            result,
+            timings,
+            t_start,
+            similarity=0.0,
+            fuzzy_fraction=fuzzy_fraction,
         )
 
     def _build_multi_donor_result(
@@ -1151,15 +1086,12 @@ class SemBlendPipeline:
         position_map = PositionMapping()
         if self._use_alignment and composite.position_map:
             for i in range(composite.position_map.num_pairs):
-                position_map.donor_positions.append(
-                    composite.position_map.donor_positions[i]
-                )
-                position_map.target_positions.append(
-                    composite.position_map.target_positions[i]
-                )
+                position_map.donor_positions.append(composite.position_map.donor_positions[i])
+                position_map.target_positions.append(composite.position_map.target_positions[i])
 
         try:
             from semblend_core.metrics import METRICS
+
             METRICS.record_pipeline_result(hit=True, reuse_ratio=result.reuse_ratio)
             if chunk_fast_path_used:
                 METRICS.record_chunk_fast_path_hit()
@@ -1167,7 +1099,8 @@ class SemBlendPipeline:
                 METRICS.record_multi_donor_hit(result.donors_per_composite)
             METRICS.record_chunk_index_size(
                 self._donor_store.chunk_index.num_entries
-                if hasattr(self._donor_store, 'chunk_index') else 0
+                if hasattr(self._donor_store, "chunk_index")
+                else 0
             )
         except Exception:
             pass

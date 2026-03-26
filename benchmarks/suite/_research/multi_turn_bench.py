@@ -20,6 +20,7 @@ Usage:
         --compare-fast-path \
         --output-dir benchmarks/results/v0.3.0/multi_turn
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,6 +43,7 @@ MIN_TOKENS_PER_TURN = 128
 @dataclass(frozen=True)
 class TurnResult:
     """Timing result for a single conversation turn."""
+
     turn_idx: int
     total_ms: float
     embed_ms: float
@@ -56,6 +58,7 @@ class TurnResult:
 @dataclass
 class ConversationResult:
     """Results for an entire multi-turn conversation."""
+
     conversation_id: str
     num_turns: int
     turn_results: list[TurnResult] = field(default_factory=list)
@@ -83,6 +86,7 @@ class ConversationResult:
 @dataclass
 class BenchmarkResult:
     """Aggregate benchmark results."""
+
     mode: str  # "fast_path_on" or "fast_path_off"
     n_conversations: int
     n_turns_total: int
@@ -108,9 +112,7 @@ def _load_wildchat_conversations(
     try:
         from datasets import load_dataset
     except ImportError:
-        raise RuntimeError(
-            "datasets package required: pip install datasets"
-        )
+        raise RuntimeError("datasets package required: pip install datasets")
 
     logger.info("Loading WildChat dataset (streaming)...")
     ds = load_dataset(WILDCHAT_DATASET, split="train", streaming=True)
@@ -130,7 +132,8 @@ def _load_wildchat_conversations(
 
         # Build accumulated turns (user messages only, concatenated)
         user_turns = [
-            m["content"] for m in messages
+            m["content"]
+            for m in messages
             if m.get("role") == "user" and len(m.get("content", "")) > 50
         ]
 
@@ -151,13 +154,16 @@ def _load_wildchat_conversations(
 
     logger.info(
         "Loaded %d multi-turn conversations (scanned %d examples)",
-        len(conversations), seen,
+        len(conversations),
+        seen,
     )
 
     if len(conversations) < n_conversations:
         logger.warning(
             "Only found %d/%d conversations with >= %d turns",
-            len(conversations), n_conversations, min_turns,
+            len(conversations),
+            n_conversations,
+            min_turns,
         )
 
     return conversations
@@ -190,19 +196,23 @@ def _run_conversation(
             )
 
             timings = pipeline_result.timings
-            result.turn_results.append(TurnResult(
-                turn_idx=turn_idx,
-                total_ms=timings.total_ms,
-                embed_ms=timings.embed_ms,
-                lookup_ms=timings.lookup_ms,
-                bathtub_ms=timings.bathtub_ms,
-                found=pipeline_result.found,
-                reuse_ratio=pipeline_result.reuse_ratio,
-                chunk_fast_path_used=getattr(
-                    pipeline_result, "chunk_fast_path_used", False,
-                ),
-                num_donors=len(getattr(pipeline_result, "donor_ids", [])),
-            ))
+            result.turn_results.append(
+                TurnResult(
+                    turn_idx=turn_idx,
+                    total_ms=timings.total_ms,
+                    embed_ms=timings.embed_ms,
+                    lookup_ms=timings.lookup_ms,
+                    bathtub_ms=timings.bathtub_ms,
+                    found=pipeline_result.found,
+                    reuse_ratio=pipeline_result.reuse_ratio,
+                    chunk_fast_path_used=getattr(
+                        pipeline_result,
+                        "chunk_fast_path_used",
+                        False,
+                    ),
+                    num_donors=len(getattr(pipeline_result, "donor_ids", [])),
+                )
+            )
 
         # Register this turn as a donor for future turns
         pipeline.register_donor(
@@ -239,10 +249,16 @@ def _compute_aggregate(
 
     if not all_totals:
         return BenchmarkResult(
-            mode=mode, n_conversations=len(results), n_turns_total=0,
-            mean_total_ms=0, median_total_ms=0, p95_total_ms=0,
-            mean_embed_ms=0, fast_path_hit_rate=0,
-            mean_reuse_ratio=0, hit_rate=0,
+            mode=mode,
+            n_conversations=len(results),
+            n_turns_total=0,
+            mean_total_ms=0,
+            median_total_ms=0,
+            p95_total_ms=0,
+            mean_embed_ms=0,
+            fast_path_hit_rate=0,
+            mean_reuse_ratio=0,
+            hit_rate=0,
         )
 
     sorted_totals = sorted(all_totals)
@@ -319,7 +335,9 @@ def run_benchmark(
 
             if (i + 1) % 50 == 0:
                 logger.info(
-                    "  Progress: %d/%d conversations", i + 1, len(conversations),
+                    "  Progress: %d/%d conversations",
+                    i + 1,
+                    len(conversations),
                 )
 
         aggregate = _compute_aggregate(conv_results, mode)
@@ -374,15 +392,19 @@ def main() -> None:
         description="Multi-turn conversation benchmark for ChunkIndex fast path",
     )
     parser.add_argument(
-        "--n-conversations", type=int, default=200,
+        "--n-conversations",
+        type=int,
+        default=200,
         help="Number of WildChat conversations (default: 200, min: 200)",
     )
     parser.add_argument(
-        "--compare-fast-path", action="store_true",
+        "--compare-fast-path",
+        action="store_true",
         help="Run both fast-path ON and OFF for comparison",
     )
     parser.add_argument(
-        "--output-dir", type=str,
+        "--output-dir",
+        type=str,
         default="benchmarks/results/v0.3.0/multi_turn",
     )
     parser.add_argument("--dry-run", action="store_true")

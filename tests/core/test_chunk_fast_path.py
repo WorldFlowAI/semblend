@@ -1,4 +1,5 @@
 """Tests for ChunkIndex fast path — skip embedding on multi-turn."""
+
 import time
 
 import numpy as np
@@ -51,9 +52,7 @@ class TestChunkFastPathDonorStore:
             store.add_donor(node)
 
         # d0 should have been evicted (LRU)
-        locs = store.chunk_index.lookup_chunk(
-            _make_tokens(CHUNK_SIZE, offset=0)
-        )
+        locs = store.chunk_index.lookup_chunk(_make_tokens(CHUNK_SIZE, offset=0))
         assert len(locs) == 0
 
         # d1, d2, d3 should still exist
@@ -84,16 +83,22 @@ class TestChunkFastPathDonorStore:
         d1 = chunk_a + _make_tokens(CHUNK_SIZE, offset=1000)
         d2 = chunk_b + _make_tokens(CHUNK_SIZE, offset=2000)
 
-        store.add_donor(DonorNode(
-            request_id="d1", token_ids=d1,
-            embedding=np.random.randn(4).astype(np.float32),
-            timestamp=time.monotonic(),
-        ))
-        store.add_donor(DonorNode(
-            request_id="d2", token_ids=d2,
-            embedding=np.random.randn(4).astype(np.float32),
-            timestamp=time.monotonic(),
-        ))
+        store.add_donor(
+            DonorNode(
+                request_id="d1",
+                token_ids=d1,
+                embedding=np.random.randn(4).astype(np.float32),
+                timestamp=time.monotonic(),
+            )
+        )
+        store.add_donor(
+            DonorNode(
+                request_id="d2",
+                token_ids=d2,
+                embedding=np.random.randn(4).astype(np.float32),
+                timestamp=time.monotonic(),
+            )
+        )
 
         # Target uses chunks from both donors
         target = chunk_a + chunk_b
@@ -152,15 +157,11 @@ class TestMultiTurnFastPath:
         system = _make_tokens(CHUNK_SIZE * 3, offset=0)
 
         for turn in range(5):
-            turn_tokens = system + _make_tokens(
-                CHUNK_SIZE * 2, offset=(turn + 1) * 10000
-            )
+            turn_tokens = system + _make_tokens(CHUNK_SIZE * 2, offset=(turn + 1) * 10000)
             idx.add_donor_chunks(f"turn_{turn}", turn_tokens)
 
             # Next turn shares the prefix
-            next_tokens = system + _make_tokens(
-                CHUNK_SIZE * 2, offset=(turn + 2) * 10000
-            )
+            next_tokens = system + _make_tokens(CHUNK_SIZE * 2, offset=(turn + 2) * 10000)
             matches = idx.find_matching_chunks(next_tokens)
             # Should always find the 3 system prompt chunks
             assert len(matches) >= 3, f"Turn {turn}: only {len(matches)} matches"
