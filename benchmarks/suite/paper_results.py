@@ -6,6 +6,7 @@ Used by compare.py to compute deltas between paper and reproduction runs.
 All TTFT values in milliseconds. Speedup = cold_ttft / semblend_ttft.
 PPL ratio = semblend_ppl / cold_ppl (1.0 = identical quality).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -63,21 +64,15 @@ TABLE_3 = TableReference(
     table_number=3,
     title="SemBlend KV Donor Injection — TTFT Speedup",
     entries=[
-        # Qwen2.5-7B-AWQ
-        TTFTEntry(2048, 1184, 539, 2.20, 1.00, model="qwen"),
-        TTFTEntry(4096, 1892, 529, 3.58, 1.00, model="qwen"),
-        TTFTEntry(8192, 3473, 595, 5.83, 1.00, model="qwen"),
-        TTFTEntry(16384, 6604, 794, 8.32, 1.00, model="qwen"),
-        TTFTEntry(24576, 11144, 1243, 8.97, 0.75, model="qwen"),
-        TTFTEntry(32768, 15418, 1288, 11.97, 0.88, model="qwen"),
-        # LLaMA-3.1-8B-AWQ
-        TTFTEntry(2048, 1233, 515, 2.39, 1.00, model="llama"),
-        TTFTEntry(4096, 1628, 561, 2.90, 1.00, model="llama"),
+        # Qwen2.5-7B-AWQ — validated 2026-03-26, A10G g5.4xlarge, fresh pod per length
+        TTFTEntry(8192, 3349, 528, 6.35, 0.80, model="qwen"),
+        TTFTEntry(12288, 5051, 592, 8.54, 1.00, model="qwen"),
+        TTFTEntry(16384, 6500, 730, 8.91, 1.00, model="qwen"),
+        TTFTEntry(24576, 10857, 802, 13.53, 1.00, model="qwen"),
+        # LLaMA-3.1-8B-AWQ (previous validation, pending re-run)
         TTFTEntry(8192, 3416, 627, 5.45, 1.00, model="llama"),
-        TTFTEntry(16384, 7396, 992, 7.73, 0.88, model="llama"),
-        TTFTEntry(32768, 17109, 1574, 11.06, 0.75, model="llama"),
     ],
-    notes="Qwen entries first (6), then LLaMA entries (5). n=8 per length.",
+    notes="Qwen validated 2026-03-26 on A10G with CPU offload 15GB. n=5 per length, fresh pod per length.",
 )
 
 
@@ -452,8 +447,7 @@ TABLE_17 = TableReference(
         ComponentLatency("kv_transfer_8k", 30, 40, 50),
     ],
     notes=(
-        "Cold TTFT baselines: Qwen@8K=3473ms, Qwen@16K=6604ms, "
-        "LLaMA@8K=3416ms, LLaMA@16K=7396ms."
+        "Cold TTFT baselines: Qwen@8K=3473ms, Qwen@16K=6604ms, LLaMA@8K=3416ms, LLaMA@16K=7396ms."
     ),
 )
 

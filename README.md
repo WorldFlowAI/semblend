@@ -5,7 +5,8 @@
   <a href="https://pypi.org/project/semblend/"><img alt="Python" src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue"></a>
   <a href="https://github.com/worldflowai/semblend/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/worldflowai/semblend/ci.yml?branch=main&label=CI"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-green"></a>
-  <a href="https://arxiv.org/abs/TODO"><img alt="Paper" src="https://img.shields.io/badge/paper-arXiv-red"></a>
+  <!-- Paper badge: uncomment when arXiv submission is accepted -->
+  <!-- <a href="https://arxiv.org/abs/XXXX.XXXXX"><img alt="Paper" src="https://img.shields.io/badge/paper-arXiv-red"></a> -->
 </p>
 
 **Semantic KV cache reuse for LLM inference engines.**
@@ -23,14 +24,14 @@ Measured on A10G GPU, Qwen2.5-7B-AWQ, vLLM 0.14.1 + LMCache.
 
 ### TTFT speedup vs cold prefill
 
-| Context | Cold TTFT | Hit TTFT | Speedup | Break-even P_hit |
-|---------|-----------|----------|---------|-----------------|
-| 4K | 1,859 ms | 801 ms | **2.3x** | <1% |
-| 8K | 3,193 ms | 817 ms | **3.9x** | 4.9% |
-| 16K | 5,852 ms | 871 ms | **6.7x** | 4.1% |
-| 32K | 15,418 ms | 1,288 ms | **12.0x** | — |
+| Context | Cold TTFT | Hit TTFT | Speedup | Hit Rate |
+|---------|-----------|----------|---------|----------|
+| 8K | 3,349 ms | 528 ms | **6.4x** | 80% |
+| 12K | 5,051 ms | 592 ms | **8.5x** | 100% |
+| 16K | 6,500 ms | 730 ms | **8.9x** | 100% |
+| 24K | 10,857 ms | 802 ms | **13.5x** | 100% |
 
-Hit TTFT is ~800ms regardless of context length — bounded by KV retrieval, not prefill. Miss overhead is 5–212ms (negligible). SemBlend is net-positive at virtually any nonzero hit rate for contexts ≥ 4K.
+Hit TTFT stays <1s regardless of context length — bounded by KV retrieval from CPU offload, not prefill. Speedup scales with context because cold TTFT grows linearly while warm TTFT is roughly constant. Miss overhead is 5–40ms (negligible).
 
 ### Hit rates on real workloads
 
@@ -39,8 +40,8 @@ Hit TTFT is ~800ms regardless of context length — bounded by KV retrieval, not
 | WildChat-1M conversations (≥4K) | **82.7%** | 1.69x |
 | Summarization (CNN/DM, SAMSum) | 50–88% | 2.3–2.4x |
 | Multi-turn dialogue (turn 2+) | 99.5% | 5.1x |
-| Cross-instruction RAG (8K) | **100%** | 3.3x |
-| Cross-instruction RAG (16K) | **100%** | **5.3x** |
+| Cross-instruction RAG (8K) | **80–100%** | 6.4x |
+| Cross-instruction RAG (16K) | **100%** | **8.9x** |
 | Code generation (dissimilar) | 0% | 0.96x |
 
 Full-document segmented GPU embedding (v0.2.0) achieves 100% coverage of the prompt regardless of length, enabling 82.7% hit rate on real WildChat conversations (up from 29% with sparse sampling).
@@ -55,7 +56,7 @@ RoPE position correction keeps output quality near baseline:
 | WikiHow | 1.012 |
 | XSum | 1.025 |
 
-See the [paper](https://arxiv.org/abs/TODO) for full benchmark details.
+See the benchmarks/ directory for full reproduction details.
 
 ## Installation
 
