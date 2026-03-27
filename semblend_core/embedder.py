@@ -40,8 +40,21 @@ class MiniLMEmbedder:
 
     def __init__(self) -> None:
         self._model = None
-        self._available = False
+        self._available = True  # optimistic; _ensure_loaded sets False on failure
         self._load_time_ms = 0.0
+        self._initialized = False
+
+    def _ensure_loaded(self) -> None:
+        """Lazy-load model on first embed() call.
+
+        Defers GPU memory allocation until after vLLM has measured free
+        memory and claimed its KV cache. Without this, SentenceTransformer
+        eagerly allocates ~8 GB on cuda:0, leaving too little for vLLM at
+        gpu-memory-utilization >= 0.85 on single-GPU nodes.
+        """
+        if self._initialized:
+            return
+        self._initialized = True
         self._init()
 
     def _init(self) -> None:
@@ -53,9 +66,11 @@ class MiniLMEmbedder:
                 import torch
 
                 if torch.cuda.is_available():
-                    # Use last available GPU to avoid contending with inference model
                     gpu_count = torch.cuda.device_count()
-                    device = f"cuda:{gpu_count - 1}" if gpu_count > 1 else "cuda:0"
+                    # Multi-GPU: use last GPU to avoid contending with vLLM
+                    # Single-GPU: use CPU so vLLM keeps full KV cache capacity
+                    # (ONNX GPU embedder with 256MB limit is preferred for GPU)
+                    device = f"cuda:{gpu_count - 1}" if gpu_count > 1 else "cpu"
                 else:
                     device = "cpu"
             except ImportError:
@@ -64,17 +79,22 @@ class MiniLMEmbedder:
             self._load_time_ms = (time.monotonic() - t0) * 1000
             self._available = True
             logger.info(
-                "MiniLM embedder loaded: %s (%.0fms)",
+                "MiniLM embedder loaded on %s: %s (%.0fms)",
+                device,
                 self.MODEL_NAME,
                 self._load_time_ms,
             )
         except ImportError:
+            self._available = False
             logger.warning("sentence-transformers not installed - MiniLM disabled")
         except Exception:
+            self._available = False
             logger.warning("MiniLM model load failed", exc_info=True)
 
     @property
     def available(self) -> bool:
+        if not self._initialized:
+            return True  # optimistic until first use
         return self._available
 
     @property
@@ -96,6 +116,7 @@ class MiniLMEmbedder:
         Returns:
             Normalized embedding vector, or None if unavailable.
         """
+        self._ensure_loaded()
         if not self._available or not text.strip():
             return None
 
@@ -181,6 +202,7 @@ class MiniLMEmbedder:
             EmbedResult with pooled embedding and optional per-segment detail,
             or None if the embedder is unavailable.
         """
+        self._ensure_loaded()
         if not self._available or not text.strip():
             return None
 
