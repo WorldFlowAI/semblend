@@ -232,10 +232,13 @@ class PartialAttentionHook:
 
             # Scatter donor KV for this layer with RoPE correction on K
             if self._donor_positions.numel() > 0:
-                scatter_start = torch.cuda.Event(enable_timing=True)
-                scatter_end = torch.cuda.Event(enable_timing=True)
-
-                scatter_start.record()
+                _use_cuda_timing = torch.cuda.is_available() and kv_cache.is_cuda
+                if _use_cuda_timing:
+                    scatter_start = torch.cuda.Event(enable_timing=True)
+                    scatter_end = torch.cuda.Event(enable_timing=True)
+                    scatter_start.record()
+                else:
+                    _t0 = time.monotonic()
 
                 # Extract single layer from donor and target
                 target_layer = kv_cache[layer_idx : layer_idx + 1]
@@ -272,9 +275,12 @@ class PartialAttentionHook:
                         self._target_positions,
                     )
 
-                scatter_end.record()
-                torch.cuda.synchronize()
-                scatter_ms = scatter_start.elapsed_time(scatter_end)
+                if _use_cuda_timing:
+                    scatter_end.record()
+                    torch.cuda.synchronize()
+                    scatter_ms = scatter_start.elapsed_time(scatter_end)
+                else:
+                    scatter_ms = (time.monotonic() - _t0) * 1000
             else:
                 scatter_ms = 0.0
 
