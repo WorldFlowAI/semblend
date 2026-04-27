@@ -146,6 +146,10 @@ class SemBlendPipeline:
         self._fuzzy_config = fuzzy_config
         self._recompute_config = recompute_config
         self._pq_store = None
+        # Mode tag surfaced in logs and via the `mode` property. Defaults to
+        # "local" (in-process pipeline); engine adapters can override before
+        # use if they want a different label (e.g. "gateway", "hybrid").
+        self._mode = os.environ.get("SEMBLEND_PIPELINE_MODE", "local")
 
         # FM1 ablation: set SEMBLEND_USE_ALIGNMENT=0 to disable RoPE delta correction
         self._use_alignment = os.environ.get("SEMBLEND_USE_ALIGNMENT", "1").strip() not in (
