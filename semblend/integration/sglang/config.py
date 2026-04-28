@@ -49,6 +49,24 @@ class SemBlendProviderConfig:
     # Quality gate (informational; monitored but not enforced here)
     quality_gate_ppl_threshold: float = 1.065
 
+    # ----------------------------------------------------------------
+    # Operating modes (orthogonal to provider semantics)
+    # ----------------------------------------------------------------
+
+    # When True, the adapter still runs the full SemBlend pipeline
+    # (embed → search → align → bathtub) and surfaces match metrics via
+    # `QualitySignals`, but returns `cached_token_count=0` so SGLang's
+    # RadixCache does NOT inject donor KV indices into match_prefix's
+    # device_indices. Useful when the upstream RadixCache has the
+    # _node_registry / cache_protected_len leak that fires under
+    # sustained fuzzy hits — discovery-only mode lets us measure hit
+    # rate, latency, and quality (cold prefill happens normally) without
+    # tripping the leak.
+    #
+    # Set to False once Chenxin's _delete_leaf fix lands upstream and
+    # the leak is confirmed gone, OR when running our own patched fork.
+    discovery_only: bool = False
+
     @classmethod
     def from_dict(cls, d: dict) -> "SemBlendProviderConfig":
         """Build from a plain dict, ignoring unknown keys.

@@ -387,6 +387,50 @@ class TestMatchHits:
         assert result is not None
         assert result.layer_recompute_mask is None
 
+    def test_discovery_only_zeros_kv_but_keeps_quality_signals(self, config, pipeline):
+        """discovery_only=True: hit happens, but SGLang sees cached_token_count=0."""
+        cfg = SemBlendProviderConfig(**{**config.__dict__, "discovery_only": True})
+        adapter = SemBlendProviderAdapter(config=cfg, pipeline=pipeline)
+        adapter.register_donor(
+            request_id="donor-A",
+            token_ids=list(range(16)),
+            kv_cache=list(range(100, 116)),
+            cache_start_pos=0,
+            cache_end_pos=16,
+            prompt_text="hi",
+        )
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.92,
+            reuse_ratio=0.85,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(
+                donor_positions=list(range(16)),
+                target_positions=list(range(16)),
+            ),
+            confidence_tier="exact",
+        )
+        result = adapter.match(
+            prompt_token_ids=list(range(32)),
+            already_matched_len=0,
+            prompt_text="q",
+        )
+        assert result is not None
+        # Discovery-only: SGLang side sees no KV reuse...
+        assert result.cached_token_count == 0
+        assert result.prompt_token_count == 0
+        assert result.cached_token_ids == []
+        assert result.segments is None
+        assert result.layer_recompute_mask is None
+        # ...but quality signals are preserved for telemetry.
+        assert result.quality_signals.cosine_similarity == pytest.approx(0.92)
+        assert result.quality_signals.reuse_ratio == pytest.approx(0.85)
+        # And the discovery hit is counted separately.
+        stats = adapter.stats()
+        assert stats["match_hits_discovery_only"] == 1
+        assert stats["match_hits"] == 0
+
     def test_position_offset_respects_already_matched_len(self, adapter, pipeline):
         self._register_donor(adapter, nt=16)
         pipeline.next_result = _StubPipelineResult(

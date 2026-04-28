@@ -256,6 +256,28 @@ class SemBlendProviderAdapter:
             self._stats.match_rejected_no_kv += 1
             return None
 
+        # Discovery-only mode: SemBlend pipeline ran fully, found a real
+        # donor, computed alignment + bathtub mask. We surface the hit
+        # via QualitySignals (so telemetry sees it) but zero out the
+        # KV-injection fields so SGLang's RadixCache treats it as a
+        # miss for cache_protected_len / merged_value purposes. Avoids
+        # the upstream _node_registry leak when running against an
+        # unpatched RadixCache.
+        if self._config.discovery_only:
+            self._stats.match_hits_discovery_only += 1
+            return FuzzyMatchResult(
+                cached_token_count=0,
+                cached_token_ids=[],
+                prompt_token_count=0,
+                kv_cache_indices=_empty_tensor_like(converted.kv_cache_indices),
+                position_offset=already_matched_len,
+                cached_start_pos=0,
+                _match_entry=converted._match_entry,
+                segments=None,
+                layer_recompute_mask=None,
+                quality_signals=converted.quality_signals,
+            )
+
         self._stats.match_hits += 1
         return converted
 
@@ -442,6 +464,7 @@ class _Stats:
     register_rejected: int = 0
     match_calls: int = 0
     match_hits: int = 0
+    match_hits_discovery_only: int = 0
     match_misses: int = 0
     match_errors: int = 0
     match_rejected_low_reuse: int = 0
@@ -453,6 +476,7 @@ class _Stats:
             "register_rejected": self.register_rejected,
             "match_calls": self.match_calls,
             "match_hits": self.match_hits,
+            "match_hits_discovery_only": self.match_hits_discovery_only,
             "match_misses": self.match_misses,
             "match_errors": self.match_errors,
             "match_rejected_low_reuse": self.match_rejected_low_reuse,
