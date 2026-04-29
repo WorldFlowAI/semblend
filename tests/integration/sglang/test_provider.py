@@ -431,6 +431,92 @@ class TestMatchHits:
         assert stats["match_hits_discovery_only"] == 1
         assert stats["match_hits"] == 0
 
+    def test_on_donor_inserted_sets_donor_last_node_id_in_match_result(
+        self, adapter, pipeline
+    ):
+        """Adapter records donor_last_node_id and surfaces it at match time.
+
+        Validates the plumbing for the SGLang RadixCache pool-leak fix:
+        on_donor_inserted writes the TreeNode id into _DonorKVHandle, and
+        the next match() call returns it via FuzzyMatchResult.donor_last_node_id.
+        Without this id, RadixCache.match_prefix can't inc_lock_ref the donor
+        and donor KV slots are LRU-evicted mid-request.
+        """
+        adapter.register_donor(
+            request_id="donor-A",
+            token_ids=list(range(16)),
+            kv_cache=list(range(100, 116)),
+            cache_start_pos=0,
+            cache_end_pos=16,
+            prompt_text="hi",
+        )
+        # Simulate RadixCache.cache_finished_req calling the new hook.
+        adapter.on_donor_inserted(
+            request_id="donor-A",
+            donor_last_node_id=42,
+        )
+
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.92,
+            reuse_ratio=0.85,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(
+                donor_positions=list(range(16)),
+                target_positions=list(range(16)),
+            ),
+            confidence_tier="exact",
+        )
+        result = adapter.match(
+            prompt_token_ids=list(range(32)),
+            already_matched_len=0,
+            prompt_text="q",
+        )
+        assert result is not None
+        assert result.donor_last_node_id == 42
+
+    def test_on_donor_inserted_silent_when_donor_unknown(self, adapter):
+        """No error if RadixCache calls on_donor_inserted for a request we
+        rejected at register_donor time (e.g. too short, no embedding)."""
+        # Donor was never registered; calling the hook should be a no-op.
+        adapter.on_donor_inserted(request_id="never-registered", donor_last_node_id=42)
+        # No exception, no state mutation. Counter sanity check.
+        assert adapter.donor_count() == 0
+
+    def test_match_returns_none_donor_id_when_handle_missing(self, adapter, pipeline):
+        """A registered-but-no-handle donor still produces a match with
+        donor_last_node_id=None (default). The radix-side fix gates the
+        inc_lock_ref on donor_last_node_id is not None."""
+        adapter.register_donor(
+            request_id="donor-B",
+            token_ids=list(range(16)),
+            kv_cache=list(range(200, 216)),
+            cache_start_pos=0,
+            cache_end_pos=16,
+            prompt_text="hi",
+        )
+        # Note: on_donor_inserted is NOT called -- handle.last_node_id stays None.
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-B",
+            similarity=0.95,
+            reuse_ratio=0.90,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(
+                donor_positions=list(range(16)),
+                target_positions=list(range(16)),
+            ),
+            confidence_tier="exact",
+        )
+        result = adapter.match(
+            prompt_token_ids=list(range(32)),
+            already_matched_len=0,
+            prompt_text="q",
+        )
+        assert result is not None
+        assert result.donor_last_node_id is None
+
     def test_position_offset_respects_already_matched_len(self, adapter, pipeline):
         self._register_donor(adapter, nt=16)
         pipeline.next_result = _StubPipelineResult(

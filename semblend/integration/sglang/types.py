@@ -74,3 +74,9 @@ class FuzzyMatchResult:
     segments: Optional[List[FuzzyMatchSegment]] = None
     layer_recompute_mask: Optional[List[bool]] = None
     quality_signals: Optional[QualitySignals] = None
+    # ID of the donor's TreeNode in radix_tree._node_registry. When set,
+    # SGLang's RadixCache.match_prefix inc_lock_ref's the donor node so its
+    # KV slots can't be LRU-evicted while the recipient is consuming them.
+    # Populated by SemBlendProviderAdapter.match() from the donor's
+    # _DonorKVHandle.last_node_id (set in on_donor_inserted).
+    donor_last_node_id: Optional[int] = None

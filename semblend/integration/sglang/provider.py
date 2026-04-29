@@ -48,11 +48,18 @@ class _DonorKVHandle:
       engine as `FuzzyMatchResult.kv_cache_indices` / `FuzzyMatchSegment.donor_kv_indices`.
     - `start_pos` / `end_pos`: original source positions in the donor's prompt.
       Used to compute RoPE deltas at reuse time.
+    - `last_node_id`: ID of the donor's TreeNode in the radix tree
+      (``radix_tree._node_registry``). Populated by ``on_donor_inserted``
+      after the radix insert completes. Surfaced as
+      ``FuzzyMatchResult.donor_last_node_id`` so RadixCache.match_prefix can
+      ``inc_lock_ref`` the donor and prevent LRU eviction while a recipient
+      request is consuming its KV.
     """
 
     kv_indices: Any
     start_pos: int
     end_pos: int
+    last_node_id: Optional[int] = None
 
 
 class SemBlendProviderAdapter:
@@ -203,6 +210,28 @@ class SemBlendProviderAdapter:
 
         self._stats.register_ok += 1
         return True
+
+    def on_donor_inserted(
+        self,
+        request_id: str,
+        donor_last_node_id: int,
+    ) -> None:
+        """Record the donor's TreeNode id (from radix_tree._node_registry).
+
+        Called by SGLang's RadixCache.cache_finished_req AFTER the donor's
+        KV has been inserted into the radix tree. The id is later surfaced
+        via FuzzyMatchResult.donor_last_node_id at match time so the radix
+        cache can inc_lock_ref the donor and prevent LRU eviction while the
+        recipient request is consuming its KV.
+
+        If `register_donor` rejected this donor (no embedding, too short,
+        etc.) there's no `_DonorKVHandle` to update — just silently skip.
+        """
+        handle = self._donor_kv.get(request_id)
+        if handle is None:
+            return
+        # Dataclass with default field — assign directly.
+        handle.last_node_id = donor_last_node_id
 
     def match(
         self,
@@ -395,6 +424,7 @@ class SemBlendProviderAdapter:
             segments=out_segments,
             layer_recompute_mask=layer_mask,
             quality_signals=quality,
+            donor_last_node_id=handle.last_node_id,
         )
 
     def _build_segments(
