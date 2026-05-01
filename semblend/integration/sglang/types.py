@@ -38,11 +38,36 @@ class FuzzyMatchSegment:
     per-segment rather than using the single contiguous `cached_start_pos`
     path. Multiple segments may reference different donors (multi-donor
     scatter) — identified by `donor_req_id`.
+
+    Two addressing modes:
+
+    * **NodeRef** (preferred for new providers, e.g. SemBlend): the segment
+      points at a TreeNode in the radix tree's ``_node_registry`` via
+      ``donor_node_id`` + ``donor_offset`` + ``length``. The model_runner
+      resolves to pool indices at consume time via
+      ``radix_tree._node_registry[donor_node_id].value[offset:offset+length]``.
+      This preserves Chenxin's "no double-counting" principle (the radix
+      tree is the single owner of pool indices) and makes donor lifetime
+      structural — paired with ``FuzzyMatchResult.donor_last_node_id``
+      ``inc_lock_ref`` protection.
+
+    * **Legacy pool-indices** (``donor_kv_indices``): a raw tensor of pool
+      indices. Used by ``TokenBlockMatchProvider``'s contiguous-span path
+      where donor lifetime isn't a concern. New providers populate
+      ``donor_node_id`` instead and leave ``donor_kv_indices=None``.
     """
 
-    donor_kv_indices: Any  # torch.Tensor in runtime; kept Any so tests can use lists
     target_positions: Any  # torch.Tensor of absolute target-prompt positions
     donor_positions: Any  # torch.Tensor of source positions (for RoPE delta)
+
+    # NodeRef-based addressing (preferred for new providers).
+    donor_node_id: Optional[int] = None
+    donor_offset: Optional[int] = None
+    length: Optional[int] = None
+
+    # Legacy: raw pool-indices tensor. Optional so new providers can omit it.
+    donor_kv_indices: Any = None
+
     donor_req_id: Optional[str] = None
     layer_recompute_mask: Optional[List[bool]] = None
 

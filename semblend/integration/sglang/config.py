@@ -1,9 +1,12 @@
 """Configuration for the SemBlend SGLang provider adapter.
 
 Mirrors the new fields proposed for SGLang's FuzzyMatchConfig
-(docs/sglang_semantic_provider_design.md § 8) so the adapter can be
+(docs/sglang_semantic_provider_design.md § 7) so the adapter can be
 constructed either from a parsed SGLang config or directly from a Python
 dict without importing SGLang.
+
+SemBlend is process-local: in-process MiniLM embedding and a numpy donor
+store. There is no remote backend or service dependency.
 """
 
 from __future__ import annotations
@@ -29,8 +32,8 @@ class SemBlendProviderConfig:
     max_entries: int = 10_000
     block_size: int = 32
 
-    # Embedding
-    embedder_type: str = "minilm"  # "minilm" | "onnx-gpu" | "e5" | "jaccard"
+    # Embedding (process-local; uses MiniLM with optional GPU acceleration)
+    embedder_type: str = "minilm"  # "minilm" | "onnx-gpu" | "e5"
     embedding_use_gpu: bool = True
     embedding_model_name: str = "all-MiniLM-L6-v2"
 
@@ -41,30 +44,23 @@ class SemBlendProviderConfig:
     # Search
     top_k: int = 5
 
-    # Backend mode
-    embedding_backend: str = "local"  # "local" | "gateway"
-    gateway_url: Optional[str] = None
-    gateway_timeout_ms: int = 3
-
     # Quality gate (informational; monitored but not enforced here)
     quality_gate_ppl_threshold: float = 1.065
 
     # ----------------------------------------------------------------
-    # Operating modes (orthogonal to provider semantics)
+    # Operating modes
     # ----------------------------------------------------------------
 
     # When True, the adapter still runs the full SemBlend pipeline
     # (embed → search → align → bathtub) and surfaces match metrics via
     # `QualitySignals`, but returns `cached_token_count=0` so SGLang's
     # RadixCache does NOT inject donor KV indices into match_prefix's
-    # device_indices. Useful when the upstream RadixCache has the
-    # _node_registry / cache_protected_len leak that fires under
-    # sustained fuzzy hits — discovery-only mode lets us measure hit
-    # rate, latency, and quality (cold prefill happens normally) without
-    # tripping the leak.
+    # device_indices. Useful when the upstream RadixCache lacks the
+    # donor inc_lock_ref protection (sglang-fuzzy-local @ ec4c41e):
+    # discovery-only mode lets us measure hit rate, latency, and quality
+    # (cold prefill happens normally) without tripping the leak detector.
     #
-    # Set to False once Chenxin's _delete_leaf fix lands upstream and
-    # the leak is confirmed gone, OR when running our own patched fork.
+    # Set to False once the lock_ref fix is confirmed present.
     discovery_only: bool = False
 
     @classmethod

@@ -165,24 +165,6 @@ class TestRegisterDonor:
         )
         assert ok is False
 
-    def test_gateway_mode_forwards_registration(self, config, pipeline):
-        gateway = _RecordingGateway()
-        gw_config = SemBlendProviderConfig(
-            **{**config.__dict__, "embedding_backend": "gateway", "gateway_url": "http://x"}
-        )
-        adapter = SemBlendProviderAdapter(
-            config=gw_config, pipeline=pipeline, gateway_client=gateway,
-        )
-        adapter.register_donor(
-            request_id="req-gw",
-            token_ids=list(range(16)),
-            kv_cache=list(range(100, 116)),
-            cache_start_pos=0,
-            cache_end_pos=16,
-            prompt_text="hi",
-        )
-        assert gateway.registered == [("req-gw", 16)]
-
 
 # ---------------------------------------------------------------------
 # match — miss paths
@@ -344,14 +326,52 @@ class TestMatchHits:
         s0, s1 = result.segments
         assert list(s0.donor_positions) == [4, 5, 6, 7]
         assert list(s0.target_positions) == [0, 1, 2, 3]
+        # Legacy pool-indices addressing — preserved for back-compat.
         assert list(s0.donor_kv_indices) == [104, 105, 106, 107]
         assert list(s1.donor_positions) == [0, 1, 2, 3]
         assert list(s1.target_positions) == [4, 5, 6, 7]
         assert list(s1.donor_kv_indices) == [100, 101, 102, 103]
+        # NodeRef addressing — donor_node_id is None here because
+        # on_donor_inserted wasn't called for this donor; donor_offset and
+        # length are still populated so a NodeRef-aware consumer that
+        # acquires the node id another way can resolve.
+        assert s0.donor_offset == 4 and s0.length == 4
+        assert s1.donor_offset == 0 and s1.length == 4
         # Both segments carry the donor id for multi-donor-aware flows.
         assert s0.donor_req_id == s1.donor_req_id == "donor-A"
         # total covered = sum of segment lengths.
         assert result.cached_token_count == 8
+
+    def test_segments_carry_node_id_after_on_donor_inserted(self, adapter, pipeline):
+        """When on_donor_inserted has run for a donor, segments carry its
+        ``donor_node_id`` so the model_runner can resolve via NodeRef.
+        """
+        self._register_donor(adapter, nt=16)
+        adapter.on_donor_inserted(request_id="donor-A", donor_last_node_id=4242)
+
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.80,
+            reuse_ratio=0.7,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(
+                donor_positions=[4, 5, 6, 7, 0, 1, 2, 3],
+                target_positions=[0, 1, 2, 3, 4, 5, 6, 7],
+            ),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+        )
+
+        result = adapter.match(
+            prompt_token_ids=list(range(32)),
+            already_matched_len=0,
+            prompt_text="query",
+        )
+        assert result.donor_last_node_id == 4242
+        assert result.segments is not None
+        for seg in result.segments:
+            assert seg.donor_node_id == 4242
 
     def test_bathtub_mask_disabled_when_config_off(self, config, pipeline):
         cfg = SemBlendProviderConfig(**{**config.__dict__, "enable_bathtub": False})
@@ -539,38 +559,6 @@ class TestMatchHits:
         assert result.position_offset == 8
         # Remaining tokens passed to pipeline are after already_matched_len.
         assert pipeline.find_donor_calls[0]["token_ids"] == list(range(8, 40))
-
-
-# ---------------------------------------------------------------------
-# Gateway client stub
-# ---------------------------------------------------------------------
-
-
-class _RecordingGateway:
-    def __init__(self) -> None:
-        self.registered: list = []
-
-    def register(self, donor_id, embedding, token_ids, extra_key=None):
-        self.registered.append((donor_id, len(token_ids)))
-        return donor_id
-
-
-class TestGatewayClientStub:
-    def test_stub_requires_url(self):
-        from semblend.integration.sglang.gateway_client import (
-            SynapseGatewayClient,
-            SynapseGatewayError,
-        )
-
-        with pytest.raises(SynapseGatewayError):
-            SynapseGatewayClient(url="")
-
-    def test_stub_returns_empty_candidates(self):
-        from semblend.integration.sglang.gateway_client import SynapseGatewayClient
-
-        client = SynapseGatewayClient(url="http://example.invalid")
-        out = client.find_candidates(np.zeros(384, dtype=np.float32))
-        assert out == []
 
 
 # ---------------------------------------------------------------------

@@ -15,10 +15,10 @@ Design goals:
    SGLang-side thin wrapper converts to the real SGLang dataclass.
 3. **Graceful degradation** — pipeline errors never raise to the caller;
    they become `None` (match miss), never blocking inference.
-4. **Backend-agnostic KV handle** — the adapter stores donor KV as an
-   opaque object (`Any`). For local mode it's typically a pool-indices
-   torch.Tensor; for gateway mode it's a chunk-hash reference. Callers
-   decide the representation.
+4. **Process-local** — in-process MiniLM embedding and a numpy donor
+   store. No service dependency; no network hop. The adapter stores
+   donor KV as an opaque object (`Any`) — typically a pool-indices
+   torch.Tensor — so callers can choose the representation.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ class SemBlendProviderAdapter:
     Contract (matches the Chenxin draft ABC):
       - `register_donor`: called from `cache_on_request_finished` on the SGLang
         side. Inserts the completed request's embedding + tokens + KV handle
-        into the donor store (and optionally the gateway).
+        into the in-process donor store.
       - `match`: called from `match_on_prefix_miss` on the SGLang side.
         Runs the SemBlend pipeline, converts `PipelineResult` to
         `FuzzyMatchResult`.
@@ -83,11 +83,9 @@ class SemBlendProviderAdapter:
         config: SemBlendProviderConfig,
         *,
         pipeline: Any = None,
-        gateway_client: Any = None,
     ) -> None:
         self._config = config
         self._pipeline = pipeline or self._build_pipeline(config)
-        self._gateway = gateway_client or self._build_gateway(config)
 
         # Opaque KV handles keyed by donor request_id. Donor registration
         # inserts here; match lookups resolve donor_id -> handle to produce
@@ -114,17 +112,6 @@ class SemBlendProviderAdapter:
             model_name=config.model_arch,
             chunk_size=config.block_size,
             recompute_config=RecomputeConfig.from_env(),
-        )
-
-    @staticmethod
-    def _build_gateway(config: SemBlendProviderConfig) -> Any:
-        if config.embedding_backend != "gateway":
-            return None
-        from semblend.integration.sglang.gateway_client import SynapseGatewayClient
-
-        return SynapseGatewayClient(
-            url=config.gateway_url or "",
-            timeout_ms=config.gateway_timeout_ms,
         )
 
     # ------------------------------------------------------------------
@@ -168,8 +155,8 @@ class SemBlendProviderAdapter:
 
         embedding = self._embed(segment_tokens, prompt_text)
         if embedding is None:
-            # No embedder available — gateway mode is still usable via token
-            # indexing, but local mode requires an embedding. Treat as miss.
+            # SemBlend is process-local; without an embedding the donor
+            # cannot be indexed. Treat as miss.
             self._stats.register_rejected += 1
             return False
 
@@ -196,17 +183,6 @@ class SemBlendProviderAdapter:
             start_pos=cache_start_pos,
             end_pos=cache_end_pos,
         )
-
-        if self._gateway is not None:
-            try:
-                self._gateway.register(
-                    donor_id=request_id,
-                    embedding=embedding,
-                    token_ids=segment_tokens,
-                    extra_key=extra_key,
-                )
-            except Exception as e:  # pragma: no cover
-                logger.warning("gateway register failed: %s", e, exc_info=True)
 
         self._stats.register_ok += 1
         return True
@@ -471,16 +447,29 @@ class SemBlendProviderAdapter:
                 continue
             seg_donor_positions = donor_positions[start:end]
             seg_target_positions = target_positions[start:end]
+            seg_offset = seg_donor_positions[0] - handle.start_pos
+            seg_length = end - start
+
+            # Populate BOTH addressing modes:
+            #   * NodeRef (preferred): donor_node_id + donor_offset + length.
+            #     Resolved at consume time via radix_tree._node_registry,
+            #     paired with donor_last_node_id inc_lock_ref protection.
+            #   * Legacy: donor_kv_indices, a raw pool-indices slice. Kept
+            #     so callers that haven't migrated to NodeRef resolution
+            #     still work.
             kv_slice = _slice_indices(
                 handle.kv_indices,
-                offset=seg_donor_positions[0] - handle.start_pos,
-                length=end - start,
+                offset=seg_offset,
+                length=seg_length,
             )
             segments.append(
                 FuzzyMatchSegment(
-                    donor_kv_indices=kv_slice,
                     target_positions=seg_target_positions,
                     donor_positions=seg_donor_positions,
+                    donor_node_id=handle.last_node_id,
+                    donor_offset=seg_offset,
+                    length=seg_length,
+                    donor_kv_indices=kv_slice,
                     donor_req_id=pipeline_result.donor_id,
                     layer_recompute_mask=layer_mask,
                 )
