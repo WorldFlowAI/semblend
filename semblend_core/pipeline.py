@@ -1039,14 +1039,28 @@ class SemBlendPipeline:
         # pipeline result carries a meaningful number for downstream gates.
         # The legacy multi-donor path returned similarity=0.0 as a sentinel,
         # which silently failed any consumer that imposed a similarity
-        # threshold (e.g. SGLang's fuzzy_semantic_threshold). The composite
-        # path's strongest quality signal is reuse_ratio, but a cosine
-        # number gives downstreams something compatible with their existing
-        # gates. Single best-effort embedding op; failures fall back to 0.0.
-        aggregate_similarity = self._compute_aggregate_similarity(
+        # threshold (e.g. SGLang's fuzzy_semantic_threshold).
+        #
+        # _compute_aggregate_similarity returns None when it cannot compute
+        # — typically because prompt_text is empty (the SGLang fuzzy_match
+        # wrapper doesn't have a tokenizer at match_on_prefix_miss time)
+        # or the donor has no stored embedding. In that case we fall back
+        # to reuse_ratio as the similarity proxy: it's the aggregated
+        # per-chunk match strength across the composite, a real quality
+        # signal bounded in [0, 1], not a sentinel.
+        #
+        # When the cosine IS computable, we surface it directly — including
+        # legitimate low values that should fail the downstream gate.
+        # This distinguishes "couldn't compute, fall back" from "computed
+        # and the match is genuinely low-affinity, reject".
+        computed_similarity = self._compute_aggregate_similarity(
             prompt_text=prompt_text,
             primary_donor_id=result.donor_ids[0] if result.donor_ids else None,
         )
+        if computed_similarity is not None:
+            aggregate_similarity = computed_similarity
+        else:
+            aggregate_similarity = float(result.reuse_ratio)
 
         return self._build_multi_donor_result(
             result,
@@ -1060,37 +1074,43 @@ class SemBlendPipeline:
         self,
         prompt_text: str,
         primary_donor_id: str | None,
-    ) -> float:
+    ) -> float | None:
         """Cosine similarity between query embedding and primary donor.
 
         Used by multi-donor composite results to carry a real similarity
-        number into PipelineResult.similarity. Returns 0.0 on any failure
-        (missing prompt_text, no embedder, donor without embedding).
+        number into PipelineResult.similarity.
+
+        Returns:
+            float in [-1, 1] when the similarity is computable.
+            None when prerequisites are missing (no prompt_text, no donor
+            embedding, no embedder, etc.). Callers should fall back to a
+            different proxy (e.g. reuse_ratio) rather than treating None
+            as a low-similarity match.
         """
         if not prompt_text or primary_donor_id is None:
-            return 0.0
+            return None
         try:
             donor = self._donor_store.get_donor(primary_donor_id)
         except Exception:
-            return 0.0
+            return None
         if donor is None or getattr(donor, "embedding", None) is None:
-            return 0.0
+            return None
         try:
             query_emb = self._embedder.embed(prompt_text)
         except Exception:
-            return 0.0
+            return None
         if query_emb is None:
-            return 0.0
+            return None
         try:
             import numpy as np
             q = np.asarray(query_emb, dtype=np.float32)
             d = np.asarray(donor.embedding, dtype=np.float32)
             denom = float(np.linalg.norm(q)) * float(np.linalg.norm(d))
             if denom == 0.0:
-                return 0.0
+                return None
             return float(np.dot(q, d) / denom)
         except Exception:
-            return 0.0
+            return None
 
     def _build_multi_donor_result(
         self,
