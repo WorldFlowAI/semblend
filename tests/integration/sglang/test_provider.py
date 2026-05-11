@@ -64,6 +64,7 @@ class _StubPipelineResult:
     layer_deviations: list = field(default_factory=list)
     position_map: _StubPosMap = field(default_factory=lambda: _StubPosMap([], []))
     confidence_tier: str = "exact"
+    composite_plan: Optional[Any] = None  # non-None marks a multi-donor result
 
 
 class _StubPipeline:
@@ -188,6 +189,47 @@ class TestMatchMisses:
         assert result is None
         stats = adapter.stats()
         assert stats["match_misses"] == 1
+
+    def test_multi_donor_composite_bypasses_similarity_gate(
+        self, adapter, pipeline
+    ):
+        """Multi-donor composite results don't have a single cosine
+        similarity (semblend_core marks them with similarity=0.0 and a
+        non-None composite_plan). The adapter must skip the similarity
+        gate for those — quality is enforced via reuse_ratio instead.
+        """
+        adapter.register_donor(
+            request_id="donor-A",
+            token_ids=list(range(16)),
+            kv_cache=list(range(100, 116)),
+            cache_start_pos=0,
+            cache_end_pos=16,
+            prompt_text="registration",
+        )
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.0,  # sentinel: multi-donor path has no cosine
+            reuse_ratio=0.7,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(
+                donor_positions=list(range(16)),
+                target_positions=list(range(16)),
+            ),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+            composite_plan=object(),  # non-None marks composite result
+        )
+        result = adapter.match(
+            prompt_token_ids=list(range(32)),
+            already_matched_len=0,
+            prompt_text="query",
+        )
+        # Should NOT be rejected on similarity. Substring path then finds
+        # a length-16 contiguous run, so we get a hit.
+        assert result is not None
+        assert result.match_block is not None
+        assert result.match_block.length == 16
 
     def test_miss_when_similarity_below_threshold(self, adapter, pipeline):
         pipeline.next_result = _StubPipelineResult(

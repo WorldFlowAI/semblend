@@ -260,16 +260,24 @@ class SemBlendProviderAdapter:
             self._stats.match_misses += 1
             return None
 
+        # Multi-donor composite matches don't have a single cosine
+        # similarity (the quality signal lives in reuse_ratio, which is
+        # the aggregated per-chunk match strength). The semblend_core
+        # pipeline marks them by setting similarity=0.0 and populating
+        # composite_plan. Skip the cosine gate for that path; reuse_ratio
+        # is what matters.
+        is_composite = getattr(result, "composite_plan", None) is not None
         logger.info(
             "[FUZZY] adapter.match: result donor_id=%s similarity=%.3f "
-            "reuse_ratio=%.3f donor_kv_size=%d",
+            "reuse_ratio=%.3f composite=%s donor_kv_size=%d",
             getattr(result, "donor_id", None),
             float(getattr(result, "similarity", 0.0)),
             float(getattr(result, "reuse_ratio", 0.0)),
+            is_composite,
             len(self._donor_kv),
         )
 
-        if result.similarity < self._config.min_similarity:
+        if not is_composite and result.similarity < self._config.min_similarity:
             logger.info(
                 "[FUZZY] adapter.match: similarity=%.3f < gate=%.3f, miss",
                 float(result.similarity),
