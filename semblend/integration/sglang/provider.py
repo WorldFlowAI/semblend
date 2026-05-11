@@ -353,13 +353,25 @@ class SemBlendProviderAdapter:
 
         segments = self._build_segments(pipeline_result, handle, layer_mask)
 
-        # cached_token_count: total target positions we're going to fill from KV.
-        # When segments is None (single contiguous span) this equals
-        # len(target_positions) in the single segment.
+        # SGLang's prefix cache requires device_indices to be a contiguous
+        # prefix [0..exact+N-1]. Multi-segment / mid-prompt alignments do not
+        # fit that shape: returning them silently degrades to a no-op KV
+        # reuse (donor KV gets overwritten during prefill because the
+        # scheduler does not know to skip those positions). Trim to the
+        # prefix-anchored head segment only and discard the rest. Internal
+        # invariants of _build_segments guarantee each segment is +1
+        # contiguous on both donor and target sides, so the head segment is
+        # safe to express as a single contiguous span.
         if segments:
-            total_covered = sum(
-                len(_as_list(s.target_positions)) for s in segments
-            )
+            head = segments[0]
+            head_targets = _as_list(head.target_positions)
+            if not head_targets or head_targets[0] != already_matched_len:
+                self._stats.match_hits_dropped_no_prefix_run += 1
+                return None
+            segments = [head]
+
+        if segments:
+            total_covered = len(_as_list(segments[0].target_positions))
         else:
             total_covered = 0
 
@@ -371,19 +383,24 @@ class SemBlendProviderAdapter:
             passed_quality_gate=True,
         )
 
-        # For the single-segment case, also populate the legacy fields so a
-        # model_runner on the old interface still gets enough to work with.
-        single_segment = segments[0] if segments and len(segments) == 1 else None
-        if single_segment is not None:
-            kv_cache_indices = single_segment.donor_kv_indices
-            cached_start_pos = int(_first(single_segment.donor_positions, 0))
-            out_segments = None  # collapse to legacy contiguous path
-        elif segments:
-            kv_cache_indices = _empty_tensor_like(segments[0].donor_kv_indices)
-            cached_start_pos = int(_first(segments[0].donor_positions, 0))
-            out_segments = segments
+        # After the trim above, segments always contains 0 or 1 entries.
+        # When it has one, collapse to the legacy contiguous path so the
+        # model executor's _correct_fuzzy_kv_rope_contiguous runs (which
+        # actually saves compute) instead of _correct_fuzzy_kv_rope_segments
+        # (which today is overwritten by prefill).
+        if segments:
+            head = segments[0]
+            kv_cache_indices = head.donor_kv_indices
+            cached_start_pos = int(_first(head.donor_positions, 0))
+            out_segments = None
         else:
-            # No usable alignment: fall back to donor's full KV handle.
+            # No usable alignment from the pipeline. Fall back to the donor's
+            # full KV handle only when its start_pos matches the recipient's
+            # anchor; otherwise return None rather than emit a result whose
+            # cached_start_pos has the same anchor-mismatch problem.
+            if handle.start_pos != already_matched_len:
+                self._stats.match_hits_dropped_no_prefix_run += 1
+                return None
             kv_cache_indices = handle.kv_indices
             cached_start_pos = handle.start_pos
             out_segments = None
@@ -488,6 +505,11 @@ class _Stats:
     match_errors: int = 0
     match_rejected_low_reuse: int = 0
     match_rejected_no_kv: int = 0
+    # Match was found by the alignment pipeline but its head segment did not
+    # anchor at the recipient's exact-prefix length, so SGLang's prefix-cache
+    # cannot express it as device_indices. The match is dropped rather than
+    # emitted as a no-op.
+    match_hits_dropped_no_prefix_run: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -500,6 +522,7 @@ class _Stats:
             "match_errors": self.match_errors,
             "match_rejected_low_reuse": self.match_rejected_low_reuse,
             "match_rejected_no_kv": self.match_rejected_no_kv,
+            "match_hits_dropped_no_prefix_run": self.match_hits_dropped_no_prefix_run,
         }
 
 

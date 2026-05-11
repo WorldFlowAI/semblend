@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import os
-from collections import Counter
 
 from semblend_core.alignment import (
     DEFAULT_CHUNK_SIZE,
@@ -315,13 +314,7 @@ def compute_multi_donor_alignment(
                     multi_donor_fuzzy_overlap,
                 )
                 if result is not None:
-                    d_idx, pairs = result
-                    t_counts = Counter(t_chunk)
-                    d_counts = Counter(donor_chunks[d_idx])
-                    overlap_count = sum(
-                        min(t_counts[tok], d_counts[tok]) for tok in t_counts if tok in d_counts
-                    )
-                    overlap = overlap_count / max(len(t_chunk), 1)
+                    d_idx, pairs, overlap = result
                     if overlap > best_overlap:
                         best_overlap = overlap
                         best_match = ChunkAssignment(
