@@ -186,6 +186,12 @@ class SemBlendProviderAdapter:
         )
 
         self._stats.register_ok += 1
+        logger.info(
+            "[FUZZY] register_donor: ok request_id=%s tokens=%d donor_kv_size=%d",
+            request_id,
+            len(segment_tokens),
+            len(self._donor_kv),
+        )
         return True
 
     def on_donor_inserted(
@@ -228,6 +234,11 @@ class SemBlendProviderAdapter:
 
         remaining = list(prompt_token_ids[already_matched_len:])
         if len(remaining) < self._config.min_match_length:
+            logger.info(
+                "[FUZZY] adapter.match: remaining=%d below min_match_length=%d, skip",
+                len(remaining),
+                self._config.min_match_length,
+            )
             return None
 
         try:
@@ -242,14 +253,37 @@ class SemBlendProviderAdapter:
             return None
 
         if not getattr(result, "found", False):
+            logger.info(
+                "[FUZZY] adapter.match: find_donor returned found=False (remaining=%d)",
+                len(remaining),
+            )
             self._stats.match_misses += 1
             return None
 
+        logger.info(
+            "[FUZZY] adapter.match: result donor_id=%s similarity=%.3f "
+            "reuse_ratio=%.3f donor_kv_size=%d",
+            getattr(result, "donor_id", None),
+            float(getattr(result, "similarity", 0.0)),
+            float(getattr(result, "reuse_ratio", 0.0)),
+            len(self._donor_kv),
+        )
+
         if result.similarity < self._config.min_similarity:
+            logger.info(
+                "[FUZZY] adapter.match: similarity=%.3f < gate=%.3f, miss",
+                float(result.similarity),
+                float(self._config.min_similarity),
+            )
             self._stats.match_misses += 1
             return None
 
         if result.reuse_ratio < self._config.min_reuse_ratio:
+            logger.info(
+                "[FUZZY] adapter.match: reuse_ratio=%.3f < gate=%.3f, reject",
+                float(result.reuse_ratio),
+                float(self._config.min_reuse_ratio),
+            )
             self._stats.match_rejected_low_reuse += 1
             return None
 
@@ -259,6 +293,13 @@ class SemBlendProviderAdapter:
             remaining=remaining,
         )
         if converted is None:
+            logger.info(
+                "[FUZZY] adapter.match: _convert_result returned None for "
+                "donor_id=%s (donor_kv has %d donors, handle_present=%s)",
+                getattr(result, "donor_id", None),
+                len(self._donor_kv),
+                getattr(result, "donor_id", None) in self._donor_kv,
+            )
             self._stats.match_rejected_no_kv += 1
             return None
 
@@ -338,10 +379,18 @@ class SemBlendProviderAdapter:
         """
         donor_id = pipeline_result.donor_id
         if donor_id is None:
+            logger.info("[FUZZY] _convert_result: donor_id is None, drop")
             return None
         handle = self._donor_kv.get(donor_id)
         if handle is None:
-            # Donor's KV is gone (evicted, request failed). Ignore the match.
+            logger.info(
+                "[FUZZY] _convert_result: no handle for donor_id=%s (donor_kv keys "
+                "sample=%s, total=%d) — donor in pipeline store but adapter never "
+                "saw register_donor with this id",
+                donor_id,
+                list(self._donor_kv.keys())[:3],
+                len(self._donor_kv),
+            )
             return None
 
         # Build layer_recompute_mask from pipeline_result.layer_deviations.
