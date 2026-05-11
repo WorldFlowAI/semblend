@@ -1034,13 +1034,63 @@ class SemBlendPipeline:
             result.exact_chunks + result.fuzzy_chunks,
             1,
         )
+
+        # Compute a real query/primary-donor cosine similarity so the
+        # pipeline result carries a meaningful number for downstream gates.
+        # The legacy multi-donor path returned similarity=0.0 as a sentinel,
+        # which silently failed any consumer that imposed a similarity
+        # threshold (e.g. SGLang's fuzzy_semantic_threshold). The composite
+        # path's strongest quality signal is reuse_ratio, but a cosine
+        # number gives downstreams something compatible with their existing
+        # gates. Single best-effort embedding op; failures fall back to 0.0.
+        aggregate_similarity = self._compute_aggregate_similarity(
+            prompt_text=prompt_text,
+            primary_donor_id=result.donor_ids[0] if result.donor_ids else None,
+        )
+
         return self._build_multi_donor_result(
             result,
             timings,
             t_start,
-            similarity=0.0,
+            similarity=aggregate_similarity,
             fuzzy_fraction=fuzzy_fraction,
         )
+
+    def _compute_aggregate_similarity(
+        self,
+        prompt_text: str,
+        primary_donor_id: str | None,
+    ) -> float:
+        """Cosine similarity between query embedding and primary donor.
+
+        Used by multi-donor composite results to carry a real similarity
+        number into PipelineResult.similarity. Returns 0.0 on any failure
+        (missing prompt_text, no embedder, donor without embedding).
+        """
+        if not prompt_text or primary_donor_id is None:
+            return 0.0
+        try:
+            donor = self._donor_store.get_donor(primary_donor_id)
+        except Exception:
+            return 0.0
+        if donor is None or getattr(donor, "embedding", None) is None:
+            return 0.0
+        try:
+            query_emb = self._embedder.embed(prompt_text)
+        except Exception:
+            return 0.0
+        if query_emb is None:
+            return 0.0
+        try:
+            import numpy as np
+            q = np.asarray(query_emb, dtype=np.float32)
+            d = np.asarray(donor.embedding, dtype=np.float32)
+            denom = float(np.linalg.norm(q)) * float(np.linalg.norm(d))
+            if denom == 0.0:
+                return 0.0
+            return float(np.dot(q, d) / denom)
+        except Exception:
+            return 0.0
 
     def _build_multi_donor_result(
         self,

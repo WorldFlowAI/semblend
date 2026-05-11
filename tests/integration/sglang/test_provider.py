@@ -190,13 +190,14 @@ class TestMatchMisses:
         stats = adapter.stats()
         assert stats["match_misses"] == 1
 
-    def test_multi_donor_composite_bypasses_similarity_gate(
+    def test_composite_result_with_real_similarity_passes_gate(
         self, adapter, pipeline
     ):
-        """Multi-donor composite results don't have a single cosine
-        similarity (semblend_core marks them with similarity=0.0 and a
-        non-None composite_plan). The adapter must skip the similarity
-        gate for those — quality is enforced via reuse_ratio instead.
+        """Composite multi-donor results now carry a real cosine similarity
+        computed inside semblend_core (pipeline._compute_aggregate_similarity).
+        The adapter applies the same min_similarity gate to all paths;
+        the gate is meaningful because the similarity value is no longer
+        a sentinel zero.
         """
         adapter.register_donor(
             request_id="donor-A",
@@ -209,7 +210,7 @@ class TestMatchMisses:
         pipeline.next_result = _StubPipelineResult(
             found=True,
             donor_id="donor-A",
-            similarity=0.0,  # sentinel: multi-donor path has no cosine
+            similarity=0.75,  # real cosine, above default gate
             reuse_ratio=0.7,
             donor_tokens=list(range(16)),
             position_map=_StubPosMap(
@@ -225,11 +226,49 @@ class TestMatchMisses:
             already_matched_len=0,
             prompt_text="query",
         )
-        # Should NOT be rejected on similarity. Substring path then finds
-        # a length-16 contiguous run, so we get a hit.
         assert result is not None
         assert result.match_block is not None
         assert result.match_block.length == 16
+
+    def test_composite_result_below_similarity_gate_is_rejected(
+        self, adapter, pipeline
+    ):
+        """The cosine gate applies uniformly. A composite result with a low
+        similarity (now a real cosine, not a sentinel) is rejected just like
+        a single-donor result would be. This guards against the prior
+        ``composite_plan != None`` bypass that would have let low-affinity
+        chunk-aligned matches slip through.
+        """
+        adapter.register_donor(
+            request_id="donor-A",
+            token_ids=list(range(16)),
+            kv_cache=list(range(100, 116)),
+            cache_start_pos=0,
+            cache_end_pos=16,
+            prompt_text="registration",
+        )
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.40,  # real cosine, below gate=0.60
+            reuse_ratio=0.7,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(
+                donor_positions=list(range(16)),
+                target_positions=list(range(16)),
+            ),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+            composite_plan=object(),
+        )
+        result = adapter.match(
+            prompt_token_ids=list(range(32)),
+            already_matched_len=0,
+            prompt_text="query",
+        )
+        assert result is None
+        stats = adapter.stats()
+        assert stats["match_misses"] >= 1
 
     def test_miss_when_similarity_below_threshold(self, adapter, pipeline):
         pipeline.next_result = _StubPipelineResult(
@@ -681,6 +720,286 @@ class TestMatchHits:
         # Block in absolute prompt frame: 8 + 0 = 8 .. 8 + 4 = 12.
         assert result.match_block.target_start_in_prompt == 8
         assert result.match_block.length == 5
+
+    def test_donor_kv_lru_evicts_oldest_when_over_bound(self, pipeline):
+        """register_donor evicts the LRU entry once _donor_kv reaches
+        max_entries. The substring-index cache evicts in lockstep so the
+        two stay consistent."""
+        cfg = SemBlendProviderConfig(
+            min_similarity=0.50,
+            min_reuse_ratio=0.50,
+            min_match_length=8,
+            max_entries=3,  # tight bound to exercise eviction
+            block_size=4,
+            enable_bathtub=False,
+        )
+        adapter = SemBlendProviderAdapter(config=cfg, pipeline=pipeline)
+        # Insert 5 donors against a bound of 3 — two oldest should evict.
+        for i in range(5):
+            adapter.register_donor(
+                request_id=f"donor-{i}",
+                token_ids=list(range(i * 10, i * 10 + 12)),
+                kv_cache=list(range(1000 + i * 100, 1000 + i * 100 + 12)),
+                cache_start_pos=0,
+                cache_end_pos=12,
+                prompt_text=f"reg-{i}",
+            )
+        assert adapter.donor_count() == 3
+        # Oldest entries evicted, newest retained.
+        keys = list(adapter._donor_kv.keys())  # noqa: SLF001 — test inspection
+        assert keys == ["donor-2", "donor-3", "donor-4"]
+        # Eviction counter advanced.
+        assert adapter.stats()["donor_kv_evicted"] == 2
+
+    def test_substring_index_cached_per_donor_across_match_calls(
+        self, pipeline
+    ):
+        """The substring scan must NOT rebuild its donor n-gram index on
+        every match call. After the first match against a donor, the
+        index lives in adapter._donor_substring_cache and is reused.
+        """
+        cfg = SemBlendProviderConfig(
+            min_similarity=0.50,
+            min_reuse_ratio=0.50,
+            min_match_length=8,
+            max_entries=10,
+            block_size=4,
+            enable_bathtub=False,
+        )
+        adapter = SemBlendProviderAdapter(config=cfg, pipeline=pipeline)
+        adapter.register_donor(
+            request_id="donor-A",
+            token_ids=list(range(16)),
+            kv_cache=list(range(100, 116)),
+            cache_start_pos=0,
+            cache_end_pos=16,
+            prompt_text="donor",
+        )
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.80,
+            reuse_ratio=0.7,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(donor_positions=[], target_positions=[]),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+        )
+        # First call populates the cache.
+        r1 = adapter.match(
+            prompt_token_ids=list(range(20)),
+            already_matched_len=0,
+            prompt_text="q",
+        )
+        assert r1 is not None
+        # Cache is keyed by donor_id with anchor metadata.
+        cached = adapter._donor_substring_cache["donor-A"]  # noqa: SLF001
+        index_obj_1 = cached["index"]
+        # Second call should reuse the same index object — no rebuild.
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.80,
+            reuse_ratio=0.7,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(donor_positions=[], target_positions=[]),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+        )
+        r2 = adapter.match(
+            prompt_token_ids=list(range(20)),
+            already_matched_len=0,
+            prompt_text="q",
+        )
+        assert r2 is not None
+        index_obj_2 = adapter._donor_substring_cache["donor-A"]["index"]  # noqa: SLF001
+        assert index_obj_1 is index_obj_2
+
+    def test_substring_index_dropped_when_donor_evicted(self, pipeline):
+        """When _donor_kv evicts a donor, its substring-index cache entry
+        is dropped too. Prevents an unbounded-growth memory leak in the
+        per-donor index dict."""
+        cfg = SemBlendProviderConfig(
+            min_similarity=0.50,
+            min_reuse_ratio=0.50,
+            min_match_length=8,
+            max_entries=2,
+            block_size=4,
+            enable_bathtub=False,
+        )
+        adapter = SemBlendProviderAdapter(config=cfg, pipeline=pipeline)
+        # Register donor-0 and match against it to seed the substring cache.
+        adapter.register_donor(
+            request_id="donor-0",
+            token_ids=list(range(12)),
+            kv_cache=list(range(1000, 1012)),
+            cache_start_pos=0,
+            cache_end_pos=12,
+            prompt_text="reg-0",
+        )
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-0",
+            similarity=0.80,
+            reuse_ratio=0.7,
+            donor_tokens=list(range(12)),
+            position_map=_StubPosMap(donor_positions=[], target_positions=[]),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+        )
+        adapter.match(
+            prompt_token_ids=list(range(16)),
+            already_matched_len=0,
+            prompt_text="q",
+        )
+        assert "donor-0" in adapter._donor_substring_cache  # noqa: SLF001
+        # Now register donor-1 (no eviction, still at bound) and donor-2
+        # (forces eviction of LRU = donor-0).
+        adapter.register_donor(
+            request_id="donor-1",
+            token_ids=list(range(100, 112)),
+            kv_cache=list(range(1100, 1112)),
+            cache_start_pos=0,
+            cache_end_pos=12,
+            prompt_text="reg-1",
+        )
+        adapter.register_donor(
+            request_id="donor-2",
+            token_ids=list(range(200, 212)),
+            kv_cache=list(range(1200, 1212)),
+            cache_start_pos=0,
+            cache_end_pos=12,
+            prompt_text="reg-2",
+        )
+        assert "donor-0" not in adapter._donor_kv  # noqa: SLF001
+        assert "donor-0" not in adapter._donor_substring_cache  # noqa: SLF001
+
+    def test_match_marks_donor_as_recently_used(self, pipeline):
+        """A donor that gets a match hit moves to the end of the LRU.
+        The next eviction wave should NOT drop it before older but
+        unused donors."""
+        cfg = SemBlendProviderConfig(
+            min_similarity=0.50,
+            min_reuse_ratio=0.50,
+            min_match_length=8,
+            max_entries=2,
+            block_size=4,
+            enable_bathtub=False,
+        )
+        adapter = SemBlendProviderAdapter(config=cfg, pipeline=pipeline)
+        # Two donors fill the bound; donor-0 is registered first (LRU).
+        for i in range(2):
+            adapter.register_donor(
+                request_id=f"donor-{i}",
+                token_ids=list(range(i * 100, i * 100 + 12)),
+                kv_cache=list(range(1000 + i * 100, 1000 + i * 100 + 12)),
+                cache_start_pos=0,
+                cache_end_pos=12,
+                prompt_text=f"reg-{i}",
+            )
+        # Match against donor-0 should move it to the recently-used end.
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-0",
+            similarity=0.80,
+            reuse_ratio=0.7,
+            donor_tokens=list(range(12)),
+            position_map=_StubPosMap(donor_positions=[], target_positions=[]),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+        )
+        adapter.match(
+            prompt_token_ids=list(range(16)),
+            already_matched_len=0,
+            prompt_text="q",
+        )
+        # Now insert donor-2 — donor-1 (now LRU) should evict, not donor-0.
+        adapter.register_donor(
+            request_id="donor-2",
+            token_ids=list(range(200, 212)),
+            kv_cache=list(range(1200, 1212)),
+            cache_start_pos=0,
+            cache_end_pos=12,
+            prompt_text="reg-2",
+        )
+        assert "donor-0" in adapter._donor_kv  # noqa: SLF001 — kept (recent)
+        assert "donor-1" not in adapter._donor_kv  # noqa: SLF001 — evicted (LRU)
+        assert "donor-2" in adapter._donor_kv  # noqa: SLF001 — just added
+
+    def test_substring_path_picks_best_block_across_composite_donors(
+        self, pipeline
+    ):
+        """When the composite pipeline result names multiple donors,
+        the substring scan checks all of them and picks the donor whose
+        tokens produce the longest contiguous run with the target.
+        The chosen donor becomes the match_block's owner (donor_id),
+        which is what RadixCache will lock_ref."""
+        cfg = SemBlendProviderConfig(
+            min_similarity=0.50,
+            min_reuse_ratio=0.50,
+            min_match_length=8,
+            max_entries=10,
+            block_size=4,
+            enable_bathtub=False,
+        )
+        adapter = SemBlendProviderAdapter(config=cfg, pipeline=pipeline)
+        # Donor A shares 8 tokens with the target; donor B shares 16.
+        donor_a_tokens = list(range(900, 912))  # 12 tokens, only 8 shared
+        donor_b_tokens = list(range(500, 520))  # 20 tokens, 16 shared
+        adapter.register_donor(
+            request_id="donor-A",
+            token_ids=donor_a_tokens,
+            kv_cache=list(range(2000, 2000 + len(donor_a_tokens))),
+            cache_start_pos=0,
+            cache_end_pos=len(donor_a_tokens),
+            prompt_text="A",
+        )
+        adapter.register_donor(
+            request_id="donor-B",
+            token_ids=donor_b_tokens,
+            kv_cache=list(range(3000, 3000 + len(donor_b_tokens))),
+            cache_start_pos=0,
+            cache_end_pos=len(donor_b_tokens),
+            prompt_text="B",
+        )
+        # Make the pipeline mock return tokens via get_donor_tokens for both donors.
+        pipeline._donor_store.get_donor_tokens = (  # noqa: SLF001 — test wiring
+            lambda did: {
+                "donor-A": donor_a_tokens,
+                "donor-B": donor_b_tokens,
+            }.get(did)
+        )
+        # Pipeline names donor-A as primary, but donor-B as a co-donor.
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.80,
+            reuse_ratio=0.7,
+            donor_tokens=donor_a_tokens,
+            position_map=_StubPosMap(donor_positions=[], target_positions=[]),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+            composite_plan=object(),
+        )
+        # Add the donor_ids attribute that the scan iterates over.
+        pipeline.next_result.donor_ids = ("donor-A", "donor-B")
+        # Prompt = 8 tokens of A's range, then 20 tokens of B's range.
+        # Longest contiguous run is the 16 B-tokens (clamped by trailing).
+        prompt = list(range(900, 908)) + list(range(500, 520)) + [999, 998]
+        result = adapter.match(
+            prompt_token_ids=prompt,
+            already_matched_len=0,
+            prompt_text="query",
+        )
+        assert result is not None
+        assert result.match_block is not None
+        # The longest contiguous run is in donor B (16 tokens at prompt offset 8).
+        # The block's donor_kv_indices should slice donor B's handle.
+        assert result.match_block.length >= 16
+        assert result.match_block.target_start_in_prompt == 8
+        # KV indices reference donor-B's pool slots, not donor-A's.
+        kv = list(result.match_block.donor_kv_indices)
+        assert all(v >= 3000 for v in kv), f"expected donor-B (>=3000) slots, got {kv}"
 
     def test_node_id_carries_through_collapsed_head_segment(self, adapter, pipeline):
         """When on_donor_inserted has run for a donor, the collapsed result

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
@@ -91,7 +92,22 @@ class SemBlendProviderAdapter:
         # Opaque KV handles keyed by donor request_id. Donor registration
         # inserts here; match lookups resolve donor_id -> handle to produce
         # pool-index tensors on return.
-        self._donor_kv: dict[str, _DonorKVHandle] = {}
+        #
+        # OrderedDict-backed LRU: bounded by config.max_entries. On insert
+        # over the bound we evict the least-recently-used entry. On match
+        # we mark the hit donor as recently used. This keeps the adapter's
+        # handle dict in lockstep with the pipeline's donor_store (both
+        # use the same max_entries bound and LRU policy); it also bounds
+        # the substring-index cache, which is keyed by the same donor_id.
+        self._donor_kv: OrderedDict[str, _DonorKVHandle] = OrderedDict()
+
+        # Per-donor n-gram substring index cache. Built on first match
+        # against a given donor and reused on subsequent matches. Dropped
+        # in lockstep with _donor_kv eviction. Each cache entry stores
+        # the anchor size it was built with, so a different anchor request
+        # (rare; happens only for short remaining suffixes) triggers a
+        # rebuild for that one call without invalidating the cache.
+        self._donor_substring_cache: dict[str, dict] = {}
 
         self._stats = _Stats()
 
@@ -178,6 +194,11 @@ class SemBlendProviderAdapter:
             self._stats.register_rejected += 1
             return False
 
+        # Evict LRU entries before inserting to keep _donor_kv bounded by
+        # config.max_entries. Drops the matching substring-index cache so
+        # the two stay in sync.
+        self._evict_lru_if_over_bound(reserve=1)
+
         # Record the KV handle so match results can reference it.
         self._donor_kv[request_id] = _DonorKVHandle(
             kv_indices=kv_cache,
@@ -186,13 +207,26 @@ class SemBlendProviderAdapter:
         )
 
         self._stats.register_ok += 1
-        logger.info(
+        logger.debug(
             "[FUZZY] register_donor: ok request_id=%s tokens=%d donor_kv_size=%d",
             request_id,
             len(segment_tokens),
             len(self._donor_kv),
         )
         return True
+
+    def _evict_lru_if_over_bound(self, reserve: int = 0) -> None:
+        """Evict LRU donor handles until ``len(_donor_kv) + reserve <= max_entries``.
+
+        Called on every register_donor with reserve=1 (we're about to add
+        one). Drops the matching substring-index cache so the two stay in
+        sync. No-op when under the bound.
+        """
+        max_entries = max(int(self._config.max_entries), 1)
+        while len(self._donor_kv) + reserve > max_entries and self._donor_kv:
+            oldest_id, _ = self._donor_kv.popitem(last=False)
+            self._donor_substring_cache.pop(oldest_id, None)
+            self._stats.donor_kv_evicted += 1
 
     def on_donor_inserted(
         self,
@@ -234,7 +268,7 @@ class SemBlendProviderAdapter:
 
         remaining = list(prompt_token_ids[already_matched_len:])
         if len(remaining) < self._config.min_match_length:
-            logger.info(
+            logger.debug(
                 "[FUZZY] adapter.match: remaining=%d below min_match_length=%d, skip",
                 len(remaining),
                 self._config.min_match_length,
@@ -253,32 +287,32 @@ class SemBlendProviderAdapter:
             return None
 
         if not getattr(result, "found", False):
-            logger.info(
+            logger.debug(
                 "[FUZZY] adapter.match: find_donor returned found=False (remaining=%d)",
                 len(remaining),
             )
             self._stats.match_misses += 1
             return None
 
-        # Multi-donor composite matches don't have a single cosine
-        # similarity (the quality signal lives in reuse_ratio, which is
-        # the aggregated per-chunk match strength). The semblend_core
-        # pipeline marks them by setting similarity=0.0 and populating
-        # composite_plan. Skip the cosine gate for that path; reuse_ratio
-        # is what matters.
-        is_composite = getattr(result, "composite_plan", None) is not None
-        logger.info(
+        logger.debug(
             "[FUZZY] adapter.match: result donor_id=%s similarity=%.3f "
-            "reuse_ratio=%.3f composite=%s donor_kv_size=%d",
+            "reuse_ratio=%.3f donor_kv_size=%d",
             getattr(result, "donor_id", None),
             float(getattr(result, "similarity", 0.0)),
             float(getattr(result, "reuse_ratio", 0.0)),
-            is_composite,
             len(self._donor_kv),
         )
 
-        if not is_composite and result.similarity < self._config.min_similarity:
-            logger.info(
+        # Cosine gate applies to all paths. semblend_core surfaces a real
+        # query-vs-primary-donor cosine even for multi-donor composite
+        # results (pipeline._compute_aggregate_similarity), so this gate
+        # is now meaningful on every path. We do NOT bypass the gate for
+        # composite results because composite_plan presence is only a
+        # construction marker, not a quality signal — relying on
+        # reuse_ratio alone would let chunk-aligned matches with
+        # high token-overlap but low semantic affinity slip through.
+        if result.similarity < self._config.min_similarity:
+            logger.debug(
                 "[FUZZY] adapter.match: similarity=%.3f < gate=%.3f, miss",
                 float(result.similarity),
                 float(self._config.min_similarity),
@@ -301,7 +335,7 @@ class SemBlendProviderAdapter:
             remaining=remaining,
         )
         if converted is None:
-            logger.info(
+            logger.debug(
                 "[FUZZY] adapter.match: _convert_result returned None for "
                 "donor_id=%s (donor_kv has %d donors, handle_present=%s)",
                 getattr(result, "donor_id", None),
@@ -387,19 +421,21 @@ class SemBlendProviderAdapter:
         """
         donor_id = pipeline_result.donor_id
         if donor_id is None:
-            logger.info("[FUZZY] _convert_result: donor_id is None, drop")
+            logger.debug("[FUZZY] _convert_result: donor_id is None, drop")
             return None
         handle = self._donor_kv.get(donor_id)
         if handle is None:
-            logger.info(
-                "[FUZZY] _convert_result: no handle for donor_id=%s (donor_kv keys "
-                "sample=%s, total=%d) — donor in pipeline store but adapter never "
-                "saw register_donor with this id",
+            logger.debug(
+                "[FUZZY] _convert_result: no handle for donor_id=%s "
+                "(donor_kv size=%d) — pipeline kept this donor but adapter "
+                "had already evicted it",
                 donor_id,
-                list(self._donor_kv.keys())[:3],
                 len(self._donor_kv),
             )
             return None
+        # Mark the donor as recently used for LRU. Move to end of the
+        # OrderedDict so the next eviction wave skips this entry.
+        self._donor_kv.move_to_end(donor_id)
 
         # Build layer_recompute_mask from pipeline_result.layer_deviations.
         layer_mask = None
@@ -444,23 +480,52 @@ class SemBlendProviderAdapter:
             already_matched_len=already_matched_len,
             prompt_len_total=prompt_len_total,
         )
-        block_from_substring = self._pick_match_block_substring(
+
+        # Substring path: scan against EVERY donor that the pipeline named
+        # in this composite result, not just the primary. For multi-donor
+        # composites (donors_per_composite > 1), a secondary donor may
+        # carry a longer contiguous run than the primary. The chosen block
+        # references that donor's handle / KV indices; the resulting
+        # match_block points at exactly one donor, but we picked the best
+        # one rather than blindly using donor_ids[0].
+        block_from_substring, substring_donor_id = self._scan_substring_across_donors(
+            primary_donor_id=donor_id,
+            primary_donor_tokens=list(
+                getattr(pipeline_result, "donor_tokens", []) or []
+            ),
+            primary_handle=handle,
+            composite_donor_ids=list(
+                getattr(pipeline_result, "donor_ids", ()) or ()
+            ),
             remaining=remaining,
-            donor_tokens=list(getattr(pipeline_result, "donor_tokens", []) or []),
-            handle=handle,
             already_matched_len=already_matched_len,
             prompt_len_total=prompt_len_total,
         )
 
         match_block = _better_block(block_from_segments, block_from_substring)
 
+        # If the substring scan won AND it picked a non-primary donor, we
+        # need to point the rest of the result (donor_id, donor_last_node_id)
+        # at that donor instead. Otherwise SGLang's RadixCache would lock
+        # the wrong donor's TreeNode and we'd reference slots that were
+        # never lock_ref'd.
+        if (
+            match_block is block_from_substring
+            and substring_donor_id is not None
+            and substring_donor_id != donor_id
+        ):
+            replacement_handle = self._donor_kv.get(substring_donor_id)
+            if replacement_handle is not None:
+                self._donor_kv.move_to_end(substring_donor_id)
+                donor_id = substring_donor_id
+                handle = replacement_handle
+
         if match_block is None:
-            logger.info(
+            logger.debug(
                 "[FUZZY] match_block discovery returned no block: "
-                "segments=%d (best_seg_len=%d), donor_tokens=%d, remaining=%d, "
+                "segments=%d, donor_tokens=%d, remaining=%d, "
                 "already_matched_len=%d, prompt_len_total=%d",
                 len(segments),
-                max((len(_as_list(s.target_positions)) for s in segments), default=0),
                 len(getattr(pipeline_result, "donor_tokens", []) or []),
                 len(remaining),
                 already_matched_len,
@@ -469,12 +534,15 @@ class SemBlendProviderAdapter:
             self._stats.match_hits_dropped_no_prefix_run += 1
             return None
 
+        # Kept at INFO so production telemetry has visibility into actual
+        # KV reuse without enabling DEBUG for the entire adapter.
         logger.info(
             "[FUZZY] match_block picked: length=%d, target_start_in_prompt=%d, "
-            "donor_start=%d, segments_block=%s, substring_block=%s",
+            "donor_start=%d, donor_id=%s, segments_block=%s, substring_block=%s",
             match_block.length,
             match_block.target_start_in_prompt,
             match_block.donor_start,
+            donor_id,
             (block_from_segments.length if block_from_segments else None),
             (block_from_substring.length if block_from_substring else None),
         )
@@ -588,8 +656,114 @@ class SemBlendProviderAdapter:
 
         return best
 
+    def _scan_substring_across_donors(
+        self,
+        primary_donor_id: str,
+        primary_donor_tokens: List[int],
+        primary_handle: _DonorKVHandle,
+        composite_donor_ids: List[str],
+        remaining: List[int],
+        already_matched_len: int,
+        prompt_len_total: int,
+    ) -> tuple[Optional[FuzzyMatchBlock], Optional[str]]:
+        """Run the substring scan against every donor in this composite.
+
+        Returns (best_block, donor_id_for_best_block).
+
+        The primary donor is checked first using the tokens the pipeline
+        already returned (avoids a redundant donor_store lookup). For
+        each secondary donor, we resolve tokens via the pipeline's
+        donor_store. Donors whose adapter handle is missing (evicted) are
+        skipped.
+        """
+        donor_ids_seen: set[str] = set()
+        best_block: Optional[FuzzyMatchBlock] = None
+        best_donor_id: Optional[str] = None
+
+        def try_donor(donor_id: str, tokens: List[int], h: _DonorKVHandle) -> None:
+            nonlocal best_block, best_donor_id
+            block = self._pick_match_block_substring(
+                donor_id=donor_id,
+                remaining=remaining,
+                donor_tokens=tokens,
+                handle=h,
+                already_matched_len=already_matched_len,
+                prompt_len_total=prompt_len_total,
+            )
+            if block is None:
+                return
+            if best_block is None or block.length > best_block.length:
+                best_block = block
+                best_donor_id = donor_id
+
+        if primary_donor_id and primary_donor_tokens:
+            try_donor(primary_donor_id, primary_donor_tokens, primary_handle)
+            donor_ids_seen.add(primary_donor_id)
+
+        for did in composite_donor_ids:
+            if did in donor_ids_seen or not did:
+                continue
+            donor_ids_seen.add(did)
+            h = self._donor_kv.get(did)
+            if h is None:
+                continue
+            tokens = self._fetch_donor_tokens(did)
+            if not tokens:
+                continue
+            try_donor(did, tokens, h)
+
+        return best_block, best_donor_id
+
+    def _fetch_donor_tokens(self, donor_id: str) -> List[int]:
+        """Resolve a donor's token sequence via the pipeline's donor_store.
+
+        Used by the multi-donor substring scan for secondary donors whose
+        tokens aren't already in pipeline_result.donor_tokens.
+        """
+        try:
+            tokens = self._pipeline._donor_store.get_donor_tokens(donor_id)  # noqa: SLF001
+        except Exception:
+            return []
+        return list(tokens) if tokens is not None else []
+
+    def _get_or_build_donor_substring_index(
+        self,
+        donor_id: str,
+        donor_tokens: List[int],
+        anchor: int,
+    ) -> dict[tuple, list[int]]:
+        """Return the n-gram index for a donor, building it on first use.
+
+        Cached in ``self._donor_substring_cache[donor_id]``; eviction
+        from ``_donor_kv`` drops the cache entry in lockstep. Each cache
+        entry records the anchor it was built with. The common case
+        (anchor == match_block_max_anchor, default 8) hits the cache on
+        every match against this donor. Rare adaptive-anchor calls (short
+        remaining suffixes) miss the cache and build a fresh index without
+        evicting the cached one; their cost is bounded by the small donor
+        length that triggered the adaptive path.
+        """
+        cached = self._donor_substring_cache.get(donor_id)
+        if cached is not None and cached.get("anchor") == anchor:
+            return cached["index"]
+        index: dict[tuple, list[int]] = {}
+        donor_n = len(donor_tokens)
+        for j in range(donor_n - anchor + 1):
+            key = tuple(donor_tokens[j : j + anchor])
+            index.setdefault(key, []).append(j)
+        # Only cache the canonical (max) anchor. Adaptive-anchor calls
+        # build but don't cache, preserving the canonical entry for the
+        # common case.
+        if anchor == int(self._config.match_block_max_anchor):
+            self._donor_substring_cache[donor_id] = {
+                "anchor": anchor,
+                "index": index,
+            }
+        return index
+
     def _pick_match_block_substring(
         self,
+        donor_id: str,
         remaining: List[int],
         donor_tokens: List[int],
         handle: _DonorKVHandle,
@@ -635,10 +809,11 @@ class SemBlendProviderAdapter:
         if anchor < MIN_BLOCK_LENGTH:
             return None
 
-        donor_index: dict[tuple, list[int]] = {}
-        for j in range(donor_n - anchor + 1):
-            key = tuple(donor_tokens[j : j + anchor])
-            donor_index.setdefault(key, []).append(j)
+        donor_index = self._get_or_build_donor_substring_index(
+            donor_id=donor_id,
+            donor_tokens=donor_tokens,
+            anchor=anchor,
+        )
 
         best_target = -1
         best_donor = -1
@@ -785,6 +960,7 @@ class _Stats:
     match_errors: int = 0
     match_rejected_low_reuse: int = 0
     match_rejected_no_kv: int = 0
+    donor_kv_evicted: int = 0
     # Match was found by the alignment pipeline but its head segment did not
     # anchor at the recipient's exact-prefix length, so SGLang's prefix-cache
     # cannot express it as device_indices. The match is dropped rather than
@@ -803,6 +979,7 @@ class _Stats:
             "match_rejected_low_reuse": self.match_rejected_low_reuse,
             "match_rejected_no_kv": self.match_rejected_no_kv,
             "match_hits_dropped_no_prefix_run": self.match_hits_dropped_no_prefix_run,
+            "donor_kv_evicted": self.donor_kv_evicted,
         }
 
 
