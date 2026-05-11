@@ -32,6 +32,7 @@ import numpy as np
 
 from semblend.integration.sglang.config import SemBlendProviderConfig
 from semblend.integration.sglang.types import (
+    FuzzyMatchBlock,
     FuzzyMatchResult,
     FuzzyMatchSegment,
     QualitySignals,
@@ -353,32 +354,35 @@ class SemBlendProviderAdapter:
 
         segments = self._build_segments(pipeline_result, handle, layer_mask)
 
-        # SGLang's prefix cache requires device_indices to be a contiguous
-        # prefix [0..exact+N-1]. Multi-segment / mid-prompt alignments do not
-        # fit that shape: returning them silently degrades to a no-op KV
-        # reuse (donor KV gets overwritten during prefill because the
-        # scheduler does not know to skip those positions). Trim to the
-        # prefix-anchored head segment only and discard the rest. Internal
-        # invariants of _build_segments guarantee each segment is +1
-        # contiguous on both donor and target sides, so the head segment is
-        # safe to express as a single contiguous span.
+        # Find the longest strictly-monotonic run in the position_map and
+        # surface it as a single ``match_block``. SGLang's model_runner
+        # handles the surrounding tokens with a two-pass forward_extend:
+        # the lead-in tokens before the block are cold-prefilled, the
+        # donor KV is placed at the block's positions via reverse+apply
+        # RoPE, and the trailing tokens are cold-prefilled. This extends
+        # Chenxin's |exact|fuzzy|miss| decomposition to the case where
+        # the cached region sits at a non-prefix target position.
         #
         # target_positions reference frame: the pipeline was called with
         # token_ids=remaining (= prompt_token_ids[already_matched_len:]),
-        # so target positions are 0-based within remaining. Position 0
-        # corresponds to absolute prompt position already_matched_len -- the
-        # exact spot the recipient's exact prefix ends.
+        # so target positions are 0-based within remaining. We translate to
+        # absolute prompt positions for the match_block.
         if not segments:
             self._stats.match_hits_dropped_no_prefix_run += 1
             return None
 
-        head = segments[0]
-        head_targets = _as_list(head.target_positions)
-        if not head_targets or head_targets[0] != 0:
+        prompt_len_total = already_matched_len + len(remaining)
+        match_block = self._pick_match_block(
+            segments=segments,
+            already_matched_len=already_matched_len,
+            prompt_len_total=prompt_len_total,
+        )
+
+        if match_block is None:
             self._stats.match_hits_dropped_no_prefix_run += 1
             return None
 
-        total_covered = len(head_targets)
+        total_covered = match_block.length
 
         # Quality signals
         quality = QualitySignals(
@@ -388,29 +392,104 @@ class SemBlendProviderAdapter:
             passed_quality_gate=True,
         )
 
-        # Collapse to the legacy contiguous path so the model executor's
-        # _correct_fuzzy_kv_rope_contiguous runs (which actually saves
-        # compute) instead of _correct_fuzzy_kv_rope_segments (which today
-        # is overwritten by prefill).
-        kv_cache_indices = head.donor_kv_indices
-        # Donor's absolute KV position -- consumed by model_runner for
-        # reverse-RoPE in _correct_fuzzy_kv_rope_contiguous. The target
-        # position is provided separately to model_runner as exact_matched_len.
-        cached_start_pos = int(_first(head.donor_positions, 0))
-
+        # FuzzyMatchResult contract notes for the match_block path:
+        # - ``kv_cache_indices`` mirrors the block's donor slots; SGLang's
+        #   radix_cache does NOT splice this into device_indices for this
+        #   path (the block isn't prefix-anchored), so the length is not
+        #   required to match a "claimed contiguous prefix". It is surfaced
+        #   for telemetry and back-compatibility with legacy consumers.
+        # - ``cached_start_pos`` is the donor's absolute position (used as
+        #   a secondary check by model_runner; the match_block carries the
+        #   authoritative ``donor_start``).
+        # - ``segments=None``: the match_block path and the legacy
+        #   segments path are mutually exclusive; model_runner gates on
+        #   match_block first.
         return FuzzyMatchResult(
             cached_token_count=total_covered,
             cached_token_ids=list(pipeline_result.donor_tokens[:total_covered]),
             prompt_token_count=total_covered,
-            kv_cache_indices=kv_cache_indices,
+            kv_cache_indices=match_block.donor_kv_indices,
             position_offset=already_matched_len,
-            cached_start_pos=cached_start_pos,
+            cached_start_pos=match_block.donor_start,
             _match_entry=donor_id,
             segments=None,
             layer_recompute_mask=layer_mask,
             quality_signals=quality,
             donor_last_node_id=handle.last_node_id,
+            match_block=match_block,
         )
+
+    def _pick_match_block(
+        self,
+        segments: List[FuzzyMatchSegment],
+        already_matched_len: int,
+        prompt_len_total: int,
+    ) -> Optional[FuzzyMatchBlock]:
+        """Pick the longest contiguous segment that satisfies the
+        two-pass forward_extend's geometric constraints.
+
+        Constraints:
+          1. ``length >= MIN_BLOCK_LENGTH`` (4 tokens). Below this the
+             two-pass orchestration overhead dominates the savings.
+          2. ``target_start_in_prompt + length <= prompt_len_total - 1``.
+             The trailing extend needs at least one token so the model
+             produces sampling logits for the request's last position.
+             If a segment would otherwise span the last prompt position,
+             it is shrunk by one.
+          3. ``target_start_in_prompt >= already_matched_len``. Sanity
+             check; segments built from ``position_map`` always have
+             slice-frame positions >= 0, so the absolute position is
+             >= ``already_matched_len``.
+
+        Returns ``None`` when no segment qualifies.
+        """
+        MIN_BLOCK_LENGTH = 4
+        best: Optional[FuzzyMatchBlock] = None
+        for seg in segments:
+            targets = _as_list(seg.target_positions)
+            donors = _as_list(seg.donor_positions)
+            if not targets or not donors or len(targets) != len(donors):
+                continue
+
+            # ``target_positions`` are 0-based within ``remaining``;
+            # translate to absolute prompt positions.
+            target_start_abs = already_matched_len + int(targets[0])
+            length = len(targets)
+
+            # Constraint 2: leave >=1 trailing-extend token for sampling.
+            max_block_end = prompt_len_total - 2  # inclusive last block pos
+            if target_start_abs > max_block_end:
+                continue
+            length = min(length, max_block_end - target_start_abs + 1)
+
+            # Constraint 1: minimum useful block length.
+            if length < MIN_BLOCK_LENGTH:
+                continue
+
+            # Constraint 3: sanity.
+            if target_start_abs < already_matched_len:
+                continue
+
+            donor_start_abs = int(donors[0])
+
+            # Slice donor_kv_indices to match the (possibly trimmed) length.
+            donor_kv_indices_full = seg.donor_kv_indices
+            if donor_kv_indices_full is None:
+                continue
+            donor_kv_indices = _slice_indices(
+                donor_kv_indices_full, offset=0, length=length
+            )
+
+            candidate = FuzzyMatchBlock(
+                target_start_in_prompt=target_start_abs,
+                length=length,
+                donor_start=donor_start_abs,
+                donor_kv_indices=donor_kv_indices,
+            )
+            if best is None or candidate.length > best.length:
+                best = candidate
+
+        return best
 
     def _build_segments(
         self,

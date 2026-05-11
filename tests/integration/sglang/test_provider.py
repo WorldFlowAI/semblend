@@ -297,17 +297,16 @@ class TestMatchHits:
         assert result.quality_signals.reuse_ratio == pytest.approx(0.85)
         assert result.quality_signals.confidence_tier == "exact"
 
-    def test_reorder_collapses_to_prefix_anchored_head_segment(self, adapter, pipeline):
-        """SGLang's prefix cache requires device_indices = contiguous prefix
-        [0..N-1]. The adapter trims multi-segment alignments down to the
-        head-segment-only contiguous span (and drops it entirely if the head
-        doesn't anchor at target position 0). Multi-segment KV reuse is left
-        for a future model_runner path that doesn't get overwritten by
-        prefill.
+    def test_reorder_picks_longest_run_as_match_block(self, adapter, pipeline):
+        """match_block: the adapter surfaces the LONGEST contiguous monotonic run
+        from the position_map as a single match_block. The block may start at
+        any target position (not necessarily 0); SGLang's two-pass
+        forward_extend handles the surrounding lead-in / main extends.
         """
         self._register_donor(adapter, nt=16)
         # Two contiguous runs with a reorder gap between them.
-        # donor: 4..8 placed at target 0..4, then donor 0..4 at target 4..8.
+        # donor: 4..7 placed at target 0..3, then donor 0..3 at target 4..7.
+        # Both runs are length 4; the adapter picks the first (head) one.
         pipeline.next_result = _StubPipelineResult(
             found=True,
             donor_id="donor-A",
@@ -328,26 +327,28 @@ class TestMatchHits:
             prompt_text="query",
         )
         assert isinstance(result, FuzzyMatchResult)
-        # Collapsed to legacy contiguous shape.
         assert result.segments is None
-        # Head segment covers donor[4..7] -> target[0..3]; tail dropped.
+        # match_block is set to the head run (donor[4..7] -> target[0..3]).
+        assert result.match_block is not None
+        assert result.match_block.target_start_in_prompt == 0
+        assert result.match_block.length == 4
+        assert result.match_block.donor_start == 4
+        assert list(result.match_block.donor_kv_indices) == [104, 105, 106, 107]
+        # cached_token_count == match_block length.
         assert result.cached_token_count == 4
-        # cached_start_pos = donor's absolute position (for RoPE reversal).
+        # cached_start_pos == donor's absolute position (for the legacy path).
         assert result.cached_start_pos == 4
-        assert list(result.kv_cache_indices) == [104, 105, 106, 107]
-        # cached_token_ids slices donor_tokens[:cached_token_count] -> [0..3].
-        assert result.cached_token_ids == [0, 1, 2, 3]
 
-    def test_match_dropped_when_head_segment_not_prefix_anchored(
+    def test_match_block_at_non_prefix_position_accepted(
         self, adapter, pipeline
     ):
-        """Alignments whose head segment doesn't start at target position 0
-        cannot be expressed as a contiguous prefix; they are dropped to avoid
-        the silent no-op behavior where SGLang's scheduler runs prefill over
-        the supposedly-cached region anyway.
+        """match_block: alignments whose longest run does NOT start at target 0
+        are still accepted as a match_block. SGLang handles the lead-in via
+        a pass-1 cold prefill before placing the block. This is the
+        instruction-before-context paraphrase workload's primary path.
         """
         self._register_donor(adapter, nt=16)
-        # First chunk recompute -> first matched target pos is 4, not 0.
+        # Longest run starts at target=4 (lead-in needed for target 0..3).
         pipeline.next_result = _StubPipelineResult(
             found=True,
             donor_id="donor-A",
@@ -355,8 +356,8 @@ class TestMatchHits:
             reuse_ratio=0.6,
             donor_tokens=list(range(16)),
             position_map=_StubPosMap(
-                donor_positions=[4, 5, 6, 7],
-                target_positions=[4, 5, 6, 7],
+                donor_positions=[4, 5, 6, 7, 8],
+                target_positions=[4, 5, 6, 7, 8],
             ),
             layer_deviations=[],
             confidence_tier="fuzzy",
@@ -367,9 +368,71 @@ class TestMatchHits:
             already_matched_len=0,
             prompt_text="query",
         )
+        assert result is not None
+        assert result.match_block is not None
+        # Block at absolute prompt position 4..8 (already_matched_len=0).
+        assert result.match_block.target_start_in_prompt == 4
+        assert result.match_block.length == 5
+        assert result.match_block.donor_start == 4
+
+    def test_match_block_dropped_below_min_length(self, adapter, pipeline):
+        """match_block min-block threshold: tiny blocks aren't worth the two-pass
+        orchestration overhead. Provider drops them.
+        """
+        self._register_donor(adapter, nt=16)
+        # Only 2 contiguous matches; below MIN_BLOCK_LENGTH=4.
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.85,
+            reuse_ratio=0.6,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(
+                donor_positions=[4, 5],
+                target_positions=[4, 5],
+            ),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+        )
+        result = adapter.match(
+            prompt_token_ids=list(range(32)),
+            already_matched_len=0,
+            prompt_text="query",
+        )
         assert result is None
         stats = adapter.stats()
         assert stats["match_hits_dropped_no_prefix_run"] == 1
+
+    def test_match_block_already_matched_len_offsets_to_absolute(
+        self, adapter, pipeline
+    ):
+        """target positions in segments are slice-frame (0-based within
+        remaining); the provider must translate to absolute prompt position
+        by adding already_matched_len."""
+        self._register_donor(adapter, nt=16)
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.9,
+            reuse_ratio=0.7,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(
+                donor_positions=[0, 1, 2, 3, 4],
+                target_positions=[0, 1, 2, 3, 4],
+            ),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+        )
+        result = adapter.match(
+            prompt_token_ids=list(range(40)),
+            already_matched_len=8,  # exact prefix already covered 8 tokens
+            prompt_text="query",
+        )
+        assert result is not None
+        assert result.match_block is not None
+        # Block in absolute prompt frame: 8 + 0 = 8 .. 8 + 4 = 12.
+        assert result.match_block.target_start_in_prompt == 8
+        assert result.match_block.length == 5
 
     def test_node_id_carries_through_collapsed_head_segment(self, adapter, pipeline):
         """When on_donor_inserted has run for a donor, the collapsed result
