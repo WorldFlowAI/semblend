@@ -298,15 +298,18 @@ class TestMatchHits:
         assert result.quality_signals.confidence_tier == "exact"
 
     def test_reorder_picks_longest_run_as_match_block(self, adapter, pipeline):
-        """match_block: the adapter surfaces the LONGEST contiguous monotonic run
-        from the position_map as a single match_block. The block may start at
-        any target position (not necessarily 0); SGLang's two-pass
-        forward_extend handles the surrounding lead-in / main extends.
+        """match_block: when the chunk-aligned position_map reorders donor
+        positions, the segments path finds only short contiguous runs. The
+        adapter falls back to a direct substring scan over the raw token
+        sequences and surfaces the longest contiguous donor/target match
+        as the match_block.
+
+        Setup: prompt = donor_tokens for positions 0..15, so the substring
+        path finds a length-16 contiguous run starting at target 0. The
+        position_map reorder doesn't impede this, because the substring
+        path bypasses the aligner's chunk-level output entirely.
         """
         self._register_donor(adapter, nt=16)
-        # Two contiguous runs with a reorder gap between them.
-        # donor: 4..7 placed at target 0..3, then donor 0..3 at target 4..7.
-        # Both runs are length 4; the adapter picks the first (head) one.
         pipeline.next_result = _StubPipelineResult(
             found=True,
             donor_id="donor-A",
@@ -328,16 +331,206 @@ class TestMatchHits:
         )
         assert isinstance(result, FuzzyMatchResult)
         assert result.segments is None
-        # match_block is set to the head run (donor[4..7] -> target[0..3]).
+        # Substring path beats the shorter segments-path run.
         assert result.match_block is not None
+        assert result.match_block.target_start_in_prompt == 0
+        assert result.match_block.length == 16
+        assert result.match_block.donor_start == 0
+        assert list(result.match_block.donor_kv_indices) == list(range(100, 116))
+        assert result.cached_token_count == 16
+        assert result.cached_start_pos == 0
+
+    def test_segments_path_used_when_substring_finds_nothing(self, adapter, pipeline):
+        """match_block fallback: when raw donor / prompt tokens share no
+        contiguous run (e.g., different surface tokens that happen to align
+        semantically), the substring path returns nothing and the segments
+        path takes over. Exercises the segments-only fallback that handles
+        EXACT chunk hits from the multi-donor aligner.
+        """
+        self._register_donor(adapter, nt=16)
+        # Donor tokens range 100..115; prompt range 0..31. No shared n-gram,
+        # so substring path bails out. position_map carries an explicit
+        # monotonic run that segments path can grab.
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.80,
+            reuse_ratio=0.7,
+            donor_tokens=list(range(100, 116)),
+            position_map=_StubPosMap(
+                donor_positions=[4, 5, 6, 7],
+                target_positions=[0, 1, 2, 3],
+            ),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+        )
+        result = adapter.match(
+            prompt_token_ids=list(range(32)),
+            already_matched_len=0,
+            prompt_text="query",
+        )
+        assert isinstance(result, FuzzyMatchResult)
+        assert result.match_block is not None
+        # Segments-path block (donor[4..7] -> target[0..3]).
         assert result.match_block.target_start_in_prompt == 0
         assert result.match_block.length == 4
         assert result.match_block.donor_start == 4
         assert list(result.match_block.donor_kv_indices) == [104, 105, 106, 107]
-        # cached_token_count == match_block length.
         assert result.cached_token_count == 4
-        # cached_start_pos == donor's absolute position (for the legacy path).
         assert result.cached_start_pos == 4
+
+    def test_substring_path_finds_shifted_body_paraphrase(
+        self, adapter, pipeline
+    ):
+        """Paraphrase / cross-instruction workload: the donor and target
+        share a long body but have different instruction prefixes (and
+        therefore different chunk-boundary alignments). The chunk-aligned
+        position_map fragments under per-token greedy matching, so the
+        substring path is needed to surface the shared body as a single
+        match_block.
+
+        Setup:
+            donor   = [D0 D1 D2 D3 | B0 B1 B2 ... B19]    (4-token instr + 20-token body)
+            prompt  = [T0 T1 T2 T3 T4 T5 | B0 B1 B2 ... B19]  (6-token instr + same body)
+
+        The body B0..B19 is identical at different absolute positions.
+        Substring should find a 20-token contiguous run at target=6,
+        donor=4. The position_map mimics the per-token-greedy output that
+        ignores chunk boundaries (here, an empty / scrambled stub).
+        """
+        donor_tokens = [900, 901, 902, 903] + list(range(500, 520))
+        adapter.register_donor(
+            request_id="donor-A",
+            token_ids=donor_tokens,
+            kv_cache=list(range(1000, 1000 + len(donor_tokens))),
+            cache_start_pos=0,
+            cache_end_pos=len(donor_tokens),
+            prompt_text="donor",
+        )
+        prompt_tokens = [800, 801, 802, 803, 804, 805] + list(range(500, 520))
+
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.82,
+            reuse_ratio=0.6,
+            donor_tokens=donor_tokens,
+            # Pretend the chunk-aligned aligner produced shuffled (=
+            # unusable as a contiguous run) per-token assignments.
+            position_map=_StubPosMap(
+                donor_positions=[4, 7, 10, 13, 16, 19],
+                target_positions=[6, 7, 8, 9, 10, 11],
+            ),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+        )
+
+        result = adapter.match(
+            prompt_token_ids=prompt_tokens + [999, 998],  # trailing for sampling
+            already_matched_len=0,
+            prompt_text="query",
+        )
+        assert result is not None
+        assert result.match_block is not None
+        assert result.match_block.target_start_in_prompt == 6
+        assert result.match_block.donor_start == 4
+        assert result.match_block.length == 20
+        # donor_kv_indices slices handle.kv_indices[4:24] = [1004..1023]
+        assert list(result.match_block.donor_kv_indices) == list(range(1004, 1024))
+
+    def test_substring_path_anchor_clamps_to_short_sequences(self, pipeline):
+        """Adaptive anchor: when remaining or donor is shorter than the
+        configured max anchor, the effective anchor clamps down so short
+        matches still surface (as long as length >= match_block_min_length).
+        Without clamping, a 5-token match would be lost behind the default
+        8-token anchor.
+        """
+        cfg = SemBlendProviderConfig(
+            min_similarity=0.60,
+            min_reuse_ratio=0.50,
+            min_match_length=4,  # allow short remaining
+            max_entries=100,
+            block_size=4,
+            enable_bathtub=True,
+            model_arch="llama",
+        )
+        adapter = SemBlendProviderAdapter(config=cfg, pipeline=pipeline)
+        donor_tokens = list(range(700, 705))  # 5 tokens
+        adapter.register_donor(
+            request_id="donor-A",
+            token_ids=donor_tokens,
+            kv_cache=list(range(2000, 2005)),
+            cache_start_pos=0,
+            cache_end_pos=5,
+            prompt_text="donor",
+        )
+
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.80,
+            reuse_ratio=0.6,
+            donor_tokens=donor_tokens,
+            position_map=_StubPosMap(donor_positions=[], target_positions=[]),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+        )
+
+        prompt = list(range(700, 705)) + [999, 998]
+        result = adapter.match(
+            prompt_token_ids=prompt,
+            already_matched_len=0,
+            prompt_text="query",
+        )
+        assert result is not None
+        assert result.match_block is not None
+        assert result.match_block.length == 5
+        assert result.match_block.donor_start == 0
+        assert result.match_block.target_start_in_prompt == 0
+
+    def test_substring_path_respects_configurable_min_block_length(
+        self, config, pipeline
+    ):
+        """match_block_min_length is configurable: setting it higher rejects
+        otherwise-valid substring matches below that threshold."""
+        stricter = SemBlendProviderConfig(
+            min_similarity=config.min_similarity,
+            min_reuse_ratio=config.min_reuse_ratio,
+            min_match_length=config.min_match_length,
+            max_entries=config.max_entries,
+            block_size=config.block_size,
+            enable_bathtub=config.enable_bathtub,
+            model_arch=config.model_arch,
+            match_block_min_length=10,  # stricter than default 4
+        )
+        adapter = SemBlendProviderAdapter(config=stricter, pipeline=pipeline)
+        donor_tokens = list(range(500, 508))  # 8 tokens
+        adapter.register_donor(
+            request_id="donor-A",
+            token_ids=donor_tokens,
+            kv_cache=list(range(3000, 3008)),
+            cache_start_pos=0,
+            cache_end_pos=8,
+            prompt_text="donor",
+        )
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.80,
+            reuse_ratio=0.6,
+            donor_tokens=donor_tokens,
+            position_map=_StubPosMap(donor_positions=[], target_positions=[]),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+        )
+        prompt = list(range(500, 508)) + [999, 998]
+        result = adapter.match(
+            prompt_token_ids=prompt,
+            already_matched_len=0,
+            prompt_text="query",
+        )
+        # Substring path finds an 8-token run, but min_length=10 rejects.
+        assert result is None
 
     def test_match_block_at_non_prefix_position_accepted(
         self, adapter, pipeline
@@ -346,15 +539,19 @@ class TestMatchHits:
         are still accepted as a match_block. SGLang handles the lead-in via
         a pass-1 cold prefill before placing the block. This is the
         instruction-before-context paraphrase workload's primary path.
+
+        Setup: donor tokens are deliberately distinct from prompt tokens to
+        force the segments-path block (no n-gram substring match exists).
         """
         self._register_donor(adapter, nt=16)
-        # Longest run starts at target=4 (lead-in needed for target 0..3).
+        # Mismatched donor / prompt tokens => substring path bails out.
+        # Segments path picks the explicit non-prefix run.
         pipeline.next_result = _StubPipelineResult(
             found=True,
             donor_id="donor-A",
             similarity=0.85,
             reuse_ratio=0.6,
-            donor_tokens=list(range(16)),
+            donor_tokens=list(range(100, 116)),
             position_map=_StubPosMap(
                 donor_positions=[4, 5, 6, 7, 8],
                 target_positions=[4, 5, 6, 7, 8],
@@ -377,16 +574,19 @@ class TestMatchHits:
 
     def test_match_block_dropped_below_min_length(self, adapter, pipeline):
         """match_block min-block threshold: tiny blocks aren't worth the two-pass
-        orchestration overhead. Provider drops them.
+        orchestration overhead. Both the segments path and the substring path
+        must respect MIN_BLOCK_LENGTH=4; provider drops short matches.
         """
         self._register_donor(adapter, nt=16)
-        # Only 2 contiguous matches; below MIN_BLOCK_LENGTH=4.
+        # Donor and prompt share no contiguous run, so substring path bails;
+        # position_map carries only 2 contiguous tokens, below
+        # MIN_BLOCK_LENGTH=4, so segments path also drops.
         pipeline.next_result = _StubPipelineResult(
             found=True,
             donor_id="donor-A",
             similarity=0.85,
             reuse_ratio=0.6,
-            donor_tokens=list(range(16)),
+            donor_tokens=list(range(100, 116)),
             position_map=_StubPosMap(
                 donor_positions=[4, 5],
                 target_positions=[4, 5],
@@ -408,14 +608,20 @@ class TestMatchHits:
     ):
         """target positions in segments are slice-frame (0-based within
         remaining); the provider must translate to absolute prompt position
-        by adding already_matched_len."""
+        by adding already_matched_len. Uses mismatched donor / prompt tokens
+        to disable the substring path so the segments-path arithmetic is
+        what's under test.
+        """
         self._register_donor(adapter, nt=16)
+        # Donor=range(100,116) does not share any contiguous run with
+        # prompt=range(40), forcing the segments path to be the source of
+        # the match_block.
         pipeline.next_result = _StubPipelineResult(
             found=True,
             donor_id="donor-A",
             similarity=0.9,
             reuse_ratio=0.7,
-            donor_tokens=list(range(16)),
+            donor_tokens=list(range(100, 116)),
             position_map=_StubPosMap(
                 donor_positions=[0, 1, 2, 3, 4],
                 target_positions=[0, 1, 2, 3, 4],

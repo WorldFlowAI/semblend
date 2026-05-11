@@ -354,33 +354,73 @@ class SemBlendProviderAdapter:
 
         segments = self._build_segments(pipeline_result, handle, layer_mask)
 
-        # Find the longest strictly-monotonic run in the position_map and
-        # surface it as a single ``match_block``. SGLang's model_runner
-        # handles the surrounding tokens with a two-pass forward_extend:
-        # the lead-in tokens before the block are cold-prefilled, the
-        # donor KV is placed at the block's positions via reverse+apply
-        # RoPE, and the trailing tokens are cold-prefilled. This extends
-        # Chenxin's |exact|fuzzy|miss| decomposition to the case where
-        # the cached region sits at a non-prefix target position.
+        # Locate the longest contiguous (donor_pos +1, target_pos +1)
+        # run that can be expressed as a single ``match_block``. SGLang's
+        # model_runner handles the surrounding tokens with a two-pass
+        # forward_extend: the lead-in tokens before the block are
+        # cold-prefilled, the donor KV is placed at the block's positions
+        # via reverse+apply RoPE, and the trailing tokens are cold-
+        # prefilled. This extends Chenxin's |exact|fuzzy|miss|
+        # decomposition to the case where the cached region sits at a
+        # non-prefix target position.
         #
-        # target_positions reference frame: the pipeline was called with
-        # token_ids=remaining (= prompt_token_ids[already_matched_len:]),
-        # so target positions are 0-based within remaining. We translate to
-        # absolute prompt positions for the match_block.
-        if not segments:
-            self._stats.match_hits_dropped_no_prefix_run += 1
-            return None
-
+        # Two discovery paths feed ``_pick_match_block``:
+        #
+        #   * **Segments path**: groups ``pipeline_result.position_map``
+        #     into runs that advance by +1 on both sides. Best when the
+        #     multi-donor aligner produced an EXACT (hash-matched) chunk:
+        #     the chunk's tokens are already monotonic. For FUZZY (token-
+        #     greedy) chunks the run can fragment, so we also try ...
+        #
+        #   * **Direct substring path**: an n-gram-indexed sliding-window
+        #     scan over the raw donor and target token sequences. Robust
+        #     to chunk-boundary misalignment between donor and target
+        #     (the paraphrase / cross-instruction workload).
+        #
+        # We keep the longer of the two candidates, then translate from
+        # slice-frame coords to absolute prompt positions for the
+        # ``match_block`` payload.
         prompt_len_total = already_matched_len + len(remaining)
-        match_block = self._pick_match_block(
+
+        block_from_segments = self._pick_match_block(
             segments=segments,
             already_matched_len=already_matched_len,
             prompt_len_total=prompt_len_total,
         )
+        block_from_substring = self._pick_match_block_substring(
+            remaining=remaining,
+            donor_tokens=list(getattr(pipeline_result, "donor_tokens", []) or []),
+            handle=handle,
+            already_matched_len=already_matched_len,
+            prompt_len_total=prompt_len_total,
+        )
+
+        match_block = _better_block(block_from_segments, block_from_substring)
 
         if match_block is None:
+            logger.info(
+                "[FUZZY] match_block discovery returned no block: "
+                "segments=%d (best_seg_len=%d), donor_tokens=%d, remaining=%d, "
+                "already_matched_len=%d, prompt_len_total=%d",
+                len(segments),
+                max((len(_as_list(s.target_positions)) for s in segments), default=0),
+                len(getattr(pipeline_result, "donor_tokens", []) or []),
+                len(remaining),
+                already_matched_len,
+                prompt_len_total,
+            )
             self._stats.match_hits_dropped_no_prefix_run += 1
             return None
+
+        logger.info(
+            "[FUZZY] match_block picked: length=%d, target_start_in_prompt=%d, "
+            "donor_start=%d, segments_block=%s, substring_block=%s",
+            match_block.length,
+            match_block.target_start_in_prompt,
+            match_block.donor_start,
+            (block_from_segments.length if block_from_segments else None),
+            (block_from_substring.length if block_from_substring else None),
+        )
 
         total_covered = match_block.length
 
@@ -443,7 +483,7 @@ class SemBlendProviderAdapter:
 
         Returns ``None`` when no segment qualifies.
         """
-        MIN_BLOCK_LENGTH = 4
+        MIN_BLOCK_LENGTH = self._config.match_block_min_length
         best: Optional[FuzzyMatchBlock] = None
         for seg in segments:
             targets = _as_list(seg.target_positions)
@@ -490,6 +530,118 @@ class SemBlendProviderAdapter:
                 best = candidate
 
         return best
+
+    def _pick_match_block_substring(
+        self,
+        remaining: List[int],
+        donor_tokens: List[int],
+        handle: _DonorKVHandle,
+        already_matched_len: int,
+        prompt_len_total: int,
+    ) -> Optional[FuzzyMatchBlock]:
+        """Find the longest contiguous token-identical run between
+        ``remaining`` (target suffix) and the donor's stored tokens.
+
+        Uses an n-gram hash index over the donor for O(N+M) lookup, then
+        extends each anchor hit forward until the first mismatch. This
+        catches the paraphrase / cross-instruction workload where the
+        chunk-aligned position_map fragments because donor and target
+        chunk boundaries don't line up, but the underlying token streams
+        share a long contiguous body.
+
+        Reference frames:
+          * ``remaining`` is 0-based within the unmatched suffix (slice
+            of ``prompt_token_ids[already_matched_len:]``).
+          * ``donor_tokens`` is 0-based within the donor's stored slice
+            (``cache_start_pos:cache_end_pos`` at register-donor time).
+            ``handle.kv_indices`` is indexed in the same frame, so
+            slicing by ``donor_start:donor_start+length`` produces the
+            correct KV slots.
+
+        Constraints (match ``_pick_match_block``):
+          * ``length >= MIN_BLOCK_LENGTH`` (4 tokens).
+          * ``target_start_in_prompt + length <= prompt_len_total - 1``:
+            leave at least one trailing token so the model produces
+            sampling logits for the request's last position.
+        """
+        MIN_BLOCK_LENGTH = self._config.match_block_min_length
+        target_n = len(remaining)
+        donor_n = len(donor_tokens)
+        # Adapt the n-gram anchor size to the shorter of the two sequences.
+        # An anchor smaller than MIN_BLOCK_LENGTH can never produce a
+        # qualifying block, so we bail. The configured cap reflects the
+        # tradeoff: larger anchors give more distinctive n-grams (fewer
+        # index collisions) but cannot find matches shorter than the
+        # anchor itself.
+        MAX_ANCHOR = self._config.match_block_max_anchor
+        anchor = min(MAX_ANCHOR, target_n, donor_n)
+        if anchor < MIN_BLOCK_LENGTH:
+            return None
+
+        donor_index: dict[tuple, list[int]] = {}
+        for j in range(donor_n - anchor + 1):
+            key = tuple(donor_tokens[j : j + anchor])
+            donor_index.setdefault(key, []).append(j)
+
+        best_target = -1
+        best_donor = -1
+        best_length = 0
+
+        # Caps the per-anchor inner loop in the pathological case where the
+        # same n-gram repeats many times in the donor (heavily templated /
+        # structured data). For natural-language workloads the cap is never
+        # reached. The candidates list is in donor-position order, so the
+        # first candidates are the earliest positions, a reasonable
+        # heuristic for finding the longest match.
+        MAX_CANDIDATES_PER_ANCHOR = self._config.match_block_max_candidates_per_anchor
+
+        # Advance one token at a time. Skipping by ``best_here`` would
+        # miss a longer match anchored a few positions later (e.g., a
+        # diverging single token followed by a long shared continuation).
+        # The inner loop is O(1) amortized for natural text since
+        # collisions are rare and extensions terminate quickly on
+        # mismatch.
+        i = 0
+        while i <= target_n - anchor:
+            key = tuple(remaining[i : i + anchor])
+            candidates = donor_index.get(key)
+            if candidates is None:
+                i += 1
+                continue
+            for j in candidates[:MAX_CANDIDATES_PER_ANCHOR]:
+                length = anchor
+                max_extend = min(target_n - i, donor_n - j)
+                while length < max_extend and remaining[i + length] == donor_tokens[j + length]:
+                    length += 1
+                if length > best_length:
+                    best_target = i
+                    best_donor = j
+                    best_length = length
+            i += 1
+
+        if best_length < MIN_BLOCK_LENGTH:
+            return None
+
+        target_start_abs = already_matched_len + best_target
+        max_block_end = prompt_len_total - 2  # inclusive
+        if target_start_abs > max_block_end:
+            return None
+        length = min(best_length, max_block_end - target_start_abs + 1)
+        if length < MIN_BLOCK_LENGTH:
+            return None
+
+        donor_kv_indices = _slice_indices(
+            handle.kv_indices, offset=best_donor, length=length
+        )
+        if donor_kv_indices is None:
+            return None
+
+        return FuzzyMatchBlock(
+            target_start_in_prompt=target_start_abs,
+            length=length,
+            donor_start=best_donor,
+            donor_kv_indices=donor_kv_indices,
+        )
 
     def _build_segments(
         self,
@@ -600,6 +752,18 @@ class _Stats:
 # ----------------------------------------------------------------------
 # Tensor-agnostic helpers
 # ----------------------------------------------------------------------
+
+
+def _better_block(
+    a: Optional[FuzzyMatchBlock],
+    b: Optional[FuzzyMatchBlock],
+) -> Optional[FuzzyMatchBlock]:
+    """Return whichever block is longer; ``None`` if both are missing."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a if a.length >= b.length else b
 
 
 def _as_list(obj: Any) -> list:
