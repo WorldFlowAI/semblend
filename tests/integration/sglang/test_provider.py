@@ -297,10 +297,17 @@ class TestMatchHits:
         assert result.quality_signals.reuse_ratio == pytest.approx(0.85)
         assert result.quality_signals.confidence_tier == "exact"
 
-    def test_reorder_emits_multiple_segments(self, adapter, pipeline):
+    def test_reorder_collapses_to_prefix_anchored_head_segment(self, adapter, pipeline):
+        """SGLang's prefix cache requires device_indices = contiguous prefix
+        [0..N-1]. The adapter trims multi-segment alignments down to the
+        head-segment-only contiguous span (and drops it entirely if the head
+        doesn't anchor at target position 0). Multi-segment KV reuse is left
+        for a future model_runner path that doesn't get overwritten by
+        prefill.
+        """
         self._register_donor(adapter, nt=16)
         # Two contiguous runs with a reorder gap between them.
-        # donor: 0..4 jumped to 8..12, then 4..8 placed at 0..4 in target.
+        # donor: 4..8 placed at target 0..4, then donor 0..4 at target 4..8.
         pipeline.next_result = _StubPipelineResult(
             found=True,
             donor_id="donor-A",
@@ -321,30 +328,53 @@ class TestMatchHits:
             prompt_text="query",
         )
         assert isinstance(result, FuzzyMatchResult)
-        assert result.segments is not None
-        assert len(result.segments) == 2
-        s0, s1 = result.segments
-        assert list(s0.donor_positions) == [4, 5, 6, 7]
-        assert list(s0.target_positions) == [0, 1, 2, 3]
-        # Legacy pool-indices addressing — preserved for back-compat.
-        assert list(s0.donor_kv_indices) == [104, 105, 106, 107]
-        assert list(s1.donor_positions) == [0, 1, 2, 3]
-        assert list(s1.target_positions) == [4, 5, 6, 7]
-        assert list(s1.donor_kv_indices) == [100, 101, 102, 103]
-        # NodeRef addressing — donor_node_id is None here because
-        # on_donor_inserted wasn't called for this donor; donor_offset and
-        # length are still populated so a NodeRef-aware consumer that
-        # acquires the node id another way can resolve.
-        assert s0.donor_offset == 4 and s0.length == 4
-        assert s1.donor_offset == 0 and s1.length == 4
-        # Both segments carry the donor id for multi-donor-aware flows.
-        assert s0.donor_req_id == s1.donor_req_id == "donor-A"
-        # total covered = sum of segment lengths.
-        assert result.cached_token_count == 8
+        # Collapsed to legacy contiguous shape.
+        assert result.segments is None
+        # Head segment covers donor[4..7] -> target[0..3]; tail dropped.
+        assert result.cached_token_count == 4
+        # cached_start_pos = donor's absolute position (for RoPE reversal).
+        assert result.cached_start_pos == 4
+        assert list(result.kv_cache_indices) == [104, 105, 106, 107]
+        # cached_token_ids slices donor_tokens[:cached_token_count] -> [0..3].
+        assert result.cached_token_ids == [0, 1, 2, 3]
 
-    def test_segments_carry_node_id_after_on_donor_inserted(self, adapter, pipeline):
-        """When on_donor_inserted has run for a donor, segments carry its
-        ``donor_node_id`` so the model_runner can resolve via NodeRef.
+    def test_match_dropped_when_head_segment_not_prefix_anchored(
+        self, adapter, pipeline
+    ):
+        """Alignments whose head segment doesn't start at target position 0
+        cannot be expressed as a contiguous prefix; they are dropped to avoid
+        the silent no-op behavior where SGLang's scheduler runs prefill over
+        the supposedly-cached region anyway.
+        """
+        self._register_donor(adapter, nt=16)
+        # First chunk recompute -> first matched target pos is 4, not 0.
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.85,
+            reuse_ratio=0.6,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(
+                donor_positions=[4, 5, 6, 7],
+                target_positions=[4, 5, 6, 7],
+            ),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+        )
+
+        result = adapter.match(
+            prompt_token_ids=list(range(32)),
+            already_matched_len=0,
+            prompt_text="query",
+        )
+        assert result is None
+        stats = adapter.stats()
+        assert stats["match_hits_dropped_no_prefix_run"] == 1
+
+    def test_node_id_carries_through_collapsed_head_segment(self, adapter, pipeline):
+        """When on_donor_inserted has run for a donor, the collapsed result
+        still surfaces the donor's ``donor_last_node_id`` so RadixCache can
+        inc_lock_ref the donor node.
         """
         self._register_donor(adapter, nt=16)
         adapter.on_donor_inserted(request_id="donor-A", donor_last_node_id=4242)
@@ -368,10 +398,10 @@ class TestMatchHits:
             already_matched_len=0,
             prompt_text="query",
         )
+        assert result is not None
         assert result.donor_last_node_id == 4242
-        assert result.segments is not None
-        for seg in result.segments:
-            assert seg.donor_node_id == 4242
+        # Collapsed to contiguous shape; segments field is None.
+        assert result.segments is None
 
     def test_bathtub_mask_disabled_when_config_off(self, config, pipeline):
         cfg = SemBlendProviderConfig(**{**config.__dict__, "enable_bathtub": False})

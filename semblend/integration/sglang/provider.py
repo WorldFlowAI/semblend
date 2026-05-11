@@ -362,18 +362,23 @@ class SemBlendProviderAdapter:
         # invariants of _build_segments guarantee each segment is +1
         # contiguous on both donor and target sides, so the head segment is
         # safe to express as a single contiguous span.
-        if segments:
-            head = segments[0]
-            head_targets = _as_list(head.target_positions)
-            if not head_targets or head_targets[0] != already_matched_len:
-                self._stats.match_hits_dropped_no_prefix_run += 1
-                return None
-            segments = [head]
+        #
+        # target_positions reference frame: the pipeline was called with
+        # token_ids=remaining (= prompt_token_ids[already_matched_len:]),
+        # so target positions are 0-based within remaining. Position 0
+        # corresponds to absolute prompt position already_matched_len -- the
+        # exact spot the recipient's exact prefix ends.
+        if not segments:
+            self._stats.match_hits_dropped_no_prefix_run += 1
+            return None
 
-        if segments:
-            total_covered = len(_as_list(segments[0].target_positions))
-        else:
-            total_covered = 0
+        head = segments[0]
+        head_targets = _as_list(head.target_positions)
+        if not head_targets or head_targets[0] != 0:
+            self._stats.match_hits_dropped_no_prefix_run += 1
+            return None
+
+        total_covered = len(head_targets)
 
         # Quality signals
         quality = QualitySignals(
@@ -383,28 +388,15 @@ class SemBlendProviderAdapter:
             passed_quality_gate=True,
         )
 
-        # After the trim above, segments always contains 0 or 1 entries.
-        # When it has one, collapse to the legacy contiguous path so the
-        # model executor's _correct_fuzzy_kv_rope_contiguous runs (which
-        # actually saves compute) instead of _correct_fuzzy_kv_rope_segments
-        # (which today is overwritten by prefill).
-        if segments:
-            head = segments[0]
-            kv_cache_indices = head.donor_kv_indices
-            cached_start_pos = int(_first(head.donor_positions, 0))
-            out_segments = None
-        else:
-            # No usable alignment from the pipeline. Fall back to the donor's
-            # full KV handle only when its start_pos matches the recipient's
-            # anchor; otherwise return None rather than emit a result whose
-            # cached_start_pos has the same anchor-mismatch problem.
-            if handle.start_pos != already_matched_len:
-                self._stats.match_hits_dropped_no_prefix_run += 1
-                return None
-            kv_cache_indices = handle.kv_indices
-            cached_start_pos = handle.start_pos
-            out_segments = None
-            total_covered = min(len(pipeline_result.donor_tokens), len(remaining))
+        # Collapse to the legacy contiguous path so the model executor's
+        # _correct_fuzzy_kv_rope_contiguous runs (which actually saves
+        # compute) instead of _correct_fuzzy_kv_rope_segments (which today
+        # is overwritten by prefill).
+        kv_cache_indices = head.donor_kv_indices
+        # Donor's absolute KV position -- consumed by model_runner for
+        # reverse-RoPE in _correct_fuzzy_kv_rope_contiguous. The target
+        # position is provided separately to model_runner as exact_matched_len.
+        cached_start_pos = int(_first(head.donor_positions, 0))
 
         return FuzzyMatchResult(
             cached_token_count=total_covered,
@@ -414,7 +406,7 @@ class SemBlendProviderAdapter:
             position_offset=already_matched_len,
             cached_start_pos=cached_start_pos,
             _match_entry=donor_id,
-            segments=out_segments,
+            segments=None,
             layer_recompute_mask=layer_mask,
             quality_signals=quality,
             donor_last_node_id=handle.last_node_id,
