@@ -294,7 +294,12 @@ class SemBlendProviderAdapter:
             self._stats.match_misses += 1
             return None
 
-        logger.debug(
+        # INFO-level visibility on every quality decision the adapter
+        # makes — kept at INFO so production telemetry can monitor the
+        # cosine / reuse_ratio distribution of attempted hits without
+        # enabling DEBUG logging globally. Volume scales with number of
+        # fuzzy match attempts (after exact prefix), which is bounded.
+        logger.info(
             "[FUZZY] adapter.match: result donor_id=%s similarity=%.3f "
             "reuse_ratio=%.3f donor_kv_size=%d",
             getattr(result, "donor_id", None),
@@ -312,7 +317,7 @@ class SemBlendProviderAdapter:
         # reuse_ratio alone would let chunk-aligned matches with
         # high token-overlap but low semantic affinity slip through.
         if result.similarity < self._config.min_similarity:
-            logger.debug(
+            logger.info(
                 "[FUZZY] adapter.match: similarity=%.3f < gate=%.3f, miss",
                 float(result.similarity),
                 float(self._config.min_similarity),
