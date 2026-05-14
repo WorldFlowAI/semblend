@@ -439,22 +439,38 @@ class SemBlendProviderAdapter:
 
         segments = self._build_segments(pipeline_result, handle, layer_mask)
 
-        # SGLang's prefix cache requires device_indices to be a contiguous
-        # prefix [0..exact+N-1]. Multi-segment / mid-prompt alignments do not
-        # fit that shape: returning them silently degrades to a no-op KV
-        # reuse (donor KV gets overwritten during prefill because the
-        # scheduler does not know to skip those positions). Trim to the
-        # prefix-anchored head segment only and discard the rest. Internal
-        # invariants of _build_segments guarantee each segment is +1
-        # contiguous on both donor and target sides, so the head segment is
-        # safe to express as a single contiguous span.
+        # SGLang's prefix-cache device_indices contract treats the cached
+        # span as a contiguous prefix [0..exact+N-1]. To surface a semantic
+        # match whose target_positions sit at a non-prefix offset, we pick
+        # the longest contiguous run from the aligner output and re-anchor
+        # it at already_matched_len. The donor positions are carried
+        # through as cached_start_pos so radix_cache's RoPE-correction
+        # realization path (`needs_realization = cached_start_pos !=
+        # exact_matched_len`) fires: realized_locs get pre-allocated and
+        # donor KV is copied into fresh slots with positional encoding
+        # shifted from donor positions to recipient positions.
+        #
+        # This is a deliberate trade-off vs. the rolled-back non-prefix-
+        # anchored path. The donor's K/V values were computed in the
+        # donor's preceding-token context. When we re-anchor them to the
+        # recipient's prefix, the recipient's actual tokens at those
+        # positions may differ from the donor's matched tokens, so
+        # attention sees the donor's K/V instead of the recipient's true
+        # K/V at those positions. The bathtub layer_recompute_mask is
+        # designed to recompute layers where the deviation is largest;
+        # see SEMANTIC_FUZZY_MATCH.md for the quality bound.
         if segments:
-            head = segments[0]
-            head_targets = _as_list(head.target_positions)
-            if not head_targets or head_targets[0] != already_matched_len:
+            best = max(
+                segments,
+                key=lambda s: len(_as_list(s.target_positions)),
+            )
+            best_targets = _as_list(best.target_positions)
+            if not best_targets:
                 self._stats.match_hits_dropped_no_prefix_run += 1
                 return None
-            segments = [head]
+            segments = [best]
+        else:
+            best = None
 
         if segments:
             total_covered = len(_as_list(segments[0].target_positions))
@@ -468,11 +484,10 @@ class SemBlendProviderAdapter:
             passed_quality_gate=True,
         )
 
-        # After the trim above, segments always contains 0 or 1 entries.
-        # When it has one, collapse to the legacy contiguous path so the
-        # model executor's _correct_fuzzy_kv_rope_contiguous runs (which
-        # actually saves compute) instead of _correct_fuzzy_kv_rope_segments
-        # (which today is overwritten by prefill).
+        # Collapse to the legacy contiguous path. cached_start_pos carries
+        # the donor's source position so model_runner's
+        # _correct_fuzzy_kv_rope_contiguous can RoPE-reverse from there
+        # and re-apply at the recipient's already_matched_len boundary.
         if segments:
             head = segments[0]
             kv_cache_indices = head.donor_kv_indices

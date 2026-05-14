@@ -16,3 +16,7 @@ venv/
 
 # Agent prompt files
 CLAUDE.md
+
+# Internal notes / drafts (not for public repo)
+docs/notes/
+docs/planning/
