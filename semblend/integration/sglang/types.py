@@ -73,41 +73,6 @@ class FuzzyMatchSegment:
 
 
 @dataclass
-class FuzzyMatchBlock:
-    """One contiguous span of donor KV reuse for a non-prefix-anchored
-    fuzzy match.
-
-    When the longest contiguous monotonic run in the donor / target
-    alignment starts at an absolute prompt position other than the
-    end of the exact prefix, the engine cannot express the reuse as a
-    single contiguous prefix span. ``FuzzyMatchBlock`` describes the
-    span itself; the engine handles the surrounding tokens with a
-    two-pass extend (cold prefill of the lead-in tokens before the
-    block, RoPE-corrected memcpy of the donor KV into fresh recipient
-    slots at the block's positions, then cold prefill of the trailing
-    tokens that produce the sampling logits).
-
-    Attributes:
-        target_start_in_prompt: Absolute position in the recipient's
-            full prompt (chat template + exact prefix + ...) where the
-            reused block begins.
-        length: Number of tokens covered by the block.
-        donor_start: Absolute position in the donor's prompt where the
-            corresponding KV was originally computed. Used as the
-            source position for reverse-RoPE so each token's KV can
-            be relocated to its new logical position in the recipient.
-        donor_kv_indices: KV-pool slot indices, one per block position,
-            referring to the donor's stored K,V at
-            ``[donor_start .. donor_start + length - 1]``.
-    """
-
-    target_start_in_prompt: int
-    length: int
-    donor_start: int
-    donor_kv_indices: Any  # torch.Tensor / list
-
-
-@dataclass
 class FuzzyMatchResult:
     """Semantic-provider match result.
 
@@ -140,12 +105,3 @@ class FuzzyMatchResult:
     # Populated by SemBlendProviderAdapter.match() from the donor's
     # _DonorKVHandle.last_node_id (set in on_donor_inserted).
     donor_last_node_id: Optional[int] = None
-    # Extension to Chenxin's |exact|fuzzy|miss| decomposition for semantic
-    # providers whose match isn't prefix-anchored: the cached region sits
-    # at a target prompt position other than ``exact_matched_len``. When
-    # set, SGLang's model_runner runs a two-pass forward_extend that cold-
-    # prefills the lead-in tokens before the block, places the donor KV
-    # at the block's positions via reverse+apply RoPE, then cold-prefills
-    # the trailing tokens. Mutually exclusive with ``segments``: providers
-    # surfacing a ``match_block`` set ``segments=None``.
-    match_block: Optional["FuzzyMatchBlock"] = None

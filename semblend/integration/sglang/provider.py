@@ -33,7 +33,6 @@ import numpy as np
 
 from semblend.integration.sglang.config import SemBlendProviderConfig
 from semblend.integration.sglang.types import (
-    FuzzyMatchBlock,
     FuzzyMatchResult,
     FuzzyMatchSegment,
     QualitySignals,
@@ -97,17 +96,8 @@ class SemBlendProviderAdapter:
         # over the bound we evict the least-recently-used entry. On match
         # we mark the hit donor as recently used. This keeps the adapter's
         # handle dict in lockstep with the pipeline's donor_store (both
-        # use the same max_entries bound and LRU policy); it also bounds
-        # the substring-index cache, which is keyed by the same donor_id.
+        # use the same max_entries bound and LRU policy).
         self._donor_kv: OrderedDict[str, _DonorKVHandle] = OrderedDict()
-
-        # Per-donor n-gram substring index cache. Built on first match
-        # against a given donor and reused on subsequent matches. Dropped
-        # in lockstep with _donor_kv eviction. Each cache entry stores
-        # the anchor size it was built with, so a different anchor request
-        # (rare; happens only for short remaining suffixes) triggers a
-        # rebuild for that one call without invalidating the cache.
-        self._donor_substring_cache: dict[str, dict] = {}
 
         self._stats = _Stats()
 
@@ -195,8 +185,7 @@ class SemBlendProviderAdapter:
             return False
 
         # Evict LRU entries before inserting to keep _donor_kv bounded by
-        # config.max_entries. Drops the matching substring-index cache so
-        # the two stay in sync.
+        # config.max_entries.
         self._evict_lru_if_over_bound(reserve=1)
 
         # Record the KV handle so match results can reference it.
@@ -219,13 +208,11 @@ class SemBlendProviderAdapter:
         """Evict LRU donor handles until ``len(_donor_kv) + reserve <= max_entries``.
 
         Called on every register_donor with reserve=1 (we're about to add
-        one). Drops the matching substring-index cache so the two stay in
-        sync. No-op when under the bound.
+        one). No-op when under the bound.
         """
         max_entries = max(int(self._config.max_entries), 1)
         while len(self._donor_kv) + reserve > max_entries and self._donor_kv:
-            oldest_id, _ = self._donor_kv.popitem(last=False)
-            self._donor_substring_cache.pop(oldest_id, None)
+            self._donor_kv.popitem(last=False)
             self._stats.donor_kv_evicted += 1
 
     def on_donor_inserted(
@@ -452,109 +439,28 @@ class SemBlendProviderAdapter:
 
         segments = self._build_segments(pipeline_result, handle, layer_mask)
 
-        # Locate the longest contiguous (donor_pos +1, target_pos +1)
-        # run that can be expressed as a single ``match_block``. SGLang's
-        # model_runner handles the surrounding tokens with a two-pass
-        # forward_extend: the lead-in tokens before the block are
-        # cold-prefilled, the donor KV is placed at the block's positions
-        # via reverse+apply RoPE, and the trailing tokens are cold-
-        # prefilled. This extends Chenxin's |exact|fuzzy|miss|
-        # decomposition to the case where the cached region sits at a
-        # non-prefix target position.
-        #
-        # Two discovery paths feed ``_pick_match_block``:
-        #
-        #   * **Segments path**: groups ``pipeline_result.position_map``
-        #     into runs that advance by +1 on both sides. Best when the
-        #     multi-donor aligner produced an EXACT (hash-matched) chunk:
-        #     the chunk's tokens are already monotonic. For FUZZY (token-
-        #     greedy) chunks the run can fragment, so we also try ...
-        #
-        #   * **Direct substring path**: an n-gram-indexed sliding-window
-        #     scan over the raw donor and target token sequences. Robust
-        #     to chunk-boundary misalignment between donor and target
-        #     (the paraphrase / cross-instruction workload).
-        #
-        # We keep the longer of the two candidates, then translate from
-        # slice-frame coords to absolute prompt positions for the
-        # ``match_block`` payload.
-        prompt_len_total = already_matched_len + len(remaining)
+        # SGLang's prefix cache requires device_indices to be a contiguous
+        # prefix [0..exact+N-1]. Multi-segment / mid-prompt alignments do not
+        # fit that shape: returning them silently degrades to a no-op KV
+        # reuse (donor KV gets overwritten during prefill because the
+        # scheduler does not know to skip those positions). Trim to the
+        # prefix-anchored head segment only and discard the rest. Internal
+        # invariants of _build_segments guarantee each segment is +1
+        # contiguous on both donor and target sides, so the head segment is
+        # safe to express as a single contiguous span.
+        if segments:
+            head = segments[0]
+            head_targets = _as_list(head.target_positions)
+            if not head_targets or head_targets[0] != already_matched_len:
+                self._stats.match_hits_dropped_no_prefix_run += 1
+                return None
+            segments = [head]
 
-        block_from_segments = self._pick_match_block(
-            segments=segments,
-            already_matched_len=already_matched_len,
-            prompt_len_total=prompt_len_total,
-        )
+        if segments:
+            total_covered = len(_as_list(segments[0].target_positions))
+        else:
+            total_covered = 0
 
-        # Substring path: scan against EVERY donor that the pipeline named
-        # in this composite result, not just the primary. For multi-donor
-        # composites (donors_per_composite > 1), a secondary donor may
-        # carry a longer contiguous run than the primary. The chosen block
-        # references that donor's handle / KV indices; the resulting
-        # match_block points at exactly one donor, but we picked the best
-        # one rather than blindly using donor_ids[0].
-        block_from_substring, substring_donor_id = self._scan_substring_across_donors(
-            primary_donor_id=donor_id,
-            primary_donor_tokens=list(
-                getattr(pipeline_result, "donor_tokens", []) or []
-            ),
-            primary_handle=handle,
-            composite_donor_ids=list(
-                getattr(pipeline_result, "donor_ids", ()) or ()
-            ),
-            remaining=remaining,
-            already_matched_len=already_matched_len,
-            prompt_len_total=prompt_len_total,
-        )
-
-        match_block = _better_block(block_from_segments, block_from_substring)
-
-        # If the substring scan won AND it picked a non-primary donor, we
-        # need to point the rest of the result (donor_id, donor_last_node_id)
-        # at that donor instead. Otherwise SGLang's RadixCache would lock
-        # the wrong donor's TreeNode and we'd reference slots that were
-        # never lock_ref'd.
-        if (
-            match_block is block_from_substring
-            and substring_donor_id is not None
-            and substring_donor_id != donor_id
-        ):
-            replacement_handle = self._donor_kv.get(substring_donor_id)
-            if replacement_handle is not None:
-                self._donor_kv.move_to_end(substring_donor_id)
-                donor_id = substring_donor_id
-                handle = replacement_handle
-
-        if match_block is None:
-            logger.debug(
-                "[FUZZY] match_block discovery returned no block: "
-                "segments=%d, donor_tokens=%d, remaining=%d, "
-                "already_matched_len=%d, prompt_len_total=%d",
-                len(segments),
-                len(getattr(pipeline_result, "donor_tokens", []) or []),
-                len(remaining),
-                already_matched_len,
-                prompt_len_total,
-            )
-            self._stats.match_hits_dropped_no_prefix_run += 1
-            return None
-
-        # Kept at INFO so production telemetry has visibility into actual
-        # KV reuse without enabling DEBUG for the entire adapter.
-        logger.info(
-            "[FUZZY] match_block picked: length=%d, target_start_in_prompt=%d, "
-            "donor_start=%d, donor_id=%s, segments_block=%s, substring_block=%s",
-            match_block.length,
-            match_block.target_start_in_prompt,
-            match_block.donor_start,
-            donor_id,
-            (block_from_segments.length if block_from_segments else None),
-            (block_from_substring.length if block_from_substring else None),
-        )
-
-        total_covered = match_block.length
-
-        # Quality signals
         quality = QualitySignals(
             cosine_similarity=float(pipeline_result.similarity),
             reuse_ratio=float(pipeline_result.reuse_ratio),
@@ -562,322 +468,37 @@ class SemBlendProviderAdapter:
             passed_quality_gate=True,
         )
 
-        # FuzzyMatchResult contract notes for the match_block path:
-        # - ``kv_cache_indices`` mirrors the block's donor slots; SGLang's
-        #   radix_cache does NOT splice this into device_indices for this
-        #   path (the block isn't prefix-anchored), so the length is not
-        #   required to match a "claimed contiguous prefix". It is surfaced
-        #   for telemetry and back-compatibility with legacy consumers.
-        # - ``cached_start_pos`` is the donor's absolute position (used as
-        #   a secondary check by model_runner; the match_block carries the
-        #   authoritative ``donor_start``).
-        # - ``segments=None``: the match_block path and the legacy
-        #   segments path are mutually exclusive; model_runner gates on
-        #   match_block first.
+        # After the trim above, segments always contains 0 or 1 entries.
+        # When it has one, collapse to the legacy contiguous path so the
+        # model executor's _correct_fuzzy_kv_rope_contiguous runs (which
+        # actually saves compute) instead of _correct_fuzzy_kv_rope_segments
+        # (which today is overwritten by prefill).
+        if segments:
+            head = segments[0]
+            kv_cache_indices = head.donor_kv_indices
+            cached_start_pos = int(_first(head.donor_positions, 0))
+            out_segments = None
+        else:
+            if handle.start_pos != already_matched_len:
+                self._stats.match_hits_dropped_no_prefix_run += 1
+                return None
+            kv_cache_indices = handle.kv_indices
+            cached_start_pos = handle.start_pos
+            out_segments = None
+            total_covered = min(len(pipeline_result.donor_tokens), len(remaining))
+
         return FuzzyMatchResult(
             cached_token_count=total_covered,
             cached_token_ids=list(pipeline_result.donor_tokens[:total_covered]),
             prompt_token_count=total_covered,
-            kv_cache_indices=match_block.donor_kv_indices,
+            kv_cache_indices=kv_cache_indices,
             position_offset=already_matched_len,
-            cached_start_pos=match_block.donor_start,
+            cached_start_pos=cached_start_pos,
             _match_entry=donor_id,
-            segments=None,
+            segments=out_segments,
             layer_recompute_mask=layer_mask,
             quality_signals=quality,
             donor_last_node_id=handle.last_node_id,
-            match_block=match_block,
-        )
-
-    def _pick_match_block(
-        self,
-        segments: List[FuzzyMatchSegment],
-        already_matched_len: int,
-        prompt_len_total: int,
-    ) -> Optional[FuzzyMatchBlock]:
-        """Pick the longest contiguous segment that satisfies the
-        two-pass forward_extend's geometric constraints.
-
-        Constraints:
-          1. ``length >= MIN_BLOCK_LENGTH`` (4 tokens). Below this the
-             two-pass orchestration overhead dominates the savings.
-          2. ``target_start_in_prompt + length <= prompt_len_total - 1``.
-             The trailing extend needs at least one token so the model
-             produces sampling logits for the request's last position.
-             If a segment would otherwise span the last prompt position,
-             it is shrunk by one.
-          3. ``target_start_in_prompt >= already_matched_len``. Sanity
-             check; segments built from ``position_map`` always have
-             slice-frame positions >= 0, so the absolute position is
-             >= ``already_matched_len``.
-
-        Returns ``None`` when no segment qualifies.
-        """
-        MIN_BLOCK_LENGTH = self._config.match_block_min_length
-        best: Optional[FuzzyMatchBlock] = None
-        for seg in segments:
-            targets = _as_list(seg.target_positions)
-            donors = _as_list(seg.donor_positions)
-            if not targets or not donors or len(targets) != len(donors):
-                continue
-
-            # ``target_positions`` are 0-based within ``remaining``;
-            # translate to absolute prompt positions.
-            target_start_abs = already_matched_len + int(targets[0])
-            length = len(targets)
-
-            # Constraint 2: leave >=1 trailing-extend token for sampling.
-            max_block_end = prompt_len_total - 2  # inclusive last block pos
-            if target_start_abs > max_block_end:
-                continue
-            length = min(length, max_block_end - target_start_abs + 1)
-
-            # Constraint 1: minimum useful block length.
-            if length < MIN_BLOCK_LENGTH:
-                continue
-
-            # Constraint 3: sanity.
-            if target_start_abs < already_matched_len:
-                continue
-
-            donor_start_abs = int(donors[0])
-
-            # Slice donor_kv_indices to match the (possibly trimmed) length.
-            donor_kv_indices_full = seg.donor_kv_indices
-            if donor_kv_indices_full is None:
-                continue
-            donor_kv_indices = _slice_indices(
-                donor_kv_indices_full, offset=0, length=length
-            )
-
-            candidate = FuzzyMatchBlock(
-                target_start_in_prompt=target_start_abs,
-                length=length,
-                donor_start=donor_start_abs,
-                donor_kv_indices=donor_kv_indices,
-            )
-            if best is None or candidate.length > best.length:
-                best = candidate
-
-        return best
-
-    def _scan_substring_across_donors(
-        self,
-        primary_donor_id: str,
-        primary_donor_tokens: List[int],
-        primary_handle: _DonorKVHandle,
-        composite_donor_ids: List[str],
-        remaining: List[int],
-        already_matched_len: int,
-        prompt_len_total: int,
-    ) -> tuple[Optional[FuzzyMatchBlock], Optional[str]]:
-        """Run the substring scan against every donor in this composite.
-
-        Returns (best_block, donor_id_for_best_block).
-
-        The primary donor is checked first using the tokens the pipeline
-        already returned (avoids a redundant donor_store lookup). For
-        each secondary donor, we resolve tokens via the pipeline's
-        donor_store. Donors whose adapter handle is missing (evicted) are
-        skipped.
-        """
-        donor_ids_seen: set[str] = set()
-        best_block: Optional[FuzzyMatchBlock] = None
-        best_donor_id: Optional[str] = None
-
-        def try_donor(donor_id: str, tokens: List[int], h: _DonorKVHandle) -> None:
-            nonlocal best_block, best_donor_id
-            block = self._pick_match_block_substring(
-                donor_id=donor_id,
-                remaining=remaining,
-                donor_tokens=tokens,
-                handle=h,
-                already_matched_len=already_matched_len,
-                prompt_len_total=prompt_len_total,
-            )
-            if block is None:
-                return
-            if best_block is None or block.length > best_block.length:
-                best_block = block
-                best_donor_id = donor_id
-
-        if primary_donor_id and primary_donor_tokens:
-            try_donor(primary_donor_id, primary_donor_tokens, primary_handle)
-            donor_ids_seen.add(primary_donor_id)
-
-        for did in composite_donor_ids:
-            if did in donor_ids_seen or not did:
-                continue
-            donor_ids_seen.add(did)
-            h = self._donor_kv.get(did)
-            if h is None:
-                continue
-            tokens = self._fetch_donor_tokens(did)
-            if not tokens:
-                continue
-            try_donor(did, tokens, h)
-
-        return best_block, best_donor_id
-
-    def _fetch_donor_tokens(self, donor_id: str) -> List[int]:
-        """Resolve a donor's token sequence via the pipeline's donor_store.
-
-        Used by the multi-donor substring scan for secondary donors whose
-        tokens aren't already in pipeline_result.donor_tokens.
-        """
-        try:
-            tokens = self._pipeline._donor_store.get_donor_tokens(donor_id)  # noqa: SLF001
-        except Exception:
-            return []
-        return list(tokens) if tokens is not None else []
-
-    def _get_or_build_donor_substring_index(
-        self,
-        donor_id: str,
-        donor_tokens: List[int],
-        anchor: int,
-    ) -> dict[tuple, list[int]]:
-        """Return the n-gram index for a donor, building it on first use.
-
-        Cached in ``self._donor_substring_cache[donor_id]``; eviction
-        from ``_donor_kv`` drops the cache entry in lockstep. Each cache
-        entry records the anchor it was built with. The common case
-        (anchor == match_block_max_anchor, default 8) hits the cache on
-        every match against this donor. Rare adaptive-anchor calls (short
-        remaining suffixes) miss the cache and build a fresh index without
-        evicting the cached one; their cost is bounded by the small donor
-        length that triggered the adaptive path.
-        """
-        cached = self._donor_substring_cache.get(donor_id)
-        if cached is not None and cached.get("anchor") == anchor:
-            return cached["index"]
-        index: dict[tuple, list[int]] = {}
-        donor_n = len(donor_tokens)
-        for j in range(donor_n - anchor + 1):
-            key = tuple(donor_tokens[j : j + anchor])
-            index.setdefault(key, []).append(j)
-        # Only cache the canonical (max) anchor. Adaptive-anchor calls
-        # build but don't cache, preserving the canonical entry for the
-        # common case.
-        if anchor == int(self._config.match_block_max_anchor):
-            self._donor_substring_cache[donor_id] = {
-                "anchor": anchor,
-                "index": index,
-            }
-        return index
-
-    def _pick_match_block_substring(
-        self,
-        donor_id: str,
-        remaining: List[int],
-        donor_tokens: List[int],
-        handle: _DonorKVHandle,
-        already_matched_len: int,
-        prompt_len_total: int,
-    ) -> Optional[FuzzyMatchBlock]:
-        """Find the longest contiguous token-identical run between
-        ``remaining`` (target suffix) and the donor's stored tokens.
-
-        Uses an n-gram hash index over the donor for O(N+M) lookup, then
-        extends each anchor hit forward until the first mismatch. This
-        catches the paraphrase / cross-instruction workload where the
-        chunk-aligned position_map fragments because donor and target
-        chunk boundaries don't line up, but the underlying token streams
-        share a long contiguous body.
-
-        Reference frames:
-          * ``remaining`` is 0-based within the unmatched suffix (slice
-            of ``prompt_token_ids[already_matched_len:]``).
-          * ``donor_tokens`` is 0-based within the donor's stored slice
-            (``cache_start_pos:cache_end_pos`` at register-donor time).
-            ``handle.kv_indices`` is indexed in the same frame, so
-            slicing by ``donor_start:donor_start+length`` produces the
-            correct KV slots.
-
-        Constraints (match ``_pick_match_block``):
-          * ``length >= MIN_BLOCK_LENGTH`` (4 tokens).
-          * ``target_start_in_prompt + length <= prompt_len_total - 1``:
-            leave at least one trailing token so the model produces
-            sampling logits for the request's last position.
-        """
-        MIN_BLOCK_LENGTH = self._config.match_block_min_length
-        target_n = len(remaining)
-        donor_n = len(donor_tokens)
-        # Adapt the n-gram anchor size to the shorter of the two sequences.
-        # An anchor smaller than MIN_BLOCK_LENGTH can never produce a
-        # qualifying block, so we bail. The configured cap reflects the
-        # tradeoff: larger anchors give more distinctive n-grams (fewer
-        # index collisions) but cannot find matches shorter than the
-        # anchor itself.
-        MAX_ANCHOR = self._config.match_block_max_anchor
-        anchor = min(MAX_ANCHOR, target_n, donor_n)
-        if anchor < MIN_BLOCK_LENGTH:
-            return None
-
-        donor_index = self._get_or_build_donor_substring_index(
-            donor_id=donor_id,
-            donor_tokens=donor_tokens,
-            anchor=anchor,
-        )
-
-        best_target = -1
-        best_donor = -1
-        best_length = 0
-
-        # Caps the per-anchor inner loop in the pathological case where the
-        # same n-gram repeats many times in the donor (heavily templated /
-        # structured data). For natural-language workloads the cap is never
-        # reached. The candidates list is in donor-position order, so the
-        # first candidates are the earliest positions, a reasonable
-        # heuristic for finding the longest match.
-        MAX_CANDIDATES_PER_ANCHOR = self._config.match_block_max_candidates_per_anchor
-
-        # Advance one token at a time. Skipping by ``best_here`` would
-        # miss a longer match anchored a few positions later (e.g., a
-        # diverging single token followed by a long shared continuation).
-        # The inner loop is O(1) amortized for natural text since
-        # collisions are rare and extensions terminate quickly on
-        # mismatch.
-        i = 0
-        while i <= target_n - anchor:
-            key = tuple(remaining[i : i + anchor])
-            candidates = donor_index.get(key)
-            if candidates is None:
-                i += 1
-                continue
-            for j in candidates[:MAX_CANDIDATES_PER_ANCHOR]:
-                length = anchor
-                max_extend = min(target_n - i, donor_n - j)
-                while length < max_extend and remaining[i + length] == donor_tokens[j + length]:
-                    length += 1
-                if length > best_length:
-                    best_target = i
-                    best_donor = j
-                    best_length = length
-            i += 1
-
-        if best_length < MIN_BLOCK_LENGTH:
-            return None
-
-        target_start_abs = already_matched_len + best_target
-        max_block_end = prompt_len_total - 2  # inclusive
-        if target_start_abs > max_block_end:
-            return None
-        length = min(best_length, max_block_end - target_start_abs + 1)
-        if length < MIN_BLOCK_LENGTH:
-            return None
-
-        donor_kv_indices = _slice_indices(
-            handle.kv_indices, offset=best_donor, length=length
-        )
-        if donor_kv_indices is None:
-            return None
-
-        return FuzzyMatchBlock(
-            target_start_in_prompt=target_start_abs,
-            length=length,
-            donor_start=best_donor,
-            donor_kv_indices=donor_kv_indices,
         )
 
     def _build_segments(
@@ -991,18 +612,6 @@ class _Stats:
 # ----------------------------------------------------------------------
 # Tensor-agnostic helpers
 # ----------------------------------------------------------------------
-
-
-def _better_block(
-    a: Optional[FuzzyMatchBlock],
-    b: Optional[FuzzyMatchBlock],
-) -> Optional[FuzzyMatchBlock]:
-    """Return whichever block is longer; ``None`` if both are missing."""
-    if a is None:
-        return b
-    if b is None:
-        return a
-    return a if a.length >= b.length else b
 
 
 def _as_list(obj: Any) -> list:

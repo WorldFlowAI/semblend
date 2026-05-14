@@ -48,32 +48,6 @@ class SemBlendProviderConfig:
     quality_gate_ppl_threshold: float = 1.065
 
     # ----------------------------------------------------------------
-    # match_block discovery (substring-based contiguous-run finder)
-    # ----------------------------------------------------------------
-
-    # Minimum token length for a discovered match_block to be surfaced to
-    # SGLang. Blocks shorter than this don't beat the two-pass
-    # forward_extend orchestration overhead and are dropped. Applies to
-    # both the segments-path block and the substring-path block.
-    match_block_min_length: int = 4
-
-    # Maximum n-gram anchor size for the substring-path donor index.
-    # Larger values reduce false positives (each n-gram is more
-    # distinctive) but cannot find matches shorter than the anchor. The
-    # effective anchor is clamped to the shorter of donor / target token
-    # length, so this is an upper bound. 8 is a sensible default for
-    # natural-language text (an 8-token phrase is rarely repeated).
-    match_block_max_anchor: int = 8
-
-    # Cap on candidates examined per n-gram anchor in the substring scan.
-    # Prevents pathological inner-loop blow-up when a single n-gram
-    # appears many times in the donor (heavily templated / repetitive
-    # data). Natural-language workloads never reach this limit; raise it
-    # for highly structured inputs where the true longest-match anchor
-    # may be deep in the candidate list.
-    match_block_max_candidates_per_anchor: int = 256
-
-    # ----------------------------------------------------------------
     # Operating modes
     # ----------------------------------------------------------------
 
