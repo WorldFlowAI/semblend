@@ -24,8 +24,10 @@ Design goals:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
@@ -99,6 +101,16 @@ class SemBlendProviderAdapter:
         # use the same max_entries bound and LRU policy).
         self._donor_kv: OrderedDict[str, _DonorKVHandle] = OrderedDict()
 
+        # Background executor for donor embedding + donor-store insertion.
+        # register_donor stashes the KV handle synchronously (so
+        # on_donor_inserted can find it for lock_ref) and offloads the
+        # embed + store insert here so it doesn't block the scheduler's
+        # request-finished callback. Single worker keeps writes serialized.
+        self._register_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="semblend-register"
+        )
+        self._register_lock = threading.Lock()
+
         self._stats = _Stats()
 
     # ------------------------------------------------------------------
@@ -111,11 +123,17 @@ class SemBlendProviderAdapter:
         from semblend_core.bathtub import RecomputeConfig
         from semblend_core.pipeline import SemBlendPipeline
 
+        # Honor embedding_use_gpu when the caller left embedder_type at the
+        # default "minilm". An explicit non-default embedder_type wins.
+        embedder_type = config.embedder_type
+        if embedder_type == "minilm" and config.embedding_use_gpu:
+            embedder_type = "onnx-gpu"
+
         return SemBlendPipeline(
             max_donors=config.max_entries,
             min_similarity=config.min_similarity,
             min_reuse_ratio=config.min_reuse_ratio,
-            embedder_type=config.embedder_type,
+            embedder_type=embedder_type,
             model_name=config.model_arch,
             chunk_size=config.block_size,
             recompute_config=RecomputeConfig.from_env(),
@@ -160,49 +178,109 @@ class SemBlendProviderAdapter:
             self._stats.register_rejected += 1
             return False
 
-        embedding = self._embed(segment_tokens, prompt_text)
-        if embedding is None:
-            # SemBlend is process-local; without an embedding the donor
-            # cannot be indexed. Treat as miss.
+        # Without prompt_text the embedder cannot produce a vector (we
+        # never synthesize text from tokens here — the SGLang wrapper
+        # owns the tokenizer). Reject synchronously so callers see the
+        # same fast-fail behavior they did before async registration.
+        if not prompt_text:
             self._stats.register_rejected += 1
             return False
 
-        try:
-            from semblend_core.donor_store import DonorNode
-
-            node = DonorNode(
-                request_id=request_id,
-                token_ids=segment_tokens,
-                embedding=embedding,
-                timestamp=time.monotonic(),
-                prompt_text=prompt_text or "",
+        # Stash the KV handle synchronously so on_donor_inserted can find
+        # it and so SGLang's scheduler sees a successful registration
+        # immediately. The expensive embed + donor_store.add_donor are
+        # offloaded to the background executor; donor becomes queryable
+        # for future matches once the embedding lands.
+        with self._register_lock:
+            self._evict_lru_if_over_bound(reserve=1)
+            self._donor_kv[request_id] = _DonorKVHandle(
+                kv_indices=kv_cache,
+                start_pos=cache_start_pos,
+                end_pos=cache_end_pos,
             )
-            # Pipeline exposes the donor store it owns; add via that path.
-            self._pipeline._donor_store.add_donor(node)  # noqa: SLF001 — intentional
-        except Exception as e:  # pragma: no cover — pipeline errors shouldn't block
-            logger.warning("register_donor failed: %s", e, exc_info=True)
-            self._stats.register_rejected += 1
-            return False
 
-        # Evict LRU entries before inserting to keep _donor_kv bounded by
-        # config.max_entries.
-        self._evict_lru_if_over_bound(reserve=1)
-
-        # Record the KV handle so match results can reference it.
-        self._donor_kv[request_id] = _DonorKVHandle(
-            kv_indices=kv_cache,
-            start_pos=cache_start_pos,
-            end_pos=cache_end_pos,
+        self._register_executor.submit(
+            self._register_donor_async,
+            request_id,
+            segment_tokens,
+            prompt_text or "",
         )
 
         self._stats.register_ok += 1
-        logger.debug(
-            "[FUZZY] register_donor: ok request_id=%s tokens=%d donor_kv_size=%d",
+        logger.info(
+            "[FUZZY] register_donor: queued request_id=%s tokens=%d donor_kv_size=%d",
             request_id,
             len(segment_tokens),
             len(self._donor_kv),
         )
         return True
+
+    def _register_donor_async(
+        self,
+        request_id: str,
+        segment_tokens: List[int],
+        prompt_text: str,
+    ) -> None:
+        """Run the embed + donor-store insert off the scheduler thread.
+
+        Logs per-stage timing so we can attribute long-context overhead to
+        embed vs store-insert. Errors are swallowed (donor stays
+        un-indexed) because this runs after the request has already
+        returned to the client — raising would only kill the executor.
+        """
+        t_start = time.monotonic()
+        try:
+            t_embed_start = time.monotonic()
+            embedding = self._embed(segment_tokens, prompt_text)
+            t_embed_ms = (time.monotonic() - t_embed_start) * 1000
+            if embedding is None:
+                logger.info(
+                    "[FUZZY] register_donor_async: embed returned None "
+                    "request_id=%s tokens=%d embed=%.1fms",
+                    request_id,
+                    len(segment_tokens),
+                    t_embed_ms,
+                )
+                # Drop the handle we stashed in the sync path; an un-embedded
+                # donor cannot match.
+                with self._register_lock:
+                    self._donor_kv.pop(request_id, None)
+                self._stats.register_rejected += 1
+                return
+
+            from semblend_core.donor_store import DonorNode
+
+            t_store_start = time.monotonic()
+            node = DonorNode(
+                request_id=request_id,
+                token_ids=segment_tokens,
+                embedding=embedding,
+                timestamp=time.monotonic(),
+                prompt_text=prompt_text,
+            )
+            self._pipeline._donor_store.add_donor(node)  # noqa: SLF001
+            t_store_ms = (time.monotonic() - t_store_start) * 1000
+
+            t_total_ms = (time.monotonic() - t_start) * 1000
+            logger.info(
+                "[FUZZY] register_donor_async: ok request_id=%s tokens=%d "
+                "embed=%.1fms store=%.1fms total=%.1fms",
+                request_id,
+                len(segment_tokens),
+                t_embed_ms,
+                t_store_ms,
+                t_total_ms,
+            )
+        except Exception as e:
+            logger.warning(
+                "[FUZZY] register_donor_async failed request_id=%s: %s",
+                request_id,
+                e,
+                exc_info=True,
+            )
+            with self._register_lock:
+                self._donor_kv.pop(request_id, None)
+            self._stats.register_rejected += 1
 
     def _evict_lru_if_over_bound(self, reserve: int = 0) -> None:
         """Evict LRU donor handles until ``len(_donor_kv) + reserve <= max_entries``.

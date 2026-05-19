@@ -166,6 +166,45 @@ class TestRegisterDonor:
         )
         assert ok is False
 
+    def test_register_donor_returns_fast_when_embed_is_slow(
+        self, adapter, pipeline
+    ):
+        # Register_donor must return without waiting for the embedder.
+        # Patch the stub embedder to sleep 200ms, then assert the call
+        # returns in well under that. After flushing the background
+        # executor, the donor should land in the store.
+        import time
+
+        original_embed = pipeline._embedder.embed
+
+        def slow_embed(text):
+            time.sleep(0.2)
+            return original_embed(text)
+
+        pipeline._embedder.embed = slow_embed
+
+        t0 = time.monotonic()
+        ok = adapter.register_donor(
+            request_id="req-slow",
+            token_ids=list(range(16)),
+            kv_cache=list(range(100, 116)),
+            cache_start_pos=0,
+            cache_end_pos=16,
+            prompt_text="hello world",
+        )
+        elapsed_ms = (time.monotonic() - t0) * 1000
+
+        assert ok is True
+        assert elapsed_ms < 50, (
+            f"register_donor took {elapsed_ms:.0f}ms — embed must not block"
+        )
+
+        # Flush the executor by shutting it down with wait=True. Donor
+        # should now be in the store.
+        adapter._register_executor.shutdown(wait=True)
+        assert len(pipeline._donor_store.donors) == 1
+        assert pipeline._donor_store.donors[0].request_id == "req-slow"
+
 
 # ---------------------------------------------------------------------
 # match — miss paths
