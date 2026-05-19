@@ -42,6 +42,11 @@ embedder = [
     "sentence-transformers>=3.0",
     "onnxruntime>=1.15",
 ]
+onnx-gpu = [
+    "sentence-transformers>=3.0",
+    "onnxruntime-gpu>=1.15",
+    "onnxscript>=0.1",
+]
 gpu = [
     "torch>=2.0",
     "triton>=2.0",
