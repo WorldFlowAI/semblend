@@ -110,6 +110,7 @@ class SemBlendProviderAdapter:
             max_workers=1, thread_name_prefix="semblend-register"
         )
         self._register_lock = threading.Lock()
+        self._generation = 0
 
         self._stats = _Stats()
 
@@ -198,12 +199,14 @@ class SemBlendProviderAdapter:
                 start_pos=cache_start_pos,
                 end_pos=cache_end_pos,
             )
+            generation = self._generation
 
         self._register_executor.submit(
             self._register_donor_async,
             request_id,
             segment_tokens,
             prompt_text or "",
+            generation,
         )
 
         self._stats.register_ok += 1
@@ -220,6 +223,7 @@ class SemBlendProviderAdapter:
         request_id: str,
         segment_tokens: List[int],
         prompt_text: str,
+        generation: int,
     ) -> None:
         """Run the embed + donor-store insert off the scheduler thread.
 
@@ -244,13 +248,13 @@ class SemBlendProviderAdapter:
                 # Drop the handle we stashed in the sync path; an un-embedded
                 # donor cannot match.
                 with self._register_lock:
-                    self._donor_kv.pop(request_id, None)
+                    if generation == self._generation:
+                        self._donor_kv.pop(request_id, None)
                 self._stats.register_rejected += 1
                 return
 
             from semblend_core.donor_store import DonorNode
 
-            t_store_start = time.monotonic()
             node = DonorNode(
                 request_id=request_id,
                 token_ids=segment_tokens,
@@ -258,7 +262,18 @@ class SemBlendProviderAdapter:
                 timestamp=time.monotonic(),
                 prompt_text=prompt_text,
             )
-            self._pipeline._donor_store.add_donor(node)  # noqa: SLF001
+            t_store_start = time.monotonic()
+            with self._register_lock:
+                if generation != self._generation:
+                    logger.info(
+                        "[FUZZY] register_donor_async: stale generation "
+                        "request_id=%s generation=%d current=%d",
+                        request_id,
+                        generation,
+                        self._generation,
+                    )
+                    return
+                self._pipeline._donor_store.add_donor(node)  # noqa: SLF001
             t_store_ms = (time.monotonic() - t_store_start) * 1000
 
             t_total_ms = (time.monotonic() - t_start) * 1000
@@ -279,7 +294,8 @@ class SemBlendProviderAdapter:
                 exc_info=True,
             )
             with self._register_lock:
-                self._donor_kv.pop(request_id, None)
+                if generation == self._generation:
+                    self._donor_kv.pop(request_id, None)
             self._stats.register_rejected += 1
 
     def _evict_lru_if_over_bound(self, reserve: int = 0) -> None:
@@ -314,6 +330,32 @@ class SemBlendProviderAdapter:
             return
         # Dataclass with default field — assign directly.
         handle.last_node_id = donor_last_node_id
+
+    def clear(self) -> None:
+        """Clear provider donor state after the owning cache is reset.
+
+        SGLang's ``/flush_cache`` invalidates radix-tree nodes and KV slots.
+        Any SemBlend donor handle that survives that reset can point at stale
+        storage. This method clears both adapter-side KV handles and the
+        pipeline donor store, and uses a generation counter so an async donor
+        registration already in flight cannot reinsert a stale donor after the
+        clear.
+        """
+        old_executor = self._register_executor
+        with self._register_lock:
+            self._generation += 1
+            self._donor_kv.clear()
+            self._pipeline = self._build_pipeline(self._config)
+
+        try:
+            old_executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            old_executor.shutdown(wait=False)
+        self._register_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="semblend-register"
+        )
+        self._stats.cache_resets += 1
+        logger.info("[FUZZY] SemBlendProviderAdapter cleared donor state")
 
     def match(
         self,
@@ -511,8 +553,7 @@ class SemBlendProviderAdapter:
         layer_mask = None
         if self._config.enable_bathtub and pipeline_result.layer_deviations:
             layer_mask = [
-                bool(d.get("shouldRecompute", False))
-                for d in pipeline_result.layer_deviations
+                bool(d.get("shouldRecompute", False)) for d in pipeline_result.layer_deviations
             ]
 
         segments = self._build_segments(pipeline_result, handle, layer_mask)
@@ -680,6 +721,7 @@ class _Stats:
     match_rejected_low_reuse: int = 0
     match_rejected_no_kv: int = 0
     donor_kv_evicted: int = 0
+    cache_resets: int = 0
     # Match was found by the alignment pipeline but its head segment did not
     # anchor at the recipient's exact-prefix length, so SGLang's prefix-cache
     # cannot express it as device_indices. The match is dropped rather than
@@ -699,6 +741,7 @@ class _Stats:
             "match_rejected_no_kv": self.match_rejected_no_kv,
             "match_hits_dropped_no_prefix_run": self.match_hits_dropped_no_prefix_run,
             "donor_kv_evicted": self.donor_kv_evicted,
+            "cache_resets": self.cache_resets,
         }
 
 

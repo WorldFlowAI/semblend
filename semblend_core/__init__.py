@@ -24,6 +24,7 @@ from semblend_core.alignment import (
     compute_alignment,
     compute_batch_alignment,
     compute_chunk_alignment,
+    compute_exact_run_alignment,
     estimate_reuse_ratio,
 )
 from semblend_core.backend import SemBlendBackend
@@ -116,6 +117,7 @@ __all__ = [
     "compute_alignment",
     "compute_batch_alignment",
     "compute_chunk_alignment",
+    "compute_exact_run_alignment",
     "estimate_reuse_ratio",
     # Donor store
     "DonorMatch",

@@ -30,7 +30,7 @@ Environment variables:
 
 from __future__ import annotations
 
-__version__ = "0.3.9"
+__version__ = "0.3.10"
 
 # Re-export core public API from semblend_core
 from semblend_core.alignment import (
@@ -40,6 +40,7 @@ from semblend_core.alignment import (
     compute_alignment,
     compute_batch_alignment,
     compute_chunk_alignment,
+    compute_exact_run_alignment,
     estimate_reuse_ratio,
 )
 from semblend_core.backend import SemBlendBackend
@@ -94,6 +95,7 @@ __all__ = [
     "compute_alignment",
     "compute_batch_alignment",
     "compute_chunk_alignment",
+    "compute_exact_run_alignment",
     "estimate_reuse_ratio",
     # Donor store
     "DonorMatch",

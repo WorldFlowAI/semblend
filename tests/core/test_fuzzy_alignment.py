@@ -70,6 +70,81 @@ class TestShiftedPrefix:
         assert result.reuse_ratio < 0.90
 
 
+class TestExactRunRecovery:
+    """Offset-shifted exact spans should survive chunk-boundary fragmentation."""
+
+    def test_compute_alignment_recovers_long_shifted_exact_run(self):
+        """A 16K shared suffix should produce one large realizable segment."""
+        from semblend_core.alignment import SlotActionType, compute_alignment
+
+        shared = list(range(10_000, 26_000))
+        donor = [101, 102, 103, 104] + shared
+        target = [201, 202, 203, 204, 205, 206, 207] + shared
+
+        result = compute_alignment(donor, target, chunk_size=16)
+
+        copy_actions = [
+            sa
+            for sa in result.slot_actions
+            if sa.action == SlotActionType.COPY_FROM_DONOR
+        ]
+        assert len(copy_actions) == len(shared)
+        assert result.reuse_ratio > 0.99
+        assert copy_actions[0].donor_pos == 4
+        assert copy_actions[0].target_pos == 7
+        assert copy_actions[-1].donor_pos == len(donor) - 1
+        assert copy_actions[-1].target_pos == len(target) - 1
+
+    def test_exact_run_recovery_emits_multiple_runs_for_future_multisegment(self):
+        """The core alignment can carry disjoint runs before SGLang supports them."""
+        from semblend_core.alignment import SlotActionType, compute_exact_run_alignment
+
+        run_a = list(range(1_000, 1_080))
+        run_b = list(range(2_000, 2_090))
+        donor = [1, 2] + run_a + [3, 4, 5] + run_b + [6]
+        target = [9] + run_a + [10, 11, 12, 13] + run_b + [14]
+
+        result = compute_exact_run_alignment(
+            donor,
+            target,
+            chunk_size=16,
+            min_run_tokens=32,
+            max_segments=4,
+        )
+
+        copied = [
+            sa
+            for sa in result.slot_actions
+            if sa.action == SlotActionType.COPY_FROM_DONOR
+        ]
+        assert len(copied) == len(run_a) + len(run_b)
+
+        run_starts = []
+        previous = None
+        for sa in copied:
+            if (
+                previous is None
+                or sa.target_pos != previous.target_pos + 1
+                or sa.donor_pos != previous.donor_pos + 1
+            ):
+                run_starts.append((sa.donor_pos, sa.target_pos))
+            previous = sa
+
+        assert run_starts == [(2, 1), (85, 85)]
+
+    def test_long_unrelated_sequences_skip_token_set_fallback(self):
+        """Long negatives should reject without scattered token-set reuse."""
+        from semblend_core.alignment import compute_alignment
+
+        donor = list(range(16_000))
+        target = list(range(100_000, 116_000))
+
+        result = compute_alignment(donor, target, chunk_size=16)
+
+        assert result.reuse_ratio == pytest.approx(0.0)
+        assert all(sa.donor_pos is None for sa in result.slot_actions)
+
+
 class TestContextGateExemption:
     """Context gate exemption for high-overlap fuzzy chunks."""
 

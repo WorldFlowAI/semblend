@@ -46,6 +46,21 @@ _CONTEXT_GATE_ENABLED = os.environ.get("SEMBLEND_CONTEXT_GATE", "1") != "0"
 # Enable with SEMBLEND_FUZZY_CHUNKS=1. Default threshold 0.90 (90% overlap).
 _FUZZY_CHUNKS_ENABLED = os.environ.get("SEMBLEND_FUZZY_CHUNKS", "1") == "1"
 _FUZZY_CHUNK_MIN_OVERLAP = float(os.environ.get("SEMBLEND_FUZZY_CHUNK_OVERLAP", "0.90"))
+_FUZZY_CHUNK_MAX_TOKENS = int(os.environ.get("SEMBLEND_FUZZY_CHUNK_MAX_TOKENS", "8192"))
+
+# Exact run recovery: recovers long shifted contiguous spans before chunk
+# boundary-sensitive fuzzy matching can fragment them. This is intentionally
+# segment-oriented: today SGLang collapses to one best segment, but the
+# AlignmentResult can already carry multiple non-overlapping runs.
+_EXACT_RUN_RECOVERY_ENABLED = os.environ.get("SEMBLEND_EXACT_RUN_RECOVERY", "1") != "0"
+_EXACT_RUN_MIN_TOKENS = int(os.environ.get("SEMBLEND_EXACT_RUN_MIN_TOKENS", "64"))
+_EXACT_RUN_MAX_SEGMENTS = int(os.environ.get("SEMBLEND_EXACT_RUN_MAX_SEGMENTS", "8"))
+_EXACT_RUN_EARLY_REUSE_RATIO = float(os.environ.get("SEMBLEND_EXACT_RUN_EARLY_REUSE_RATIO", "0.50"))
+_EXACT_RUN_MAX_HASH_CANDIDATES = int(os.environ.get("SEMBLEND_EXACT_RUN_MAX_HASH_CANDIDATES", "64"))
+_TOKEN_SET_LONG_FALLBACK_ENABLED = os.environ.get("SEMBLEND_TOKEN_SET_LONG_FALLBACK", "0") == "1"
+_MAX_LEVENSHTEIN_TOKENS = 4096
+_ROLLING_HASH_BASE = 1_000_003
+_ROLLING_HASH_MASK = (1 << 64) - 1
 
 
 @dataclass(frozen=True)
@@ -75,6 +90,13 @@ class ChunkConfidence:
     segment_similarity: float
     confidence: float
     tier: str  # "fast_reuse" | "verified_reuse" | "recompute"
+
+
+@dataclass(frozen=True)
+class _ExactRun:
+    donor_start: int
+    target_start: int
+    length: int
 
 
 # Default fuzzy config (auto-populates from env vars)
@@ -787,6 +809,316 @@ def estimate_reuse_ratio(
     return matched_tokens / max(len(target_tokens), 1)
 
 
+def _alignment_copy_stats(result: AlignmentResult) -> tuple[int, int]:
+    """Return (total copied tokens, longest contiguous copied target run)."""
+    copied = [
+        sa
+        for sa in result.slot_actions
+        if sa.action == SlotActionType.COPY_FROM_DONOR and sa.donor_pos is not None
+    ]
+    if not copied:
+        return 0, 0
+
+    copied.sort(key=lambda sa: (sa.target_pos, sa.donor_pos or -1))
+    total = len(copied)
+    longest = 1
+    current = 1
+    prev = copied[0]
+    for sa in copied[1:]:
+        if sa.target_pos == prev.target_pos + 1 and sa.donor_pos == prev.donor_pos + 1:
+            current += 1
+        else:
+            longest = max(longest, current)
+            current = 1
+        prev = sa
+    longest = max(longest, current)
+    return total, longest
+
+
+def _better_alignment(candidate: AlignmentResult, incumbent: AlignmentResult | None) -> bool:
+    """Compare alignments by reusable work, preserving incumbent on ties."""
+    if incumbent is None:
+        return True
+
+    cand_total, cand_longest = _alignment_copy_stats(candidate)
+    inc_total, inc_longest = _alignment_copy_stats(incumbent)
+
+    return (
+        cand_total,
+        cand_longest,
+        candidate.reuse_ratio,
+    ) > (
+        inc_total,
+        inc_longest,
+        incumbent.reuse_ratio,
+    )
+
+
+def _select_best_alignment(candidates: list[AlignmentResult]) -> AlignmentResult | None:
+    """Pick the best non-empty alignment from a candidate list."""
+    best: AlignmentResult | None = None
+    for candidate in candidates:
+        copied, _ = _alignment_copy_stats(candidate)
+        if copied == 0:
+            continue
+        if _better_alignment(candidate, best):
+            best = candidate
+    return best
+
+
+def _empty_alignment(donor_tokens: list[int], target_tokens: list[int]) -> AlignmentResult:
+    slot_actions = [
+        SlotAction(
+            action=SlotActionType.RECOMPUTE,
+            target_pos=target_pos,
+        )
+        for target_pos in range(len(target_tokens))
+    ]
+    return AlignmentResult(
+        reuse_ratio=0.0,
+        slot_actions=slot_actions,
+        edit_distance=len(target_tokens),
+        donor_len=len(donor_tokens),
+        target_len=len(target_tokens),
+    )
+
+
+def _overlaps(start: int, length: int, intervals: list[tuple[int, int]]) -> bool:
+    end = start + length
+    return any(
+        start < interval_end and end > interval_start for interval_start, interval_end in intervals
+    )
+
+
+def _find_exact_runs(
+    donor_tokens: list[int],
+    target_tokens: list[int],
+    *,
+    min_run_tokens: int,
+    max_segments: int,
+) -> list[_ExactRun]:
+    """Find non-overlapping exact contiguous donor/target token runs."""
+    if not donor_tokens or not target_tokens:
+        return []
+    if min_run_tokens <= 0 or max_segments <= 0:
+        return []
+    if len(donor_tokens) < min_run_tokens or len(target_tokens) < min_run_tokens:
+        return []
+
+    donor_index: dict[int, list[int]] = {}
+    for pos, value in enumerate(_rolling_window_hashes(donor_tokens, min_run_tokens)):
+        donor_index.setdefault(value, []).append(pos)
+    if not donor_index:
+        return []
+
+    candidates: list[_ExactRun] = []
+    target_hashes = _rolling_window_hashes(target_tokens, min_run_tokens)
+    target_idx = 0
+    while target_idx < len(target_hashes):
+        starts = donor_index.get(target_hashes[target_idx])
+        if not starts:
+            target_idx += 1
+            continue
+
+        best_at_target: _ExactRun | None = None
+        for donor_start in starts[:_EXACT_RUN_MAX_HASH_CANDIDATES]:
+            if not _window_equal(
+                donor_tokens,
+                donor_start,
+                target_tokens,
+                target_idx,
+                min_run_tokens,
+            ):
+                continue
+            run = _extend_exact_run(
+                donor_tokens,
+                target_tokens,
+                donor_start,
+                target_idx,
+                min_run_tokens,
+            )
+            if best_at_target is None or run.length > best_at_target.length:
+                best_at_target = run
+
+        if best_at_target is None:
+            target_idx += 1
+            continue
+
+        candidates.append(best_at_target)
+        target_idx = max(target_idx + 1, best_at_target.target_start + best_at_target.length)
+
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda run: run.length, reverse=True)
+    selected: list[_ExactRun] = []
+    donor_intervals: list[tuple[int, int]] = []
+    target_intervals: list[tuple[int, int]] = []
+
+    for run in candidates:
+        if _overlaps(run.donor_start, run.length, donor_intervals):
+            continue
+        if _overlaps(run.target_start, run.length, target_intervals):
+            continue
+        selected.append(run)
+        donor_intervals.append((run.donor_start, run.donor_start + run.length))
+        target_intervals.append((run.target_start, run.target_start + run.length))
+        if len(selected) >= max_segments:
+            break
+
+    selected.sort(key=lambda run: run.target_start)
+    return selected
+
+
+def _token_hash(token_id: int) -> int:
+    return (int(token_id) + 0x9E3779B97F4A7C15) & _ROLLING_HASH_MASK
+
+
+def _rolling_window_hashes(tokens: list[int], window: int) -> list[int]:
+    if window <= 0 or len(tokens) < window:
+        return []
+
+    power = 1
+    for _ in range(window - 1):
+        power = (power * _ROLLING_HASH_BASE) & _ROLLING_HASH_MASK
+
+    value = 0
+    for token in tokens[:window]:
+        value = ((value * _ROLLING_HASH_BASE) + _token_hash(token)) & _ROLLING_HASH_MASK
+
+    hashes = [value]
+    for idx in range(window, len(tokens)):
+        old = _token_hash(tokens[idx - window])
+        new = _token_hash(tokens[idx])
+        value = (value - old * power) & _ROLLING_HASH_MASK
+        value = ((value * _ROLLING_HASH_BASE) + new) & _ROLLING_HASH_MASK
+        hashes.append(value)
+
+    return hashes
+
+
+def _window_equal(
+    donor_tokens: list[int],
+    donor_start: int,
+    target_tokens: list[int],
+    target_start: int,
+    length: int,
+) -> bool:
+    return (
+        donor_tokens[donor_start : donor_start + length]
+        == target_tokens[target_start : target_start + length]
+    )
+
+
+def _extend_exact_run(
+    donor_tokens: list[int],
+    target_tokens: list[int],
+    donor_start: int,
+    target_start: int,
+    seed_length: int,
+) -> _ExactRun:
+    left = 0
+    while (
+        donor_start - left - 1 >= 0
+        and target_start - left - 1 >= 0
+        and donor_tokens[donor_start - left - 1] == target_tokens[target_start - left - 1]
+    ):
+        left += 1
+
+    right = seed_length
+    while (
+        donor_start + right < len(donor_tokens)
+        and target_start + right < len(target_tokens)
+        and donor_tokens[donor_start + right] == target_tokens[target_start + right]
+    ):
+        right += 1
+
+    return _ExactRun(
+        donor_start=donor_start - left,
+        target_start=target_start - left,
+        length=left + right,
+    )
+
+
+def compute_exact_run_alignment(
+    donor_tokens: list[int],
+    target_tokens: list[int],
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    min_run_tokens: int | None = None,
+    max_segments: int | None = None,
+) -> AlignmentResult:
+    """Recover long exact shifted runs as segment-friendly slot actions.
+
+    Chunk hashes are brittle when a short instruction/header changes the KV
+    block boundary. This path searches at token-run granularity and emits the
+    same AlignmentResult shape as chunk/fuzzy alignment, with one COPY action
+    per recovered token and RECOMPUTE elsewhere.
+    """
+    min_run = min_run_tokens if min_run_tokens is not None else _EXACT_RUN_MIN_TOKENS
+    max_runs = max_segments if max_segments is not None else _EXACT_RUN_MAX_SEGMENTS
+    min_run = max(1, int(min_run))
+    max_runs = max(0, int(max_runs))
+
+    runs = _find_exact_runs(
+        donor_tokens,
+        target_tokens,
+        min_run_tokens=min_run,
+        max_segments=max_runs,
+    )
+
+    target_len = len(target_tokens)
+    copy_by_target: dict[int, int] = {}
+    for run in runs:
+        for offset in range(run.length):
+            copy_by_target[run.target_start + offset] = run.donor_start + offset
+
+    slot_actions: list[SlotAction] = []
+    for target_pos in range(target_len):
+        donor_pos = copy_by_target.get(target_pos)
+        if donor_pos is None:
+            slot_actions.append(
+                SlotAction(
+                    action=SlotActionType.RECOMPUTE,
+                    target_pos=target_pos,
+                )
+            )
+        else:
+            slot_actions.append(
+                SlotAction(
+                    action=SlotActionType.COPY_FROM_DONOR,
+                    target_pos=target_pos,
+                    donor_pos=donor_pos,
+                )
+            )
+
+    num_reused = len(copy_by_target)
+    reuse_ratio = num_reused / max(target_len, 1)
+    longest = max((run.length for run in runs), default=0)
+    exact_chunks = sum(max(1, run.length // max(chunk_size, 1)) for run in runs)
+
+    if runs:
+        logger.info(
+            "exact_run_alignment: %d segment(s), reused=%d/%d (reuse=%.3f), "
+            "longest=%d, donor_len=%d, target_len=%d",
+            len(runs),
+            num_reused,
+            target_len,
+            reuse_ratio,
+            longest,
+            len(donor_tokens),
+            target_len,
+        )
+
+    return AlignmentResult(
+        reuse_ratio=reuse_ratio,
+        slot_actions=slot_actions,
+        edit_distance=target_len - num_reused,
+        donor_len=len(donor_tokens),
+        target_len=target_len,
+        exact_chunks=exact_chunks,
+    )
+
+
 def compute_alignment(
     donor_tokens: list[int],
     target_tokens: list[int],
@@ -811,15 +1143,42 @@ def compute_alignment(
     """
     use_fuzzy = fuzzy if fuzzy is not None else _FUZZY_CHUNKS_ENABLED
 
-    if use_fuzzy:
+    candidates: list[AlignmentResult] = []
+
+    # First recover exact shifted runs. If this already clears the normal
+    # reuse gate, return immediately and avoid the chunk-pair scan that gets
+    # expensive on long prompts with many donors.
+    if _EXACT_RUN_RECOVERY_ENABLED:
+        exact_run_result = compute_exact_run_alignment(
+            donor_tokens,
+            target_tokens,
+            chunk_size=chunk_size,
+        )
+        candidates.append(exact_run_result)
+        if exact_run_result.reuse_ratio >= _EXACT_RUN_EARLY_REUSE_RATIO:
+            return exact_run_result
+
+    fuzzy_within_limit = (
+        _FUZZY_CHUNK_MAX_TOKENS <= 0
+        or max(len(donor_tokens), len(target_tokens)) <= _FUZZY_CHUNK_MAX_TOKENS
+    )
+
+    if use_fuzzy and fuzzy_within_limit:
         # Fuzzy alignment: exact + fuzzy chunk matching in one pass
         fuzzy_result = compute_fuzzy_chunk_alignment(
             donor_tokens,
             target_tokens,
             chunk_size=chunk_size,
         )
-        if fuzzy_result.reuse_ratio > 0:
-            return fuzzy_result
+        candidates.append(fuzzy_result)
+    elif use_fuzzy:
+        logger.info(
+            "fuzzy_chunk_alignment: skipped for long sequences "
+            "donor_len=%d target_len=%d max_tokens=%d",
+            len(donor_tokens),
+            len(target_tokens),
+            _FUZZY_CHUNK_MAX_TOKENS,
+        )
 
     # Primary: exact chunk-level alignment (handles REORDER correctly)
     chunk_result = compute_chunk_alignment(
@@ -827,10 +1186,11 @@ def compute_alignment(
         target_tokens,
         chunk_size=chunk_size,
     )
+    candidates.append(chunk_result)
 
-    # If chunk alignment found reusable chunks, use it
-    if chunk_result.reuse_ratio > 0:
-        return chunk_result
+    best = _select_best_alignment(candidates)
+    if best is not None:
+        return best
 
     # Fallback: Levenshtein for fine-grained alignment (PARTIAL scenarios
     # where changes are within chunks, not between them)
@@ -846,17 +1206,30 @@ def _levenshtein_alignment(
     Used when chunk-level matching finds no reusable chunks (e.g., PARTIAL
     overlap where changes are distributed within chunks).
 
-    For sequences > 4096 tokens, falls back to O(n) token-set alignment
-    to avoid O(n*m) blowup (~3s at 16K tokens).
+    For sequences > 4096 tokens, returns an empty alignment by default
+    after exact-run/chunk matching fail. Set SEMBLEND_TOKEN_SET_LONG_FALLBACK=1
+    to restore the older scattered token-set fallback.
     """
-    if not HAS_RAPIDFUZZ:
+    # Cap Levenshtein to avoid O(n*m) blowup on long sequences. The older
+    # token-set fallback is also disabled by default for long KV reuse: it
+    # produces scattered donor positions that are not realizable by the
+    # current SGLang single-block path and can add seconds to negative
+    # controls before the match is rejected.
+    is_long = (
+        len(donor_tokens) > _MAX_LEVENSHTEIN_TOKENS or len(target_tokens) > _MAX_LEVENSHTEIN_TOKENS
+    )
+    if is_long:
+        if not _TOKEN_SET_LONG_FALLBACK_ENABLED:
+            logger.info(
+                "long_alignment_fallback: no contiguous match, skip token-set "
+                "fallback for donor_len=%d target_len=%d",
+                len(donor_tokens),
+                len(target_tokens),
+            )
+            return _empty_alignment(donor_tokens, target_tokens)
         return _token_set_alignment(donor_tokens, target_tokens)
 
-    # Cap Levenshtein to avoid O(n*m) blowup on long sequences.
-    # At 16K tokens, lev_opcodes takes ~3 seconds — unacceptable for the
-    # hot path. Use token-set alignment (O(n)) for long sequences.
-    MAX_LEVENSHTEIN_TOKENS = 4096
-    if len(donor_tokens) > MAX_LEVENSHTEIN_TOKENS or len(target_tokens) > MAX_LEVENSHTEIN_TOKENS:
+    if not HAS_RAPIDFUZZ:
         return _token_set_alignment(donor_tokens, target_tokens)
 
     ops = lev_opcodes(donor_tokens, target_tokens)

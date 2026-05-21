@@ -784,7 +784,7 @@ class SemBlendPipeline:
         Only runs when SEMBLEND_CHUNK_FAST_PATH=1 and the primary lookup failed.
         """
         try:
-            from semblend_core.alignment import compute_fuzzy_chunk_alignment
+            from semblend_core.alignment import compute_alignment
 
             t0 = time.monotonic()
 
@@ -800,9 +800,6 @@ class SemBlendPipeline:
             best_reuse = 0.0
             best_donor_id = None
 
-            # Use relaxed overlap threshold for fallback (primary uses 0.90)
-            fallback_overlap = float(os.environ.get("SEMBLEND_FUZZY_FALLBACK_OVERLAP", "0.80"))
-
             for donor_id in donor_ids:
                 donor_tokens = all_donors[donor_id]
                 if len(donor_tokens) < self._chunk_size * 2:
@@ -813,11 +810,10 @@ class SemBlendPipeline:
                 if len_ratio < 0.5 or len_ratio > 2.0:
                     continue
 
-                alignment = compute_fuzzy_chunk_alignment(
+                alignment = compute_alignment(
                     donor_tokens=donor_tokens,
                     target_tokens=token_ids,
                     chunk_size=self._chunk_size,
-                    min_overlap=fallback_overlap,
                 )
 
                 if alignment.reuse_ratio > best_reuse:
@@ -1103,6 +1099,7 @@ class SemBlendPipeline:
             return None
         try:
             import numpy as np
+
             q = np.asarray(query_emb, dtype=np.float32)
             d = np.asarray(donor.embedding, dtype=np.float32)
             denom = float(np.linalg.norm(q)) * float(np.linalg.norm(d))

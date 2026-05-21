@@ -206,6 +206,77 @@ class TestRegisterDonor:
         assert pipeline._donor_store.donors[0].request_id == "req-slow"
 
 
+class TestClear:
+    def test_clear_drops_donor_handles_and_rebuilds_pipeline(
+        self, adapter, pipeline, config, monkeypatch
+    ):
+        adapter.register_donor(
+            request_id="req-1",
+            token_ids=list(range(16)),
+            kv_cache=list(range(100, 116)),
+            cache_start_pos=0,
+            cache_end_pos=16,
+            prompt_text="hello world",
+        )
+        adapter._register_executor.shutdown(wait=True)
+        assert adapter.donor_count() == 1
+        assert len(pipeline._donor_store.donors) == 1
+
+        new_pipeline = _StubPipeline()
+        monkeypatch.setattr(
+            SemBlendProviderAdapter,
+            "_build_pipeline",
+            staticmethod(lambda _config: new_pipeline),
+        )
+
+        adapter.clear()
+
+        assert adapter.donor_count() == 0
+        assert adapter._pipeline is new_pipeline
+        assert adapter.stats()["cache_resets"] == 1
+
+    def test_clear_prevents_inflight_registration_from_landing(
+        self, config, monkeypatch
+    ):
+        import threading
+
+        old_pipeline = _StubPipeline()
+        new_pipeline = _StubPipeline()
+        release = threading.Event()
+
+        def blocked_embed(_text):
+            release.wait(timeout=2)
+            vec = np.zeros(384, dtype=np.float32)
+            vec[0] = 1.0
+            return vec
+
+        old_pipeline._embedder.embed = blocked_embed
+        adapter = SemBlendProviderAdapter(config=config, pipeline=old_pipeline)
+
+        assert adapter.register_donor(
+            request_id="req-stale",
+            token_ids=list(range(16)),
+            kv_cache=list(range(100, 116)),
+            cache_start_pos=0,
+            cache_end_pos=16,
+            prompt_text="hello world",
+        )
+        old_executor = adapter._register_executor
+
+        monkeypatch.setattr(
+            SemBlendProviderAdapter,
+            "_build_pipeline",
+            staticmethod(lambda _config: new_pipeline),
+        )
+        adapter.clear()
+        release.set()
+        old_executor.shutdown(wait=True)
+
+        assert adapter.donor_count() == 0
+        assert old_pipeline._donor_store.donors == []
+        assert new_pipeline._donor_store.donors == []
+
+
 # ---------------------------------------------------------------------
 # match — miss paths
 # ---------------------------------------------------------------------
