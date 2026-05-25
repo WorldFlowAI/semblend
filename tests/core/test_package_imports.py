@@ -9,7 +9,7 @@ class TestSemblendPackageImports:
     def test_version(self):
         import semblend
 
-        assert semblend.__version__ == "0.3.10"
+        assert semblend.__version__ == "0.3.11"
 
     def test_pipeline_import(self):
         from semblend import SemBlendPipeline

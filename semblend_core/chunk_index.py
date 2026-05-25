@@ -86,6 +86,13 @@ class ChunkIndex:
             # ~100 bytes per donor_hashes entry
             return n_entries * 50 + len(self._index) * 40 + len(self._donor_hashes) * 100
 
+    def clear(self) -> None:
+        """Remove all donor chunk entries while retaining index configuration."""
+        with self._lock:
+            self._index.clear()
+            self._donor_hashes.clear()
+            self._interned.clear()
+
     def add_donor_chunks(
         self,
         donor_id: str,

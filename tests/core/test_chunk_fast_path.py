@@ -36,6 +36,38 @@ class TestChunkFastPathDonorStore:
         assert store.chunk_index.num_donors == 1
         assert store.chunk_index.num_entries == 3
 
+    def test_clear_removes_donors_and_indexes_without_reallocating(self):
+        store = DonorStore(
+            max_entries=100,
+            embedding_dim=4,
+            chunk_size=CHUNK_SIZE,
+        )
+        embeddings = store._embeddings
+        valid_mask = store._valid_mask
+
+        node = DonorNode(
+            request_id="d1",
+            token_ids=_make_tokens(CHUNK_SIZE * 3),
+            embedding=np.random.randn(4).astype(np.float32),
+            timestamp=time.monotonic(),
+        )
+        store.add_donor(node)
+        assert store.size == 1
+        assert store.chunk_index.num_donors == 1
+        assert store.token_index.num_donors == 1
+
+        store.clear()
+
+        assert store.size == 0
+        assert store.chunk_index.num_donors == 0
+        assert store.chunk_index.num_entries == 0
+        assert store.token_index.num_donors == 0
+        assert store._id_to_idx == {}
+        assert store._next_idx == 0
+        assert not store._valid_mask.any()
+        assert store._embeddings is embeddings
+        assert store._valid_mask is valid_mask
+
     def test_eviction_removes_from_chunk_index(self):
         store = DonorStore(
             max_entries=3,

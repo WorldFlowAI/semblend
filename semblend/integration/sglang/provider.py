@@ -345,7 +345,7 @@ class SemBlendProviderAdapter:
         with self._register_lock:
             self._generation += 1
             self._donor_kv.clear()
-            self._pipeline = self._build_pipeline(self._config)
+            self._clear_pipeline_donors()
 
         try:
             old_executor.shutdown(wait=False, cancel_futures=True)
@@ -356,6 +356,34 @@ class SemBlendProviderAdapter:
         )
         self._stats.cache_resets += 1
         logger.info("[FUZZY] SemBlendProviderAdapter cleared donor state")
+
+    def _clear_pipeline_donors(self) -> None:
+        """Clear donor state while preserving expensive pipeline resources."""
+        try:
+            clear_donors = getattr(self._pipeline, "clear_donors", None)
+            if callable(clear_donors):
+                clear_donors()
+                return
+
+            donor_store = getattr(self._pipeline, "_donor_store", None)
+            clear_store = getattr(donor_store, "clear", None)
+            if callable(clear_store):
+                clear_store()
+                return
+
+            # Compatibility for injected test doubles and older lightweight stubs.
+            donors = getattr(donor_store, "donors", None)
+            if hasattr(donors, "clear"):
+                donors.clear()
+                return
+
+            raise TypeError("SemBlend pipeline does not expose a donor clear method")
+        except Exception:
+            logger.warning(
+                "[FUZZY] SemBlend donor-state clear failed; rebuilding adapter pipeline",
+                exc_info=True,
+            )
+            self._pipeline = self._build_pipeline(self._config)
 
     def match(
         self,

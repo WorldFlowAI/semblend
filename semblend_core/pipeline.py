@@ -249,6 +249,26 @@ class SemBlendPipeline:
     def chunk_size(self) -> int:
         return self._chunk_size
 
+    def clear_donors(self) -> None:
+        """Clear donor-specific state without rebuilding the pipeline.
+
+        Cache resets invalidate donor KV locations in the serving engine. They
+        do not require reloading the embedder, ONNX session, bathtub config, or
+        other model-level pipeline state.
+        """
+        clear_store = getattr(self._donor_store, "clear", None)
+        if callable(clear_store):
+            clear_store()
+        else:
+            raise TypeError("donor_store does not support clear()")
+
+        if self._pq_store is not None:
+            clear_pq = getattr(self._pq_store, "clear", None)
+            if callable(clear_pq):
+                clear_pq()
+            else:
+                raise TypeError("pq_store does not support clear()")
+
     # ------------------------------------------------------------------
     # Core pipeline
     # ------------------------------------------------------------------

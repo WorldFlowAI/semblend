@@ -127,6 +127,22 @@ class DonorStore:
         """Access the ChunkIndex for cross-donor chunk lookup."""
         return self._chunk_index
 
+    def clear(self) -> None:
+        """Remove all donor state without reallocating the store or indexes.
+
+        Cache resets invalidate donor KV handles in the owning inference engine,
+        but the store configuration and preallocated embedding matrix remain
+        reusable. Keeping those allocations avoids turning every reset into a
+        cold pipeline initialization path.
+        """
+        self._entries.clear()
+        self._valid_mask.fill(False)
+        self._embeddings.fill(0.0)
+        self._id_to_idx.clear()
+        self._next_idx = 0
+        self._chunk_index.clear()
+        self._token_index.clear()
+
     def add_donor(self, node: DonorNode) -> None:
         """Add a donor to the store with O(1) append + O(chunks) indexing.
 

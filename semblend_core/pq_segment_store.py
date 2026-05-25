@@ -299,6 +299,20 @@ class PQSegmentStore:
         else:
             return sum(arr.nbytes for arr in self._buffer.values())
 
+    def clear(self) -> None:
+        """Remove donor segment entries while retaining any trained codebook.
+
+        The PQ codebook is model-level quantization state, not a reference to
+        engine KV slots. Keeping it avoids retraining after cache resets while
+        still dropping every donor-specific segment record.
+        """
+        with self._lock:
+            self._segment_counts.clear()
+            self._donor_offsets.clear()
+            self._next_offset = 0
+            self._buffer.clear()
+            self._buffer_total_segments = 0
+
     def add_segments(self, donor_id: str, segments: np.ndarray) -> None:
         """Store segment embeddings for a donor.
 

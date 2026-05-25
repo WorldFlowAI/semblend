@@ -109,6 +109,12 @@ class TokenIndex:
 
         return len(chunk_refs)
 
+    def clear(self) -> None:
+        """Remove all donor token references while retaining index configuration."""
+        with self._lock:
+            self._index.clear()
+            self._donor_tokens.clear()
+
     def remove_donor(self, donor_id: str) -> None:
         """Remove a donor's chunks from the index."""
         with self._lock:

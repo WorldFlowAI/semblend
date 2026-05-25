@@ -93,6 +93,18 @@ class TestChunkIndexBasic:
         assert n2 == 0  # Already indexed
         assert chunk_index.num_donors == 1
 
+    def test_clear_removes_all_entries(self, chunk_index, chunk_size):
+        chunk_index.add_donor_chunks("d1", _make_tokens(chunk_size * 2))
+        chunk_index.add_donor_chunks("d2", _make_tokens(chunk_size * 2, offset=1000))
+        assert chunk_index.num_donors == 2
+        assert chunk_index.num_entries == 4
+
+        chunk_index.clear()
+
+        assert chunk_index.num_donors == 0
+        assert chunk_index.num_entries == 0
+        assert chunk_index.lookup_chunk(_make_tokens(chunk_size)) == []
+
 
 class TestMultiDonorSameChunk:
     """Multiple donors containing the same chunk."""

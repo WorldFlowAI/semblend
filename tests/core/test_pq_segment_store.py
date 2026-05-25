@@ -101,6 +101,33 @@ def test_segment_store_pre_training_comparison():
     assert scores[0] > 0.5
 
 
+def test_clear_drops_segments_and_retains_trained_codebook():
+    from semblend_core.pq_segment_store import PQSegmentStore
+
+    rng = np.random.RandomState(42)
+    store = PQSegmentStore(
+        max_entries=100,
+        train_threshold=2,
+        n_subquantizers=4,
+        n_centroids=8,
+    )
+    store.add_segments("donor-0", _random_normalized(rng, 10))
+    store.add_segments("donor-1", _random_normalized(rng, 10))
+    assert store.codebook_trained
+    codebook = store._codebook
+    assert store.size == 2
+
+    store.clear()
+
+    assert store.size == 0
+    assert store.nbytes == codebook.nbytes
+    assert store._codebook is codebook
+    assert store._segment_counts == {}
+    assert store._donor_offsets == {}
+    assert store._buffer == {}
+    assert store._next_offset == 0
+
+
 def test_memory_efficiency():
     """PQ codes at 1K donors should use < 2MB."""
     from semblend_core.pq_segment_store import PQSegmentStore
@@ -154,8 +181,6 @@ def test_duplicate_add_ignored():
 def test_thread_safety():
     """Basic concurrent add + compare."""
     from semblend_core.pq_segment_store import PQSegmentStore
-
-    rng = np.random.RandomState(42)
 
     store = PQSegmentStore(max_entries=200, train_threshold=10)
     errors = []

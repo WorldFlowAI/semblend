@@ -46,6 +46,9 @@ class _StubDonorStore:
     def add_donor(self, node: Any) -> None:
         self.donors.append(node)
 
+    def clear(self) -> None:
+        self.donors.clear()
+
 
 @dataclass
 class _StubPosMap:
@@ -85,6 +88,9 @@ class _StubPipeline:
             {"token_ids": list(token_ids), "prompt_text": prompt_text, "top_k": top_k}
         )
         return self.next_result
+
+    def clear_donors(self) -> None:
+        self._donor_store.clear()
 
 
 # ---------------------------------------------------------------------
@@ -131,6 +137,7 @@ class TestRegisterDonor:
             prompt_text="hello world",
         )
         assert ok is True
+        adapter._register_executor.shutdown(wait=True)
         assert len(pipeline._donor_store.donors) == 1
         node = pipeline._donor_store.donors[0]
         assert node.request_id == "req-1"
@@ -207,8 +214,8 @@ class TestRegisterDonor:
 
 
 class TestClear:
-    def test_clear_drops_donor_handles_and_rebuilds_pipeline(
-        self, adapter, pipeline, config, monkeypatch
+    def test_clear_drops_donor_handles_without_rebuilding_pipeline(
+        self, adapter, pipeline, monkeypatch
     ):
         adapter.register_donor(
             request_id="req-1",
@@ -222,26 +229,23 @@ class TestClear:
         assert adapter.donor_count() == 1
         assert len(pipeline._donor_store.donors) == 1
 
-        new_pipeline = _StubPipeline()
         monkeypatch.setattr(
             SemBlendProviderAdapter,
             "_build_pipeline",
-            staticmethod(lambda _config: new_pipeline),
+            staticmethod(lambda _config: pytest.fail("clear must not rebuild pipeline")),
         )
 
         adapter.clear()
 
         assert adapter.donor_count() == 0
-        assert adapter._pipeline is new_pipeline
+        assert adapter._pipeline is pipeline
+        assert pipeline._donor_store.donors == []
         assert adapter.stats()["cache_resets"] == 1
 
-    def test_clear_prevents_inflight_registration_from_landing(
-        self, config, monkeypatch
-    ):
+    def test_clear_prevents_inflight_registration_from_landing(self, config):
         import threading
 
         old_pipeline = _StubPipeline()
-        new_pipeline = _StubPipeline()
         release = threading.Event()
 
         def blocked_embed(_text):
@@ -263,18 +267,13 @@ class TestClear:
         )
         old_executor = adapter._register_executor
 
-        monkeypatch.setattr(
-            SemBlendProviderAdapter,
-            "_build_pipeline",
-            staticmethod(lambda _config: new_pipeline),
-        )
         adapter.clear()
         release.set()
         old_executor.shutdown(wait=True)
 
         assert adapter.donor_count() == 0
+        assert adapter._pipeline is old_pipeline
         assert old_pipeline._donor_store.donors == []
-        assert new_pipeline._donor_store.donors == []
 
 
 # ---------------------------------------------------------------------
