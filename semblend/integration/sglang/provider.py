@@ -62,6 +62,7 @@ class _DonorKVHandle:
     kv_indices: Any
     start_pos: int
     end_pos: int
+    extra_key: Optional[str] = None
     last_node_id: Optional[int] = None
 
 
@@ -195,19 +196,29 @@ class SemBlendProviderAdapter:
         with self._register_lock:
             self._evict_lru_if_over_bound(reserve=1)
             self._donor_kv[request_id] = _DonorKVHandle(
-                kv_indices=kv_cache,
+                kv_indices=_snapshot_kv_indices(kv_cache),
                 start_pos=cache_start_pos,
                 end_pos=cache_end_pos,
+                extra_key=extra_key,
             )
             generation = self._generation
-
-        self._register_executor.submit(
-            self._register_donor_async,
-            request_id,
-            segment_tokens,
-            prompt_text or "",
-            generation,
-        )
+            try:
+                self._register_executor.submit(
+                    self._register_donor_async,
+                    request_id,
+                    segment_tokens,
+                    prompt_text or "",
+                    generation,
+                    extra_key,
+                )
+            except Exception:
+                self._donor_kv.pop(request_id, None)
+                self._stats.register_rejected += 1
+                logger.warning(
+                    "[FUZZY] register_donor: failed to submit async registration",
+                    exc_info=True,
+                )
+                return False
 
         self._stats.register_ok += 1
         logger.info(
@@ -224,6 +235,7 @@ class SemBlendProviderAdapter:
         segment_tokens: List[int],
         prompt_text: str,
         generation: int,
+        extra_key: Optional[str],
     ) -> None:
         """Run the embed + donor-store insert off the scheduler thread.
 
@@ -261,6 +273,7 @@ class SemBlendProviderAdapter:
                 embedding=embedding,
                 timestamp=time.monotonic(),
                 prompt_text=prompt_text,
+                extra_key=extra_key,
             )
             t_store_start = time.monotonic()
             with self._register_lock:
@@ -325,11 +338,12 @@ class SemBlendProviderAdapter:
         If `register_donor` rejected this donor (no embedding, too short,
         etc.) there's no `_DonorKVHandle` to update — just silently skip.
         """
-        handle = self._donor_kv.get(request_id)
-        if handle is None:
-            return
-        # Dataclass with default field — assign directly.
-        handle.last_node_id = donor_last_node_id
+        with self._register_lock:
+            handle = self._donor_kv.get(request_id)
+            if handle is None:
+                return
+            # Dataclass with default field — assign directly.
+            handle.last_node_id = donor_last_node_id
 
     def clear(self) -> None:
         """Clear provider donor state after the owning cache is reset.
@@ -341,19 +355,19 @@ class SemBlendProviderAdapter:
         registration already in flight cannot reinsert a stale donor after the
         clear.
         """
-        old_executor = self._register_executor
         with self._register_lock:
+            old_executor = self._register_executor
             self._generation += 1
             self._donor_kv.clear()
             self._clear_pipeline_donors()
+            self._register_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="semblend-register"
+            )
 
         try:
             old_executor.shutdown(wait=False, cancel_futures=True)
         except TypeError:
             old_executor.shutdown(wait=False)
-        self._register_executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="semblend-register"
-        )
         self._stats.cache_resets += 1
         logger.info("[FUZZY] SemBlendProviderAdapter cleared donor state")
 
@@ -411,11 +425,13 @@ class SemBlendProviderAdapter:
             return None
 
         try:
-            result = self._pipeline.find_donor(
-                token_ids=remaining,
-                prompt_text=prompt_text or "",
-                top_k=self._config.top_k,
-            )
+            with self._register_lock:
+                result = self._pipeline.find_donor(
+                    token_ids=remaining,
+                    prompt_text=prompt_text or "",
+                    top_k=self._config.top_k,
+                    extra_key=extra_key,
+                )
         except Exception as e:  # pragma: no cover
             logger.error("SemBlendPipeline.find_donor raised: %s", e, exc_info=True)
             self._stats.match_errors += 1
@@ -473,6 +489,7 @@ class SemBlendProviderAdapter:
             pipeline_result=result,
             already_matched_len=already_matched_len,
             remaining=remaining,
+            extra_key=extra_key,
         )
         if converted is None:
             logger.debug(
@@ -552,6 +569,7 @@ class SemBlendProviderAdapter:
         pipeline_result: Any,
         already_matched_len: int,
         remaining: List[int],
+        extra_key: Optional[str],
     ) -> Optional[FuzzyMatchResult]:
         """Translate `PipelineResult` → `FuzzyMatchResult`.
 
@@ -563,19 +581,29 @@ class SemBlendProviderAdapter:
         if donor_id is None:
             logger.debug("[FUZZY] _convert_result: donor_id is None, drop")
             return None
-        handle = self._donor_kv.get(donor_id)
-        if handle is None:
-            logger.debug(
-                "[FUZZY] _convert_result: no handle for donor_id=%s "
-                "(donor_kv size=%d) — pipeline kept this donor but adapter "
-                "had already evicted it",
-                donor_id,
-                len(self._donor_kv),
-            )
-            return None
-        # Mark the donor as recently used for LRU. Move to end of the
-        # OrderedDict so the next eviction wave skips this entry.
-        self._donor_kv.move_to_end(donor_id)
+        with self._register_lock:
+            handle = self._donor_kv.get(donor_id)
+            if handle is None:
+                logger.debug(
+                    "[FUZZY] _convert_result: no handle for donor_id=%s "
+                    "(donor_kv size=%d) — pipeline kept this donor but adapter "
+                    "had already evicted it",
+                    donor_id,
+                    len(self._donor_kv),
+                )
+                return None
+            if handle.extra_key != extra_key:
+                logger.info(
+                    "[FUZZY] _convert_result: rejecting donor_id=%s extra_key=%r "
+                    "for query extra_key=%r",
+                    donor_id,
+                    handle.extra_key,
+                    extra_key,
+                )
+                return None
+            # Mark the donor as recently used for LRU. Move to end of the
+            # OrderedDict so the next eviction wave skips this entry.
+            self._donor_kv.move_to_end(donor_id)
 
         # Build layer_recompute_mask from pipeline_result.layer_deviations.
         layer_mask = None
@@ -820,3 +848,39 @@ def _empty_tensor_like(template: Any) -> Any:
         return template[0:0]
     except Exception:
         return []
+
+
+def _snapshot_kv_indices(kv_cache: Any) -> Any:
+    """Snapshot an engine-owned KV-index handle at the adapter boundary.
+
+    SGLang passes a view into its request-to-token table. That table is reused
+    after request completion, so holding the view directly can make a donor
+    handle silently point at a later request's slots. This helper is deliberately
+    duck typed so SemBlend does not import torch at module import time.
+    """
+    if kv_cache is None:
+        return None
+
+    obj = kv_cache
+    detach = getattr(obj, "detach", None)
+    if callable(detach):
+        obj = detach()
+
+    clone = getattr(obj, "clone", None)
+    if callable(clone):
+        try:
+            return clone()
+        except Exception:
+            pass
+
+    copy = getattr(obj, "copy", None)
+    if callable(copy):
+        try:
+            return copy()
+        except Exception:
+            pass
+
+    if isinstance(obj, (list, tuple)):
+        return list(obj)
+
+    return obj

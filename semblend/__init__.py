@@ -30,7 +30,7 @@ Environment variables:
 
 from __future__ import annotations
 
-__version__ = "0.3.11"
+__version__ = "0.3.12"
 
 # Re-export core public API from semblend_core
 from semblend_core.alignment import (

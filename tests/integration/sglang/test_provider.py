@@ -83,9 +83,14 @@ class _StubPipeline:
         self.next_result: _StubPipelineResult = _StubPipelineResult(found=False)
         self.find_donor_calls: list = []
 
-    def find_donor(self, token_ids, prompt_text="", top_k=5):
+    def find_donor(self, token_ids, prompt_text="", top_k=5, extra_key=None):
         self.find_donor_calls.append(
-            {"token_ids": list(token_ids), "prompt_text": prompt_text, "top_k": top_k}
+            {
+                "token_ids": list(token_ids),
+                "prompt_text": prompt_text,
+                "top_k": top_k,
+                "extra_key": extra_key,
+            }
         )
         return self.next_result
 
@@ -211,6 +216,42 @@ class TestRegisterDonor:
         adapter._register_executor.shutdown(wait=True)
         assert len(pipeline._donor_store.donors) == 1
         assert pipeline._donor_store.donors[0].request_id == "req-slow"
+
+    def test_snapshots_tensor_kv_handle(self, adapter):
+        torch = pytest.importorskip("torch")
+
+        backing = torch.tensor([10, 11, 12, 13, 14, 15], dtype=torch.int64)
+        view = backing[1:5]
+
+        ok = adapter.register_donor(
+            request_id="req-view",
+            token_ids=list(range(8)),
+            kv_cache=view,
+            cache_start_pos=0,
+            cache_end_pos=8,
+            prompt_text="hello world",
+        )
+
+        assert ok is True
+        backing[1:5] = torch.tensor([90, 91, 92, 93], dtype=torch.int64)
+        stored = adapter._donor_kv["req-view"].kv_indices  # noqa: SLF001
+        assert stored.tolist() == [11, 12, 13, 14]
+        assert stored.data_ptr() != view.data_ptr()
+
+    def test_async_registration_keeps_extra_key(self, adapter, pipeline):
+        ok = adapter.register_donor(
+            request_id="req-tenant",
+            token_ids=list(range(16)),
+            kv_cache=list(range(100, 116)),
+            cache_start_pos=0,
+            cache_end_pos=16,
+            prompt_text="hello world",
+            extra_key="tenant-a",
+        )
+
+        assert ok is True
+        adapter._register_executor.shutdown(wait=True)
+        assert pipeline._donor_store.donors[0].extra_key == "tenant-a"
 
 
 class TestClear:
@@ -426,6 +467,38 @@ class TestMatchMisses:
         assert result is None
         stats = adapter.stats()
         assert stats["match_rejected_no_kv"] == 1
+
+    def test_miss_when_extra_key_differs(self, adapter, pipeline):
+        adapter.register_donor(
+            request_id="donor-A",
+            token_ids=list(range(16)),
+            kv_cache=list(range(100, 116)),
+            cache_start_pos=0,
+            cache_end_pos=16,
+            prompt_text="registration",
+            extra_key="tenant-a",
+        )
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.90,
+            reuse_ratio=0.85,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(
+                donor_positions=list(range(16)),
+                target_positions=list(range(16)),
+            ),
+        )
+
+        result = adapter.match(
+            prompt_token_ids=list(range(32)),
+            already_matched_len=0,
+            prompt_text="query",
+            extra_key="tenant-b",
+        )
+
+        assert result is None
+        assert pipeline.find_donor_calls[-1]["extra_key"] == "tenant-b"
 
 
 # ---------------------------------------------------------------------

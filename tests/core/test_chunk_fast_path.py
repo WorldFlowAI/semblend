@@ -103,6 +103,53 @@ class TestChunkFastPathDonorStore:
         assert store.get_donor_tokens("d1") == tokens
         assert store.get_donor_tokens("nonexistent") is None
 
+    def test_find_donor_filters_extra_key_before_topk(self):
+        store = DonorStore(
+            max_entries=10,
+            embedding_dim=4,
+            chunk_size=CHUNK_SIZE,
+            min_similarity=0.10,
+        )
+        query_embedding = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        shared = _make_tokens(CHUNK_SIZE * 2)
+        query_tokens = shared + [9999]
+        store.add_donor(
+            DonorNode(
+                request_id="tenant-a",
+                token_ids=shared,
+                embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                timestamp=time.monotonic(),
+                extra_key="a",
+            )
+        )
+        store.add_donor(
+            DonorNode(
+                request_id="tenant-b",
+                token_ids=shared,
+                embedding=np.array([0.95, 0.05, 0.0, 0.0], dtype=np.float32),
+                timestamp=time.monotonic(),
+                extra_key="b",
+            )
+        )
+
+        match = store.find_donor(
+            query_embedding=query_embedding,
+            query_tokens=query_tokens,
+            top_k=1,
+            min_reuse_ratio=0.5,
+            extra_key="b",
+        )
+
+        assert match is not None
+        assert match.donor.request_id == "tenant-b"
+        assert store.find_donor(
+            query_embedding=query_embedding,
+            query_tokens=query_tokens,
+            top_k=1,
+            min_reuse_ratio=0.5,
+            extra_key="missing",
+        ) is None
+
     def test_find_multi_donor(self):
         store = DonorStore(
             max_entries=100,
@@ -143,6 +190,39 @@ class TestChunkFastPathDonorStore:
         assert result is not None
         assert result.reuse_ratio == 1.0
         assert len(result.donor_ids) == 2
+
+    def test_find_multi_donor_filters_extra_key(self):
+        store = DonorStore(
+            max_entries=100,
+            embedding_dim=4,
+            chunk_size=CHUNK_SIZE,
+        )
+        chunk_a = _make_tokens(CHUNK_SIZE, offset=100)
+        chunk_b = _make_tokens(CHUNK_SIZE, offset=200)
+        store.add_donor(
+            DonorNode(
+                request_id="d-a",
+                token_ids=chunk_a,
+                embedding=np.random.randn(4).astype(np.float32),
+                timestamp=time.monotonic(),
+                extra_key="a",
+            )
+        )
+        store.add_donor(
+            DonorNode(
+                request_id="d-b",
+                token_ids=chunk_b,
+                embedding=np.random.randn(4).astype(np.float32),
+                timestamp=time.monotonic(),
+                extra_key="b",
+            )
+        )
+
+        assert store.find_multi_donor(
+            query_tokens=chunk_a + chunk_b,
+            min_reuse_ratio=0.5,
+            extra_key="missing",
+        ) is None
 
 
 class TestChunkFastPathThreshold:

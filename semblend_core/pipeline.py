@@ -278,6 +278,7 @@ class SemBlendPipeline:
         token_ids: list[int],
         prompt_text: str = "",
         top_k: int = 5,
+        extra_key: str | None = None,
     ) -> PipelineResult:
         """Run the full SemBlend donor discovery pipeline.
 
@@ -301,6 +302,7 @@ class SemBlendPipeline:
                 token_ids,
                 prompt_text,
                 top_k,
+                extra_key,
                 timings,
                 t_start,
             )
@@ -328,6 +330,7 @@ class SemBlendPipeline:
         token_ids: list[int],
         prompt_text: str,
         top_k: int,
+        extra_key: str | None,
         timings: PipelineTimings,
         t_start: float,
     ) -> PipelineResult:
@@ -345,6 +348,7 @@ class SemBlendPipeline:
                     fast_result = self._try_chunk_fast_path(
                         token_ids,
                         chunk_matches,
+                        extra_key,
                         timings,
                         t_start,
                     )
@@ -375,6 +379,7 @@ class SemBlendPipeline:
                     timings,
                     t_start,
                     prompt_text=prompt_text,
+                    extra_key=extra_key,
                 )
                 if multi_result is not None:
                     return multi_result
@@ -388,6 +393,7 @@ class SemBlendPipeline:
             query_tokens=token_ids,
             top_k=top_k,
             min_reuse_ratio=self._min_reuse_ratio,
+            extra_key=extra_key,
         )
         timings.lookup_ms = (time.monotonic() - t0) * 1000
 
@@ -399,6 +405,7 @@ class SemBlendPipeline:
             if self._chunk_fast_path and hasattr(self._donor_store, "chunk_index"):
                 fuzzy_result = self._try_fuzzy_overlap_fallback(
                     token_ids,
+                    extra_key,
                     timings,
                     t_start,
                 )
@@ -542,6 +549,7 @@ class SemBlendPipeline:
         token_ids: list[int],
         prompt_text: str = "",
         top_k: int = 5,
+        extra_key: str | None = None,
     ) -> list[PipelineResult]:
         """Find multiple donor candidates, ranked by score with recency bias.
 
@@ -567,6 +575,7 @@ class SemBlendPipeline:
             query_tokens=token_ids,
             top_k=top_k,
             min_reuse_ratio=self._min_reuse_ratio,
+            extra_key=extra_key,
         )
         timings.lookup_ms = (time.monotonic() - t0) * 1000
 
@@ -656,6 +665,7 @@ class SemBlendPipeline:
         request_id: str,
         token_ids: list[int],
         prompt_text: str = "",
+        extra_key: str | None = None,
     ) -> None:
         """Register a completed request as a potential donor.
 
@@ -697,6 +707,7 @@ class SemBlendPipeline:
             embedding=embedding,
             timestamp=time.monotonic(),
             prompt_text=prompt_text[:200],
+            extra_key=extra_key,
         )
         self._donor_store.add_donor(node)
 
@@ -788,6 +799,7 @@ class SemBlendPipeline:
     def _try_fuzzy_overlap_fallback(
         self,
         token_ids: list[int],
+        extra_key: str | None,
         timings: PipelineTimings,
         t_start: float,
     ) -> PipelineResult | None:
@@ -809,7 +821,7 @@ class SemBlendPipeline:
             t0 = time.monotonic()
 
             # Get recent donors (up to 10) — most likely to be relevant
-            all_donors = self._donor_store.get_all_donor_tokens()
+            all_donors = self._donor_store.get_all_donor_tokens(extra_key=extra_key)
             if not all_donors:
                 return None
 
@@ -990,6 +1002,7 @@ class SemBlendPipeline:
         self,
         token_ids: list[int],
         chunk_matches: dict[int, list],
+        extra_key: str | None,
         timings: PipelineTimings,
         t_start: float,
     ) -> PipelineResult | None:
@@ -1003,6 +1016,7 @@ class SemBlendPipeline:
             query_tokens=token_ids,
             min_reuse_ratio=self._min_reuse_ratio,
             pq_store=self._pq_store,
+            extra_key=extra_key,
         )
         timings.lookup_ms = (time.monotonic() - t0) * 1000
 
@@ -1024,6 +1038,7 @@ class SemBlendPipeline:
         timings: PipelineTimings,
         t_start: float,
         prompt_text: str = "",
+        extra_key: str | None = None,
     ) -> PipelineResult | None:
         """Attempt multi-donor composite alignment with semantic chunk matching.
 
@@ -1036,6 +1051,7 @@ class SemBlendPipeline:
             pq_store=self._pq_store,
             target_text=prompt_text,
             embedder=self._embedder,
+            extra_key=extra_key,
         )
         lookup_ms = (time.monotonic() - t0) * 1000
 

@@ -45,6 +45,7 @@ class DonorNode:
     embedding: np.ndarray | None  # [dim] normalized
     timestamp: float
     prompt_text: str = ""
+    extra_key: str | None = None
     segment_embeddings: object | None = None  # SegmentEmbeddings (transient, pre-PQ)
 
 
@@ -143,6 +144,21 @@ class DonorStore:
         self._chunk_index.clear()
         self._token_index.clear()
 
+    def _valid_indices_for_extra_key(self, extra_key: str | None) -> np.ndarray:
+        """Return valid embedding rows visible to the supplied namespace."""
+        valid_indices = np.where(self._valid_mask)[0]
+        if extra_key is None or valid_indices.size == 0:
+            return valid_indices
+
+        idx_to_id = {v: k for k, v in self._id_to_idx.items()}
+        allowed = []
+        for storage_idx in valid_indices:
+            donor_id = idx_to_id.get(int(storage_idx))
+            donor = self._entries.get(donor_id) if donor_id is not None else None
+            if donor is not None and donor.extra_key == extra_key:
+                allowed.append(int(storage_idx))
+        return np.asarray(allowed, dtype=valid_indices.dtype)
+
     def add_donor(self, node: DonorNode) -> None:
         """Add a donor to the store with O(1) append + O(chunks) indexing.
 
@@ -189,6 +205,7 @@ class DonorStore:
         query_tokens: list[int],
         top_k: int = 5,
         min_reuse_ratio: float = 0.5,
+        extra_key: str | None = None,
     ) -> DonorMatch | None:
         """Find the best donor for a query via embedding cosine + alignment.
 
@@ -218,7 +235,9 @@ class DonorStore:
         if query_embedding is None or len(query_embedding) != self._embedding_dim:
             return None
 
-        valid_indices = np.where(self._valid_mask)[0]
+        valid_indices = self._valid_indices_for_extra_key(extra_key)
+        if len(valid_indices) == 0:
+            return None
 
         # Step 1: Cosine similarity (vectorized matrix multiply)
         query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-8)
@@ -318,6 +337,7 @@ class DonorStore:
         query_tokens: list[int],
         top_k: int = 5,
         min_reuse_ratio: float = 0.5,
+        extra_key: str | None = None,
     ) -> list[DonorMatch]:
         """Find multiple donor candidates ranked by score with recency bias.
 
@@ -336,7 +356,9 @@ class DonorStore:
         if n_valid == 0:
             return []
 
-        valid_indices = np.where(self._valid_mask)[0]
+        valid_indices = self._valid_indices_for_extra_key(extra_key)
+        if len(valid_indices) == 0:
+            return []
 
         # Cosine similarity
         query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-8)
@@ -428,6 +450,7 @@ class DonorStore:
         top_k: int = 5,
         min_jaccard: float = 0.30,
         min_reuse_ratio: float = 0.5,
+        extra_key: str | None = None,
     ) -> list[DonorMatch]:
         """Find donor candidates using Jaccard token-set similarity.
 
@@ -440,6 +463,8 @@ class DonorStore:
         scored: list[tuple[float, DonorNode]] = []
 
         for donor in self._entries.values():
+            if extra_key is not None and donor.extra_key != extra_key:
+                continue
             if donor.token_ids == query_tokens:
                 continue
 
@@ -493,13 +518,17 @@ class DonorStore:
         node = self._entries.get(donor_id)
         return node.token_ids if node is not None else None
 
-    def get_all_donor_tokens(self) -> dict[str, list[int]]:
+    def get_all_donor_tokens(self, extra_key: str | None = None) -> dict[str, list[int]]:
         """Get token IDs for all donors in the store.
 
         Used by multi_donor_alignment to build the donor_token_store.
         Returns defensive copies to prevent mutation of internal state.
         """
-        return {did: list(node.token_ids) for did, node in self._entries.items()}
+        return {
+            did: list(node.token_ids)
+            for did, node in self._entries.items()
+            if extra_key is None or node.extra_key == extra_key
+        }
 
     def find_multi_donor(
         self,
@@ -510,6 +539,7 @@ class DonorStore:
         pq_store: object | None = None,
         target_text: str = "",
         embedder: object | None = None,
+        extra_key: str | None = None,
     ) -> object | None:
         """Find multi-donor composite alignment using ChunkIndex + PQ semantics.
 
@@ -533,7 +563,9 @@ class DonorStore:
             compute_multi_donor_alignment,
         )
 
-        donor_token_store = self.get_all_donor_tokens()
+        donor_token_store = self.get_all_donor_tokens(extra_key=extra_key)
+        if not donor_token_store:
+            return None
 
         result = compute_multi_donor_alignment(
             target_tokens=query_tokens,
