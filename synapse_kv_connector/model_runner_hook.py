@@ -5,15 +5,15 @@ pipeline and SemBlend's Triton-based PartialAttention kernels. It
 intercepts the prefill phase to:
 
 1. Detect when a PartialAttention plan is active (from the connector's
-   ``start_load_kv()`` finding a Tier 3 semantic donor match).
+   ``start_load_kv()`` finding a semantic donor match).
 2. Replace standard full-sequence prefill with selective prefill using
    the Triton scatter + masked projection + partial attention kernels.
 3. Report timing and FLOPs savings back to the connector for logging
    and benchmarking.
 
 Usage with vLLM:
-    The hook is registered automatically when SynapseKVConnector detects
-    a sparse transfer plan. The vLLM worker checks for the hook before
+    The hook is registered automatically when the compatibility connector
+    detects a sparse transfer plan. The vLLM worker checks for the hook before
     running standard prefill::
 
         # In vLLM's model runner (simplified):

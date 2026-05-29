@@ -240,18 +240,18 @@ class TestRegisterDonor:
 
     def test_async_registration_keeps_extra_key(self, adapter, pipeline):
         ok = adapter.register_donor(
-            request_id="req-tenant",
+            request_id="req-namespace",
             token_ids=list(range(16)),
             kv_cache=list(range(100, 116)),
             cache_start_pos=0,
             cache_end_pos=16,
             prompt_text="hello world",
-            extra_key="tenant-a",
+            extra_key="namespace-a",
         )
 
         assert ok is True
         adapter._register_executor.shutdown(wait=True)
-        assert pipeline._donor_store.donors[0].extra_key == "tenant-a"
+        assert pipeline._donor_store.donors[0].extra_key == "namespace-a"
 
 
 class TestClear:
@@ -476,7 +476,7 @@ class TestMatchMisses:
             cache_start_pos=0,
             cache_end_pos=16,
             prompt_text="registration",
-            extra_key="tenant-a",
+            extra_key="namespace-a",
         )
         pipeline.next_result = _StubPipelineResult(
             found=True,
@@ -494,11 +494,11 @@ class TestMatchMisses:
             prompt_token_ids=list(range(32)),
             already_matched_len=0,
             prompt_text="query",
-            extra_key="tenant-b",
+            extra_key="namespace-b",
         )
 
         assert result is None
-        assert pipeline.find_donor_calls[-1]["extra_key"] == "tenant-b"
+        assert pipeline.find_donor_calls[-1]["extra_key"] == "namespace-b"
 
 
 # ---------------------------------------------------------------------

@@ -282,7 +282,7 @@ class FuzzyMatchConfig:
 
 ## 8. Validation plan (before the PR is opened)
 
-Per our internal process, the PR to `ibifrost/sglang` is blocked on benchmarks. Results are committed under `autoresearch-semblend/benchmarks/results/v0.3.x/` and linked from the PR description.
+The PR to `ibifrost/sglang` should be blocked on benchmark evidence. Results should be linked from the PR description in a form maintainers can reproduce.
 
 Acceptance criteria:
 - n ≥ 200 per dataset, 4K / 8K / 16K token lengths
@@ -339,10 +339,10 @@ If `enable_bathtub=True` but `model_arch` is unset (or unrecognized), the adapte
 ## 11. Out of scope (v1)
 
 - CacheBlend-style segment-based matching (Chenxin's doc explicitly leaves this out; we agree).
-- Cross-tenant donor sharing (handled by the `extra_key` namespace already in the ABC).
+- Cross-namespace donor sharing (handled by the `extra_key` namespace already in the ABC).
 - Speculative decoding integration — orthogonal, future work.
 - Automated bathtub calibration for new models — offline procedure, not in the provider.
-- Fleet-level cross-instance donor sharing — process-local SemBlend is the v1; multi-instance is a future research direction.
+- Distributed donor sharing — process-local SemBlend is the v1; distributed providers belong in a separate deployment design.
 
 ## 12. Reproducibility — running the SemBlend bench yourself
 

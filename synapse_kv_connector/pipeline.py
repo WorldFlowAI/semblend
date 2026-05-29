@@ -1,8 +1,8 @@
-"""Re-exports from semblend_core.pipeline + vLLM-specific factory.
+"""Re-exports from semblend_core.pipeline plus a vLLM-specific factory.
 
 Core pipeline logic lives in semblend_core. This module re-exports
-everything and provides a vLLM-specific factory that injects the
-CAGRA GPU-accelerated donor store when available.
+everything and provides a vLLM-specific factory that uses the local
+in-process donor store.
 """
 
 from semblend_core.pipeline import (  # noqa: F401
@@ -22,19 +22,16 @@ def create_vllm_pipeline(
     model_name: str | None = None,
     chunk_size: int | None = None,
 ) -> SemBlendPipeline:
-    """Create a SemBlendPipeline with vLLM-optimized donor store.
-
-    Uses CAGRA GPU-accelerated ANN index when cuVS is available and
-    SEMBLEND_USE_CAGRA=1 is set; falls back to numpy DonorStore otherwise.
-    """
+    """Create a SemBlendPipeline with the local in-process donor store."""
     from semblend_core.embedder import create_embedder
-    from synapse_kv_connector.cagra_donor_store import make_donor_store
+    from semblend_core.donor_store import DonorStore
 
     embedder = create_embedder(embedder_type)
-    donor_store = make_donor_store(
+    donor_store = DonorStore(
         max_entries=max_donors,
         embedding_dim=embedder.dimension,
         min_similarity=min_similarity,
+        chunk_size=chunk_size or 32,
     )
 
     return SemBlendPipeline(

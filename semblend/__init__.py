@@ -1,13 +1,14 @@
-"""SemBlend — Semantic KV cache reuse for LLM inference engines.
+"""SemBlend - semantic donor discovery for engine-native KV caches.
 
-Extends exact-prefix caching (LMCache, vLLM prefix caching, SGLang RadixAttention)
-with semantic donor discovery: finds and reuses KV tensors from semantically similar
-prior requests, eliminating redundant prefill computation.
+Extends exact-prefix caching in inference engines with semantic donor discovery:
+finds safe donors from semantically similar prior requests and plans reuse of
+engine-owned KV state, eliminating redundant prefill computation on suitable
+long-context workloads.
 
 Quick start:
     pip install semblend
 
-    # vLLM integration (dynamic connector loading):
+    # vLLM compatibility path (dynamic connector loading):
     vllm serve model_name \\
       --kv-transfer-config '{"kv_connector": "SemBlendConnectorV1",
         "kv_connector_module_path": "semblend.integration.vllm.connector_v1",

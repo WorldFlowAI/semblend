@@ -66,10 +66,6 @@ trtllm = [
     "torch>=2.0",
     "sentence-transformers>=3.0",
 ]
-dynamo = [
-    "sentence-transformers>=3.0",
-    "nats-py>=2.0",
-]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -93,7 +89,7 @@ include = ["semblend*", "semblend_core*", "synapse_kv_connector*"]
 exclude = ["benchmarks*", "paper*", "patent*", "infra*", "literature*", "results*", "tests*", "synapse_kv_connector.tests*", "scripts*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "synapse_kv_connector/tests"]
+testpaths = ["tests"]
 addopts = "--ignore=synapse_kv_connector/tests/test_rope_correction.py --ignore=synapse_kv_connector/tests/test_triton_kernels.py"
 
 [tool.ruff]

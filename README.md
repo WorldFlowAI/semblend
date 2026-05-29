@@ -9,18 +9,20 @@
   <!-- <a href="https://arxiv.org/abs/XXXX.XXXXX"><img alt="Paper" src="https://img.shields.io/badge/paper-arXiv-red"></a> -->
 </p>
 
-**Semantic KV cache reuse for LLM inference engines.**
+**Semantic donor discovery for engine-native KV caches.**
 
-SemBlend extends exact-prefix KV caching (vLLM, LMCache, SGLang) with *semantic* donor discovery. When a prompt is semantically similar to a cached one but lexically different — different instruction phrasing, sentence order, or template fields — SemBlend finds and reuses the cached KV tensors, replacing a multi-second prefill with sub-second KV retrieval.
+SemBlend extends exact-prefix KV caching in inference engines with *semantic* donor discovery. When a prompt is semantically similar to a cached one but lexically different - different instruction phrasing, sentence order, or template fields - SemBlend finds a safe donor and plans reuse of the engine-owned KV state, replacing a multi-second prefill with sub-second KV retrieval on the right workloads.
 
 ```
-vLLM + LMCache alone:        semantically similar prompt  →  0% hit   →  full prefill
-vLLM + LMCache + SemBlend:                                →  83–100% hit  →  reuse donor KV
+Exact prefix cache alone:     semantically similar prompt  ->  0% hit     ->  full prefill
+Engine cache + SemBlend:                                      83-100% hit ->  reuse donor KV
 ```
+
+SemBlend's current vLLM compatibility path can run through LMCache. Future vLLM integration work is being explored through engine-native interfaces.
 
 ## Performance
 
-Measured on A10G GPU (0.85 utilization), Qwen2.5-7B-AWQ, vLLM 0.14.1 + LMCache. All results from live benchmarks on real HuggingFace datasets with fresh pod isolation (n=15 per cell).
+Measured on A10G GPU (0.85 utilization), Qwen2.5-7B-AWQ, vLLM 0.14.1 + the current LMCache compatibility path. All results from live benchmarks on real HuggingFace datasets with fresh pod isolation (n=15 per cell).
 
 ### TTFT speedup vs cold prefill
 
@@ -62,14 +64,14 @@ PPL < 1.065 for 4/5 datasets at all lengths. SAMSum shows elevated PPL due to sh
 
 ```bash
 pip install semblend            # CPU-only core (numpy + rapidfuzz)
-pip install semblend[vllm]      # + vLLM/LMCache integration
+pip install semblend[vllm]      # + vLLM compatibility integration
 pip install semblend[sglang]    # + SGLang integration
 pip install semblend[embedder]  # + sentence-transformers (MiniLM GPU)
 ```
 
-## Quick Start: vLLM + LMCache
+## Quick Start: vLLM Compatibility Path
 
-Integrates via LMCache's `KVConnectorBase_V1` — no patching required.
+The current vLLM compatibility path integrates through vLLM's dynamic connector loading and may use LMCache for KV transfer. This path remains supported for users who want to reproduce the existing benchmark results.
 
 ```bash
 pip install semblend[vllm] vllm lmcache
@@ -127,9 +129,9 @@ Request → Embed (2–15ms) → Search (1ms) → Align (1ms) → Inject KV
 ```
 
 1. **Embed** — full-document segmented embedding on GPU via ONNX-runtime. Long prompts are split into overlapping 256-token windows, embedded in parallel, and mean-pooled into a single vector. 100% content coverage at any prompt length (~2ms short, ~10ms at 8K, ~15ms at 32K).
-2. **Search** — brute-force cosine similarity against the donor store (<1ms at 1K donors; CAGRA GPU ANN for larger pools)
+2. **Search** — brute-force cosine similarity against the local donor store (<1ms at 1K donors; optional ANN backends can be used for larger pools)
 3. **Align** — MD5 chunk hashing finds reusable 256-token KV chunks; optional fuzzy matching handles shifted boundaries
-4. **Inject** — donor token IDs substituted into the request; LMCache/RadixCache retrieves cached KV; RoPE correction applied in-place on K tensors
+4. **Materialize** — donor token IDs or engine-native block refs are handed back to the inference engine; the engine retrieves cached KV and SemBlend applies quality-gated correction or recomputation where supported
 
 ## When SemBlend Helps
 

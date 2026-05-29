@@ -1,8 +1,7 @@
 """vLLM attention kernel patch for PartialAttention KV reuse.
 
-Hooks into vLLM's model runner to consume PartialAttention plans
-produced by the SynapseKVConnector. When a Tier 3 semantic match
-returns a non-contiguous transfer plan, this module:
+Hooks into vLLM's model runner to consume PartialAttention plans.
+When semantic donor matching returns a non-contiguous transfer plan, this module:
 
 1. Scatters donor K,V into the target KV cache using a Triton GPU
    kernel (``scatter_donor_kv``), running in O(num_pairs) across

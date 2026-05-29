@@ -1,4 +1,4 @@
-"""SemBlend vLLM integration — KVConnectorBase_V1 dynamic connector.
+"""SemBlend vLLM compatibility integration - KVConnectorBase_V1 entry point.
 
 Usage with vLLM dynamic connector loading:
     --kv-transfer-config '{
@@ -8,5 +8,5 @@ Usage with vLLM dynamic connector loading:
     }'
 
 This module re-exports from synapse_kv_connector for backward compatibility.
-The actual connector implementation lives in synapse_kv_connector/semblend_connector.py.
+The current connector may use LMCache for KV transfer.
 """

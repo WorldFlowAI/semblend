@@ -1,18 +1,9 @@
-"""Synapse KV Cache Connector for vLLM — SemBlend semantic KV cache reuse.
+"""Legacy compatibility namespace for SemBlend vLLM integration.
 
-Built on LMCache, provides semantic KV cache sharing across vLLM instances
-through Synapse's REST API. Enables cross-request KV reuse for semantically
-similar prompts, not just exact prefix matches.
-
-Includes Triton CUDA kernels for GPU-accelerated PartialAttention:
-    - scatter_donor_kv: Scatter donor K,V into target KV cache
-    - masked_qkv_projection: Selective QKV GEMM for compute positions
-    - partial_prefill_attention: Causal attention for compute positions only
-    - partial_prefill: Full orchestrator chaining all three kernels
+New code should import SemBlend through ``semblend.integration.*``. This
+namespace remains only for older vLLM connector module paths.
 """
 
-from synapse_kv_connector.client import SynapseKVClient
-from synapse_kv_connector.connector import SynapseKVConnector
 from synapse_kv_connector.partial_attention import (
     AttentionMode,
     PartialAttentionPlan,
@@ -20,13 +11,6 @@ from synapse_kv_connector.partial_attention import (
     compute_attention_mask,
     compute_donor_kv_indices,
 )
-from synapse_kv_connector.segment_client import (
-    FindDonorResult,
-    KvSlotAction,
-    KvTransferPlan,
-    SynapseSegmentClient,
-)
-
 # Triton kernels — optional, require torch + triton
 try:
     from synapse_kv_connector.triton_kernels import (
@@ -71,15 +55,13 @@ except ImportError:
 
 __all__ = [
     "AttentionMode",
-    "FindDonorResult",
     "HAS_MODEL_HOOK",
+    "HAS_SEMBLEND_CONNECTOR",
+    "HAS_SEMBLEND_PIPELINE",
     "HAS_TRITON_KERNELS",
-    "KvSlotAction",
-    "KvTransferPlan",
     "PartialAttentionPlan",
-    "SynapseKVClient",
-    "SynapseKVConnector",
-    "SynapseSegmentClient",
+    "SemBlendConnectorV1",
+    "SemBlendPipeline",
     "build_attention_plan",
     "compute_attention_mask",
     "compute_donor_kv_indices",

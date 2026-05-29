@@ -115,7 +115,7 @@ class TestChunkFastPathDonorStore:
         query_tokens = shared + [9999]
         store.add_donor(
             DonorNode(
-                request_id="tenant-a",
+                request_id="namespace-a",
                 token_ids=shared,
                 embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
                 timestamp=time.monotonic(),
@@ -124,7 +124,7 @@ class TestChunkFastPathDonorStore:
         )
         store.add_donor(
             DonorNode(
-                request_id="tenant-b",
+                request_id="namespace-b",
                 token_ids=shared,
                 embedding=np.array([0.95, 0.05, 0.0, 0.0], dtype=np.float32),
                 timestamp=time.monotonic(),
@@ -141,7 +141,7 @@ class TestChunkFastPathDonorStore:
         )
 
         assert match is not None
-        assert match.donor.request_id == "tenant-b"
+        assert match.donor.request_id == "namespace-b"
         assert store.find_donor(
             query_embedding=query_embedding,
             query_tokens=query_tokens,

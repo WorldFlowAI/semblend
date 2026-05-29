@@ -1,9 +1,9 @@
-"""SemBlend vLLM KVConnector V1 — dynamic connector entry point.
+"""SemBlend vLLM KVConnector V1 compatibility entry point.
 
 This is the module path used with vLLM's dynamic connector loading:
     --kv-connector-module-path semblend.integration.vllm.connector_v1
 
-Requires: torch, vllm, lmcache (install with: pip install semblend[vllm])
+Requires for the current compatibility path: torch, vllm, lmcache.
 
 It lazily re-exports from the canonical implementation in synapse_kv_connector
 to avoid importing torch/vllm at module scope.

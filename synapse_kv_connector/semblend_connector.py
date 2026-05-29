@@ -1,4 +1,4 @@
-"""SemBlend Connector — Semantic KV-Donor Discovery for vLLM.
+"""SemBlend Connector - LMCache-backed compatibility path for vLLM.
 
 Extends LMCache's KV connector with semantic donor discovery.
 When LMCache's chunk-hash lookup misses (no exact prefix match),
@@ -19,13 +19,12 @@ Architecture:
 Usage:
     --kv-transfer-config '{
         "kv_connector": "SemBlendConnectorV1",
-        "kv_connector_module_path": "synapse_kv_connector.semblend_connector",
+        "kv_connector_module_path": "semblend.integration.vllm.connector_v1",
         "kv_role": "kv_both"
     }'
 
     Env vars:
         SEMBLEND_ENABLED=1              Enable semantic donor search
-        SEMBLEND_GATEWAY_URL=...        Synapse gateway for embeddings
         SEMBLEND_MIN_SIMILARITY=0.60    Min Jaccard/cosine for donors
         SEMBLEND_DISABLE_ROPE_CORRECTION=1  Skip RoPE correction (ablation only)
 """
@@ -54,7 +53,7 @@ if TYPE_CHECKING:
     from vllm.v1.kv_cache_interface import KVCacheConfig
     from vllm.v1.request import Request
 
-logger = logging.getLogger("synapse.semblend")
+logger = logging.getLogger("semblend.vllm")
 # Ensure our logs reach stdout (vLLM may not propagate our logger)
 if not logger.handlers:
     _handler = logging.StreamHandler()
@@ -125,12 +124,10 @@ class SemBlendDonorStore:
         self,
         max_entries: int = 1000,
         min_similarity: float = 0.60,
-        gateway_url: str | None = None,
     ) -> None:
         self._entries: OrderedDict[str, DonorEntry] = OrderedDict()
         self._max_entries = max_entries
         self._min_similarity = min_similarity
-        self._gateway_url = gateway_url
 
     @property
     def size(self) -> int:
@@ -276,11 +273,6 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
 
         # SemBlend config
         self._enabled = os.environ.get("SEMBLEND_ENABLED", "1") == "1"
-        gateway_url = os.environ.get(
-            "SEMBLEND_GATEWAY_URL",
-            os.environ.get("SYNAPSE_GATEWAY_URL", ""),
-        )
-
         # New in-process pipeline (Phase 2 refactor)
         # Falls back to legacy SemBlendDonorStore if pipeline init fails
         self._pipeline = None
@@ -334,7 +326,6 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         self._donor_store = SemBlendDonorStore(
             max_entries=int(os.environ.get("SEMBLEND_MAX_DONORS", "1000")),
             min_similarity=float(os.environ.get("SEMBLEND_MIN_SIMILARITY", "0.60")),
-            gateway_url=gateway_url or None,
         )
 
         # Donor token substitution map: req_id → donor_token_ids
@@ -391,8 +382,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
 
         msg = (
             f"SemBlend connector initialized: enabled={self._enabled}, "
-            f"min_similarity={self._donor_store._min_similarity:.2f}, "
-            f"gateway={gateway_url or '(none)'}"
+            f"min_similarity={self._donor_store._min_similarity:.2f}"
         )
         logger.info(msg)
         print(f"[SemBlend] {msg}", file=sys.stderr, flush=True)
