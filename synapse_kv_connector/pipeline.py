@@ -23,8 +23,8 @@ def create_vllm_pipeline(
     chunk_size: int | None = None,
 ) -> SemBlendPipeline:
     """Create a SemBlendPipeline with the local in-process donor store."""
-    from semblend_core.embedder import create_embedder
     from semblend_core.donor_store import DonorStore
+    from semblend_core.embedder import create_embedder
 
     embedder = create_embedder(embedder_type)
     donor_store = DonorStore(

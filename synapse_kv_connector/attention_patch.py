@@ -51,7 +51,6 @@ try:
     from synapse_kv_connector.triton_kernels import (
         PartialPrefillResult,
         partial_prefill,
-        partial_prefill_attention,
         scatter_donor_kv,
     )
 

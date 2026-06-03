@@ -11,6 +11,7 @@ from synapse_kv_connector.partial_attention import (
     compute_attention_mask,
     compute_donor_kv_indices,
 )
+
 # Triton kernels — optional, require torch + triton
 try:
     from synapse_kv_connector.triton_kernels import (
@@ -59,10 +60,18 @@ __all__ = [
     "HAS_SEMBLEND_CONNECTOR",
     "HAS_SEMBLEND_PIPELINE",
     "HAS_TRITON_KERNELS",
+    "PartialAttentionHook",
     "PartialAttentionPlan",
+    "PartialPrefillResult",
     "SemBlendConnectorV1",
     "SemBlendPipeline",
     "build_attention_plan",
     "compute_attention_mask",
     "compute_donor_kv_indices",
+    "masked_qkv_projection",
+    "partial_prefill",
+    "partial_prefill_attention",
+    "patch_model_runner",
+    "scatter_donor_kv",
+    "scatter_donor_kv_paged",
 ]

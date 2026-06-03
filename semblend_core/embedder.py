@@ -15,8 +15,12 @@ import logging
 import os
 import time
 from enum import Enum
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from semblend_core.segment_embeddings import EmbedResult
 
 logger = logging.getLogger(__name__)
 

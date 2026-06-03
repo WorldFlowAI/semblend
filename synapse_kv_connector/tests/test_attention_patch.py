@@ -85,8 +85,6 @@ class TestApplyKvPatch:
         np.testing.assert_array_equal(result[0, 0, 3, :], np.zeros(head_dim, dtype=np.float16))
 
     def test_no_copy_for_full_recompute_layer(self):
-        plan = _make_plan(num_layers=2)
-
         # Layer with recompute_all = True should return empty pairs
         full_plan = PartialAttentionPlan(
             target_len=10,

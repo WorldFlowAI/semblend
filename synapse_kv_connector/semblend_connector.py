@@ -31,6 +31,7 @@ Usage:
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -39,10 +40,9 @@ import time
 from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import torch
-
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorBase_V1
 
 if TYPE_CHECKING:
@@ -1224,8 +1224,6 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
             # num_external_tokens = lmcache_cached - vllm_cached - recalc
             load_specs = getattr(engine_impl, "load_specs", None)
             if load_specs is not None:
-                from dataclasses import dataclass as _dc
-
                 # Import LoadSpec from LMCache
                 LoadSpec = type(next(iter(load_specs.values()))) if load_specs else None
                 if LoadSpec is None:
@@ -1524,10 +1522,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
 
         # Build CompositeChunkSource list from the plan's chunk assignments
         try:
-            from lmcache.v1.lookup_client.semantic_provider import (
-                CompositeChunkSource,
-                SemanticLookupResult,
-            )
+            from lmcache.v1.lookup_client.semantic_provider import CompositeChunkSource
         except ImportError:
             print(
                 "[SemBlend] LMCache composite API not available, falling back to single-donor",
@@ -1612,7 +1607,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
 
         if primary_hit is None or primary_hit <= 0:
             print(
-                f"[SemBlend] COMPOSITE: primary donor KV evicted, falling back to single-donor",
+                "[SemBlend] COMPOSITE: primary donor KV evicted, falling back to single-donor",
                 file=sys.stderr,
                 flush=True,
             )
@@ -1786,8 +1781,6 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         Called during register_kv_caches (worker-side).
         """
         try:
-            import inspect
-
             from synapse_kv_connector.model_runner_hook import patch_model_runner
 
             for frame_info in inspect.stack():
@@ -1829,8 +1822,6 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
             from lmcache.v1.compute.models.utils import VLLMModelTracker
 
             # Walk the stack to find the GPUModelRunnerV1 instance
-            import inspect
-
             model = None
             for frame_info in inspect.stack():
                 local_self = frame_info.frame.f_locals.get("self")

@@ -18,8 +18,6 @@ try:
 except ImportError:
     HAS_TORCH = False
 
-pytestmark = pytest.mark.skipif(not HAS_TORCH, reason="torch not available")
-
 from synapse_kv_connector.triton_kernels import (
     PartialPrefillResult,
     masked_qkv_projection,
@@ -28,6 +26,8 @@ from synapse_kv_connector.triton_kernels import (
     scatter_donor_kv,
     scatter_donor_kv_paged,
 )
+
+pytestmark = pytest.mark.skipif(not HAS_TORCH, reason="torch not available")
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -53,9 +53,6 @@ class TestRoPECorrection:
         num_heads, head_dim = 4, 128
         raw_k = torch.randn(num_heads, 1, head_dim, dtype=torch.float32)
 
-        donor_pos = torch.tensor([0], dtype=torch.int32)
-        target_pos = torch.tensor([0], dtype=torch.int32)
-
         # Compute K at donor position 5
         k_at_5 = apply_rope_from_scratch(raw_k, torch.tensor([5]), head_dim)
 
