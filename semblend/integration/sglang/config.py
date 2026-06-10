@@ -12,7 +12,22 @@ store. There is no remote backend or service dependency.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Optional
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str) -> int | None:
+    value = os.environ.get(name)
+    if value is None or value.strip() == "":
+        return None
+    return int(value)
 
 
 @dataclass(frozen=True)
@@ -61,7 +76,24 @@ class SemBlendProviderConfig:
     # (cold prefill happens normally) without tripping the leak detector.
     #
     # Set to False once the lock_ref fix is confirmed present.
-    discovery_only: bool = False
+    discovery_only: bool = _env_bool("SEMBLEND_DISCOVERY_ONLY", False)
+
+    # Quality-first materialization safety. The current SGLang prefix-cache
+    # contract can only express prefix-shaped hits. If SemBlend finds a reusable
+    # span that starts later in the unmatched target suffix, collapsing it to the
+    # prefix boundary can apply donor KV to wrapper/instruction/schema tokens.
+    # Keep this enabled unless the engine supports true recompute holes or
+    # segmented/non-prefix materialization.
+    strict_prefix_boundary: bool = _env_bool("SEMBLEND_STRICT_PREFIX_BOUNDARY", True)
+
+    # Optional extra guard: only materialize token-exact spans. Semantic search
+    # can still discover candidate workers; approximate/fuzzy chunks are left
+    # for future segmented recompute support instead of being injected as KV.
+    exact_materialization_only: bool = _env_bool("SEMBLEND_EXACT_MATERIALIZATION_ONLY", True)
+
+    # Experimental SGLang path: return the full segment plan instead of
+    # collapsing the best run into the legacy contiguous-prefix contract.
+    return_segments: bool = _env_bool("SEMBLEND_RETURN_SEGMENTS", False)
 
     @classmethod
     def from_dict(cls, d: dict) -> "SemBlendProviderConfig":
@@ -71,4 +103,8 @@ class SemBlendProviderConfig:
         FuzzyMatchConfig without worrying about version skew.
         """
         known = {f for f in cls.__dataclass_fields__}
-        return cls(**{k: v for k, v in d.items() if k in known})
+        values = {k: v for k, v in d.items() if k in known}
+        block_size = _env_int("SEMBLEND_BLOCK_SIZE")
+        if block_size is not None:
+            values["block_size"] = block_size
+        return cls(**values)

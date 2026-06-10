@@ -577,33 +577,44 @@ class SemBlendProviderAdapter:
         otherwise returns a contiguous-span result compatible with the
         non-semantic `TokenBlockMatchProvider` path.
         """
-        donor_id = pipeline_result.donor_id
-        if donor_id is None:
-            logger.debug("[FUZZY] _convert_result: donor_id is None, drop")
+        donor_ids = _ordered_donor_ids(pipeline_result)
+        if not donor_ids:
+            logger.debug("[FUZZY] _convert_result: no donor ids, drop")
             return None
+        donor_id = donor_ids[0]
+
         with self._register_lock:
-            handle = self._donor_kv.get(donor_id)
-            if handle is None:
-                logger.debug(
-                    "[FUZZY] _convert_result: no handle for donor_id=%s "
-                    "(donor_kv size=%d) — pipeline kept this donor but adapter "
-                    "had already evicted it",
-                    donor_id,
-                    len(self._donor_kv),
-                )
-                return None
-            if handle.extra_key != extra_key:
-                logger.info(
-                    "[FUZZY] _convert_result: rejecting donor_id=%s extra_key=%r "
-                    "for query extra_key=%r",
-                    donor_id,
-                    handle.extra_key,
-                    extra_key,
-                )
-                return None
-            # Mark the donor as recently used for LRU. Move to end of the
-            # OrderedDict so the next eviction wave skips this entry.
-            self._donor_kv.move_to_end(donor_id)
+            donor_handles: dict[str, _DonorKVHandle] = {}
+            for did in donor_ids:
+                handle = self._donor_kv.get(did)
+                if handle is None:
+                    logger.debug(
+                        "[FUZZY] _convert_result: no handle for donor_id=%s "
+                        "(donor_kv size=%d) — pipeline kept this donor but adapter "
+                        "had already evicted it",
+                        did,
+                        len(self._donor_kv),
+                    )
+                    return None
+                if handle.extra_key != extra_key:
+                    logger.info(
+                        "[FUZZY] _convert_result: rejecting donor_id=%s extra_key=%r "
+                        "for query extra_key=%r",
+                        did,
+                        handle.extra_key,
+                        extra_key,
+                    )
+                    return None
+                donor_handles[did] = handle
+
+            # Mark all contributing donors as recently used for LRU. A
+            # composite result can draw from several requests; evicting a
+            # secondary donor before the backend consumes it would corrupt the
+            # segment plan just as badly as evicting the primary donor.
+            for did in donor_ids:
+                self._donor_kv.move_to_end(did)
+
+        handle = donor_handles[donor_id]
 
         # Build layer_recompute_mask from pipeline_result.layer_deviations.
         layer_mask = None
@@ -612,7 +623,13 @@ class SemBlendProviderAdapter:
                 bool(d.get("shouldRecompute", False)) for d in pipeline_result.layer_deviations
             ]
 
-        segments = self._build_segments(pipeline_result, handle, layer_mask)
+        segments = self._build_segments(
+            pipeline_result,
+            handle,
+            layer_mask,
+            target_base_pos=already_matched_len if self._config.return_segments else 0,
+            donor_handles=donor_handles,
+        )
 
         # SGLang's prefix-cache device_indices contract treats the cached
         # span as a contiguous prefix [0..exact+N-1]. To surface a semantic
@@ -634,6 +651,49 @@ class SemBlendProviderAdapter:
         # K/V at those positions. The bathtub layer_recompute_mask is
         # designed to recompute layers where the deviation is largest;
         # see SEMANTIC_FUZZY_MATCH.md for the quality bound.
+        if segments and self._config.return_segments:
+            cached_token_ids = []
+            kv_parts = []
+            total_covered = 0
+            for seg in segments:
+                cached_token_ids.extend(
+                    _segment_cached_token_ids(
+                        seg,
+                        pipeline_result,
+                        donor_handles,
+                    )
+                )
+                kv_parts.append(seg.donor_kv_indices)
+                total_covered += len(_as_list(seg.target_positions))
+
+            logger.info(
+                "[FUZZY] _convert_result: returning %d semantic segments "
+                "covering %d tokens for donor_id=%s",
+                len(segments),
+                total_covered,
+                donor_id,
+            )
+
+            quality = QualitySignals(
+                cosine_similarity=float(pipeline_result.similarity),
+                reuse_ratio=float(pipeline_result.reuse_ratio),
+                confidence_tier=str(getattr(pipeline_result, "confidence_tier", "exact")),
+                passed_quality_gate=True,
+            )
+            return FuzzyMatchResult(
+                cached_token_count=total_covered,
+                cached_token_ids=cached_token_ids[:total_covered],
+                prompt_token_count=total_covered,
+                kv_cache_indices=_concat_indices(kv_parts, handle.kv_indices),
+                position_offset=already_matched_len,
+                cached_start_pos=already_matched_len,
+                _match_entry=donor_id,
+                segments=segments,
+                layer_recompute_mask=layer_mask,
+                quality_signals=quality,
+                donor_last_node_id=handle.last_node_id,
+            )
+
         if segments:
             best = max(
                 segments,
@@ -643,14 +703,52 @@ class SemBlendProviderAdapter:
             if not best_targets:
                 self._stats.match_hits_dropped_no_prefix_run += 1
                 return None
+
+            if self._config.strict_prefix_boundary and int(best_targets[0]) != 0:
+                logger.info(
+                    "[FUZZY] _convert_result: rejecting donor_id=%s because "
+                    "best target run starts at %d, not the unmatched prefix "
+                    "boundary 0. Engine requires true segmented materialization "
+                    "or cold fallback for this hit.",
+                    donor_id,
+                    int(best_targets[0]),
+                )
+                self._stats.match_hits_dropped_nonprefix_target_run += 1
+                return None
+
+            if self._config.exact_materialization_only and not _segment_is_token_exact(
+                best,
+                pipeline_result.donor_tokens,
+                remaining,
+                donor_base_pos=handle.start_pos,
+            ):
+                logger.info(
+                    "[FUZZY] _convert_result: rejecting donor_id=%s because "
+                    "best target run contains non-identical token pairs. "
+                    "Semantic discovery remains valid, but KV materialization "
+                    "requires exact token spans or segmented recompute support.",
+                    donor_id,
+                )
+                self._stats.match_hits_dropped_nonexact_run += 1
+                return None
+
             segments = [best]
         else:
             best = None
 
+        cached_token_ids: List[int]
         if segments:
-            total_covered = len(_as_list(segments[0].target_positions))
+            head = segments[0]
+            head_donor_positions = _as_list(head.donor_positions)
+            total_covered = len(_as_list(head.target_positions))
+            cached_token_ids = [
+                pipeline_result.donor_tokens[int(pos) - handle.start_pos]
+                for pos in head_donor_positions
+                if 0 <= int(pos) - handle.start_pos < len(pipeline_result.donor_tokens)
+            ]
         else:
             total_covered = 0
+            cached_token_ids = []
 
         quality = QualitySignals(
             cosine_similarity=float(pipeline_result.similarity),
@@ -676,10 +774,11 @@ class SemBlendProviderAdapter:
             cached_start_pos = handle.start_pos
             out_segments = None
             total_covered = min(len(pipeline_result.donor_tokens), len(remaining))
+            cached_token_ids = list(pipeline_result.donor_tokens[:total_covered])
 
         return FuzzyMatchResult(
             cached_token_count=total_covered,
-            cached_token_ids=list(pipeline_result.donor_tokens[:total_covered]),
+            cached_token_ids=cached_token_ids[:total_covered],
             prompt_token_count=total_covered,
             kv_cache_indices=kv_cache_indices,
             position_offset=already_matched_len,
@@ -696,6 +795,9 @@ class SemBlendProviderAdapter:
         pipeline_result: Any,
         handle: _DonorKVHandle,
         layer_mask: Optional[List[bool]],
+        *,
+        target_base_pos: int,
+        donor_handles: Optional[dict[str, _DonorKVHandle]] = None,
     ) -> List[FuzzyMatchSegment]:
         """Group `position_map` pairs into contiguous segments.
 
@@ -703,6 +805,16 @@ class SemBlendProviderAdapter:
         sides advance by +1 per step. Runs shorter than a single token are
         skipped (nothing to reuse).
         """
+        donor_handles = donor_handles or {}
+        multi_segments = self._build_multi_donor_segments(
+            pipeline_result,
+            donor_handles,
+            layer_mask,
+            target_base_pos=target_base_pos,
+        )
+        if multi_segments:
+            return multi_segments
+
         pmap = getattr(pipeline_result, "position_map", None)
         if pmap is None:
             return []
@@ -735,7 +847,17 @@ class SemBlendProviderAdapter:
                 continue
             seg_donor_positions = donor_positions[start:end]
             seg_target_positions = target_positions[start:end]
-            seg_offset = seg_donor_positions[0] - handle.start_pos
+            # The alignment pipeline sees only the registered donor range, so
+            # donor positions are relative to cache_start_pos. SGLang's KV pool
+            # and RoPE correction need absolute positions in the original donor
+            # request.
+            seg_donor_positions_abs = [
+                int(handle.start_pos) + int(pos) for pos in seg_donor_positions
+            ]
+            seg_target_positions_abs = [
+                int(target_base_pos) + int(pos) for pos in seg_target_positions
+            ]
+            seg_offset = seg_donor_positions_abs[0]
             seg_length = end - start
 
             # Populate BOTH addressing modes:
@@ -752,8 +874,8 @@ class SemBlendProviderAdapter:
             )
             segments.append(
                 FuzzyMatchSegment(
-                    target_positions=seg_target_positions,
-                    donor_positions=seg_donor_positions,
+                    target_positions=seg_target_positions_abs,
+                    donor_positions=seg_donor_positions_abs,
                     donor_node_id=handle.last_node_id,
                     donor_offset=seg_offset,
                     length=seg_length,
@@ -762,6 +884,106 @@ class SemBlendProviderAdapter:
                     layer_recompute_mask=layer_mask,
                 )
             )
+        return segments
+
+    def _build_multi_donor_segments(
+        self,
+        pipeline_result: Any,
+        donor_handles: dict[str, _DonorKVHandle],
+        layer_mask: Optional[List[bool]],
+        *,
+        target_base_pos: int,
+    ) -> List[FuzzyMatchSegment]:
+        """Build segments from a composite multi-donor position map.
+
+        ``PipelineResult.position_map`` only carries donor/target positions and
+        therefore cannot distinguish donor A position 42 from donor B position
+        42. Multi-donor results also carry ``multi_donor_position_map`` with a
+        donor id per pair; this method preserves that identity for SGLang's
+        segmented prefill backend.
+        """
+        pmap = getattr(pipeline_result, "multi_donor_position_map", None)
+        if pmap is None:
+            return []
+
+        donor_ids = list(getattr(pmap, "donor_ids", []))
+        donor_positions = list(getattr(pmap, "donor_positions", []))
+        target_positions = list(getattr(pmap, "target_positions", []))
+        if not donor_ids or not donor_positions or not target_positions:
+            return []
+        if not (
+            len(donor_ids) == len(donor_positions) == len(target_positions)
+        ):
+            logger.debug(
+                "multi_donor_position_map mismatch: %d donor ids vs %d donor "
+                "positions vs %d target positions",
+                len(donor_ids),
+                len(donor_positions),
+                len(target_positions),
+            )
+            return []
+
+        triples = sorted(
+            (
+                (str(did), int(dpos), int(tpos))
+                for did, dpos, tpos in zip(
+                    donor_ids,
+                    donor_positions,
+                    target_positions,
+                )
+            ),
+            key=lambda item: item[2],
+        )
+
+        runs: List[tuple[int, int]] = []
+        run_start = 0
+        for i in range(1, len(triples)):
+            prev_did, prev_dpos, prev_tpos = triples[i - 1]
+            did, dpos, tpos = triples[i]
+            if did != prev_did or dpos != prev_dpos + 1 or tpos != prev_tpos + 1:
+                runs.append((run_start, i))
+                run_start = i
+        runs.append((run_start, len(triples)))
+
+        segments: List[FuzzyMatchSegment] = []
+        for start, end in runs:
+            run = triples[start:end]
+            donor_id = run[0][0]
+            handle = donor_handles.get(donor_id)
+            if handle is None:
+                logger.debug(
+                    "[FUZZY] _build_multi_donor_segments: missing handle for "
+                    "donor_id=%s",
+                    donor_id,
+                )
+                return []
+
+            seg_donor_positions_abs = [
+                int(handle.start_pos) + int(dpos) for _, dpos, _ in run
+            ]
+            seg_target_positions_abs = [
+                int(target_base_pos) + int(tpos) for _, _, tpos in run
+            ]
+            seg_offset = seg_donor_positions_abs[0]
+            seg_length = len(run)
+            kv_slice = _slice_indices(
+                handle.kv_indices,
+                offset=seg_offset,
+                length=seg_length,
+            )
+            segments.append(
+                FuzzyMatchSegment(
+                    target_positions=seg_target_positions_abs,
+                    donor_positions=seg_donor_positions_abs,
+                    donor_node_id=handle.last_node_id,
+                    donor_offset=seg_offset,
+                    length=seg_length,
+                    donor_kv_indices=kv_slice,
+                    donor_req_id=donor_id,
+                    layer_recompute_mask=layer_mask,
+                )
+            )
+
         return segments
 
 
@@ -783,6 +1005,8 @@ class _Stats:
     # cannot express it as device_indices. The match is dropped rather than
     # emitted as a no-op.
     match_hits_dropped_no_prefix_run: int = 0
+    match_hits_dropped_nonprefix_target_run: int = 0
+    match_hits_dropped_nonexact_run: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -796,6 +1020,8 @@ class _Stats:
             "match_rejected_low_reuse": self.match_rejected_low_reuse,
             "match_rejected_no_kv": self.match_rejected_no_kv,
             "match_hits_dropped_no_prefix_run": self.match_hits_dropped_no_prefix_run,
+            "match_hits_dropped_nonprefix_target_run": self.match_hits_dropped_nonprefix_target_run,
+            "match_hits_dropped_nonexact_run": self.match_hits_dropped_nonexact_run,
             "donor_kv_evicted": self.donor_kv_evicted,
             "cache_resets": self.cache_resets,
         }
@@ -850,6 +1076,94 @@ def _empty_tensor_like(template: Any) -> Any:
         return []
 
 
+def _concat_indices(parts: List[Any], template: Any) -> Any:
+    """Concatenate KV-index slices while preserving the caller's container type."""
+    filtered = [part for part in parts if part is not None and len(_as_list(part)) > 0]
+    if not filtered:
+        return _empty_tensor_like(template)
+
+    first = filtered[0]
+    try:
+        import torch
+
+        if isinstance(first, torch.Tensor):
+            tensors = []
+            for part in filtered:
+                if isinstance(part, torch.Tensor):
+                    tensors.append(part.reshape(-1).to(device=first.device, dtype=first.dtype))
+                else:
+                    tensors.append(
+                        torch.as_tensor(_as_list(part), device=first.device, dtype=first.dtype)
+                    )
+            return torch.cat(tensors)
+    except Exception:
+        pass
+
+    try:
+        if isinstance(first, np.ndarray):
+            return np.concatenate([np.asarray(part).reshape(-1) for part in filtered])
+    except Exception:
+        pass
+
+    out: list = []
+    for part in filtered:
+        out.extend(_as_list(part))
+    return out
+
+
+def _ordered_donor_ids(pipeline_result: Any) -> list[str]:
+    """Return contributing donor ids in stable primary-first order."""
+    out: list[str] = []
+
+    def add(value: Any) -> None:
+        if value is None:
+            return
+        donor_id = str(value)
+        if donor_id and donor_id not in out:
+            out.append(donor_id)
+
+    add(getattr(pipeline_result, "donor_id", None))
+    for donor_id in getattr(pipeline_result, "donor_ids", []) or []:
+        add(donor_id)
+
+    pmap = getattr(pipeline_result, "multi_donor_position_map", None)
+    for donor_id in getattr(pmap, "donor_ids", []) or []:
+        add(donor_id)
+
+    return out
+
+
+def _segment_cached_token_ids(
+    segment: FuzzyMatchSegment,
+    pipeline_result: Any,
+    donor_handles: dict[str, _DonorKVHandle],
+) -> list[int]:
+    """Best-effort cached token ids for telemetry/debug fields.
+
+    SGLang's segmented backend consumes ``donor_kv_indices`` rather than
+    ``cached_token_ids``. For primary-donor single-result paths we can preserve
+    exact donor token ids; for secondary donors in a composite result the
+    current ``PipelineResult`` does not carry each donor's tokens, so we fill
+    zeros instead of incorrectly reusing the primary donor's token ids.
+    """
+    donor_positions = _as_list(segment.donor_positions)
+    donor_id = getattr(segment, "donor_req_id", None)
+    primary_id = getattr(pipeline_result, "donor_id", None)
+    if donor_id is None or donor_id != primary_id:
+        return [0] * len(donor_positions)
+
+    donor_tokens = list(getattr(pipeline_result, "donor_tokens", []) or [])
+    handle = donor_handles.get(str(donor_id))
+    if handle is None or not donor_tokens:
+        return [0] * len(donor_positions)
+
+    token_ids: list[int] = []
+    for pos in donor_positions:
+        rel = int(pos) - int(handle.start_pos)
+        token_ids.append(donor_tokens[rel] if 0 <= rel < len(donor_tokens) else 0)
+    return token_ids
+
+
 def _snapshot_kv_indices(kv_cache: Any) -> Any:
     """Snapshot an engine-owned KV-index handle at the adapter boundary.
 
@@ -884,3 +1198,24 @@ def _snapshot_kv_indices(kv_cache: Any) -> Any:
         return list(obj)
 
     return obj
+
+
+def _segment_is_token_exact(
+    segment: FuzzyMatchSegment,
+    donor_tokens: list[int],
+    target_tokens: list[int],
+    *,
+    donor_base_pos: int = 0,
+) -> bool:
+    donor_positions = _as_list(segment.donor_positions)
+    target_positions = _as_list(segment.target_positions)
+    if len(donor_positions) != len(target_positions):
+        return False
+    for donor_pos, target_pos in zip(donor_positions, target_positions):
+        d = int(donor_pos) - int(donor_base_pos)
+        t = int(target_pos)
+        if d < 0 or t < 0 or d >= len(donor_tokens) or t >= len(target_tokens):
+            return False
+        if donor_tokens[d] != target_tokens[t]:
+            return False
+    return True

@@ -57,6 +57,17 @@ class _StubPosMap:
 
 
 @dataclass
+class _StubMultiDonorPosMap:
+    donor_ids: list
+    donor_positions: list
+    target_positions: list
+
+    @property
+    def num_pairs(self) -> int:
+        return len(self.target_positions)
+
+
+@dataclass
 class _StubPipelineResult:
     found: bool
     donor_id: Optional[str] = None
@@ -68,6 +79,8 @@ class _StubPipelineResult:
     position_map: _StubPosMap = field(default_factory=lambda: _StubPosMap([], []))
     confidence_tier: str = "exact"
     composite_plan: Optional[Any] = None  # non-None marks a multi-donor result
+    donor_ids: list = field(default_factory=list)
+    multi_donor_position_map: Optional[_StubMultiDonorPosMap] = None
 
 
 class _StubPipeline:
@@ -655,7 +668,7 @@ class TestMatchHits:
             reuse_ratio=0.7,
             donor_tokens=list(range(16)),
             position_map=_StubPosMap(
-                donor_positions=[4, 5, 6, 7, 0, 1, 2, 3],
+                donor_positions=list(range(8)),
                 target_positions=[0, 1, 2, 3, 4, 5, 6, 7],
             ),
             layer_deviations=[],
@@ -838,9 +851,9 @@ class TestMatchHits:
 
     def test_position_offset_respects_already_matched_len(self, adapter, pipeline):
         self._register_donor(adapter, nt=16)
-        # target_positions are in the absolute prompt frame, so they must
-        # start at already_matched_len for the prefix-anchored gate to
-        # accept the head segment.
+        # The pipeline receives only the unmatched suffix, so target_positions
+        # are relative to that suffix. SGLang still needs position_offset to
+        # carry the already-matched exact prefix length.
         pipeline.next_result = _StubPipelineResult(
             found=True,
             donor_id="donor-A",
@@ -849,18 +862,141 @@ class TestMatchHits:
             donor_tokens=list(range(16)),
             position_map=_StubPosMap(
                 donor_positions=list(range(16)),
-                target_positions=list(range(8, 24)),
+                target_positions=list(range(16)),
             ),
         )
+        prompt_token_ids = list(range(100, 108)) + list(range(16)) + list(range(200, 216))
         result = adapter.match(
-            prompt_token_ids=list(range(40)),
+            prompt_token_ids=prompt_token_ids,
             already_matched_len=8,
             prompt_text="q",
         )
         assert result is not None
         assert result.position_offset == 8
         # Remaining tokens passed to pipeline are after already_matched_len.
-        assert pipeline.find_donor_calls[0]["token_ids"] == list(range(8, 40))
+        assert pipeline.find_donor_calls[0]["token_ids"] == list(range(16)) + list(range(200, 216))
+
+    def test_return_segments_preserves_multi_donor_spans(self, config, pipeline):
+        cfg = SemBlendProviderConfig(
+            **{
+                **config.__dict__,
+                "return_segments": True,
+                "strict_prefix_boundary": False,
+                "exact_materialization_only": False,
+            }
+        )
+        adapter = SemBlendProviderAdapter(config=cfg, pipeline=pipeline)
+        self._register_donor(
+            adapter,
+            request_id="donor-A",
+            kv=list(range(100, 116)),
+            nt=16,
+        )
+        self._register_donor(
+            adapter,
+            request_id="donor-B",
+            kv=list(range(200, 216)),
+            nt=16,
+        )
+        adapter.on_donor_inserted("donor-A", donor_last_node_id=111)
+        adapter.on_donor_inserted("donor-B", donor_last_node_id=222)
+
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            donor_ids=["donor-A", "donor-B"],
+            similarity=0.95,
+            reuse_ratio=0.70,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(donor_positions=[], target_positions=[]),
+            multi_donor_position_map=_StubMultiDonorPosMap(
+                donor_ids=[
+                    "donor-A",
+                    "donor-A",
+                    "donor-A",
+                    "donor-B",
+                    "donor-B",
+                    "donor-A",
+                    "donor-A",
+                ],
+                donor_positions=[4, 5, 6, 8, 9, 10, 11],
+                target_positions=[2, 3, 4, 6, 7, 9, 10],
+            ),
+            composite_plan=object(),
+            confidence_tier="verified_reuse",
+        )
+
+        result = adapter.match(
+            prompt_token_ids=list(range(32)),
+            already_matched_len=5,
+            prompt_text="query",
+        )
+
+        assert result is not None
+        assert result.cached_token_count == 7
+        assert result.donor_last_node_id == 111
+        assert list(result.kv_cache_indices) == [104, 105, 106, 208, 209, 110, 111]
+        assert len(result.segments) == 3
+        assert [
+            (
+                segment.donor_req_id,
+                list(segment.target_positions),
+                list(segment.donor_positions),
+                list(segment.donor_kv_indices),
+                segment.donor_node_id,
+            )
+            for segment in result.segments
+        ] == [
+            ("donor-A", [7, 8, 9], [4, 5, 6], [104, 105, 106], 111),
+            ("donor-B", [11, 12], [8, 9], [208, 209], 222),
+            ("donor-A", [14, 15], [10, 11], [110, 111], 111),
+        ]
+
+    def test_rejects_nonprefix_target_run_by_default(self, adapter, pipeline):
+        self._register_donor(adapter, nt=16)
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.9,
+            reuse_ratio=0.75,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(
+                donor_positions=list(range(8)),
+                target_positions=list(range(4, 12)),
+            ),
+        )
+
+        result = adapter.match(
+            prompt_token_ids=list(range(32)),
+            already_matched_len=0,
+            prompt_text="query",
+        )
+
+        assert result is None
+        assert adapter.stats()["match_hits_dropped_nonprefix_target_run"] == 1
+
+    def test_rejects_nonexact_materialization_by_default(self, adapter, pipeline):
+        self._register_donor(adapter, nt=16)
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.9,
+            reuse_ratio=0.75,
+            donor_tokens=list(range(16)),
+            position_map=_StubPosMap(
+                donor_positions=[4, 5, 6, 7],
+                target_positions=[0, 1, 2, 3],
+            ),
+        )
+
+        result = adapter.match(
+            prompt_token_ids=list(range(32)),
+            already_matched_len=0,
+            prompt_text="query",
+        )
+
+        assert result is None
+        assert adapter.stats()["match_hits_dropped_nonexact_run"] == 1
 
 
 # ---------------------------------------------------------------------
