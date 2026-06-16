@@ -115,6 +115,90 @@ class SemBlendProviderAdapter:
 
         self._stats = _Stats()
 
+        # Optional donor lifecycle event emission; off until configure_events().
+        # The sink is called from the register executor thread, so it must be
+        # synchronous and non-blocking.
+        self._event_sink: Optional[Any] = None
+        self._event_ns: Optional[Any] = None
+        self._event_worker_id: int = 0
+        self._event_dp_rank: int = 0
+        self._event_id: int = 0
+        self._event_lock = threading.Lock()
+
+    def configure_events(
+        self,
+        worker_id: int,
+        namespace: Any,
+        sink: Any,
+        *,
+        dp_rank: int = 0,
+    ) -> None:
+        """Enable donor lifecycle event emission. ``namespace`` is a
+        ``CacheNamespace``; ``sink`` is a ``Callable[[dict], None]`` that ships
+        one event. Emits a generation-reset at the stream head."""
+        from semblend.integration.dynamo import semantic_events as se
+
+        self._event_sink = sink
+        self._event_ns = namespace
+        self._event_worker_id = worker_id
+        self._event_dp_rank = dp_rank
+        with self._event_lock:
+            eid = self._event_id
+            self._event_id += 1
+        sink(
+            se.generation_reset_event(
+                event_id=eid,
+                worker_id=worker_id,
+                generation=self._generation,
+                dp_rank=dp_rank,
+            )
+        )
+
+    def _next_event_id(self) -> int:
+        with self._event_lock:
+            eid = self._event_id
+            self._event_id += 1
+            return eid
+
+    def _emit_donor_registered(
+        self, request_id: str, token_ids: List[int], embedding: Any
+    ) -> None:
+        if self._event_sink is None or self._event_ns is None:
+            return
+        from semblend.integration.dynamo import semantic_events as se
+
+        event = se.donor_registered_event(
+            event_id=self._next_event_id(),
+            worker_id=self._event_worker_id,
+            donor_id=request_id,
+            namespace=self._event_ns,
+            token_ids=list(token_ids),
+            embedding=list(embedding),
+            dp_rank=self._event_dp_rank,
+            provider_generation=self._generation,
+        )
+        try:
+            self._event_sink(event)
+        except Exception:
+            logger.warning("[FUZZY] semantic event sink failed (registered)", exc_info=True)
+
+    def _emit_donor_evicted(self, request_id: str) -> None:
+        if self._event_sink is None:
+            return
+        from semblend.integration.dynamo import semantic_events as se
+
+        event = se.donor_evicted_event(
+            event_id=self._next_event_id(),
+            worker_id=self._event_worker_id,
+            donor_id=request_id,
+            dp_rank=self._event_dp_rank,
+            provider_generation=self._generation,
+        )
+        try:
+            self._event_sink(event)
+        except Exception:
+            logger.warning("[FUZZY] semantic event sink failed (evicted)", exc_info=True)
+
     # ------------------------------------------------------------------
     # Construction helpers
     # ------------------------------------------------------------------
@@ -289,6 +373,9 @@ class SemBlendProviderAdapter:
                 self._pipeline._donor_store.add_donor(node)  # noqa: SLF001
             t_store_ms = (time.monotonic() - t_store_start) * 1000
 
+            # Emit donor-registered now that the donor is queryable.
+            self._emit_donor_registered(request_id, segment_tokens, embedding)
+
             t_total_ms = (time.monotonic() - t_start) * 1000
             logger.info(
                 "[FUZZY] register_donor_async: ok request_id=%s tokens=%d "
@@ -319,8 +406,9 @@ class SemBlendProviderAdapter:
         """
         max_entries = max(int(self._config.max_entries), 1)
         while len(self._donor_kv) + reserve > max_entries and self._donor_kv:
-            self._donor_kv.popitem(last=False)
+            evicted_id, _ = self._donor_kv.popitem(last=False)
             self._stats.donor_kv_evicted += 1
+            self._emit_donor_evicted(evicted_id)
 
     def on_donor_inserted(
         self,
