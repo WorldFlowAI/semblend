@@ -125,6 +125,50 @@ class SemBlendProviderAdapter:
         self._event_id: int = 0
         self._event_lock = threading.Lock()
 
+        # Auto-enable emission when a NATS endpoint is set in the environment,
+        # so the engine integration does not need to call configure_events.
+        # No-op when unset, so local and test usage is unchanged.
+        self._maybe_configure_events_from_env()
+
+    def _maybe_configure_events_from_env(self) -> None:
+        """Enable contract emission from environment configuration.
+
+        Reads SEMBLEND_NATS_URL/SEMBLEND_NATS_SUBJECT (transport),
+        SEMBLEND_MODEL_NAME (namespace) and POD_NAME (worker id ordinal).
+        """
+        import os
+        import re
+
+        if not os.environ.get("SEMBLEND_NATS_URL"):
+            return
+        try:
+            from semblend.integration.dynamo.nats_publisher import ThreadedNatsPublisher
+            from semblend.integration.dynamo.semantic_events import CacheNamespace
+
+            publisher = ThreadedNatsPublisher.from_env()
+            if publisher is None:
+                return
+            publisher.wait_ready(10.0)
+            model = os.environ.get("SEMBLEND_MODEL_NAME", "unknown")
+            name = os.environ.get("POD_NAME") or os.environ.get("SEMBLEND_WORKER_ID", "")
+            m = re.search(r"(\d+)\s*$", name)
+            worker_id = int(m.group(1)) if m else abs(hash(name)) % 100000
+            namespace = CacheNamespace(
+                model=model,
+                tokenizer=model,
+                kv_layout="sglang",
+                block_size=int(os.environ.get("SEMBLEND_BLOCK_SIZE", "1")),
+            )
+            self.configure_events(
+                worker_id=worker_id,
+                namespace=namespace,
+                sink=publisher.publish,
+                dp_rank=int(os.environ.get("SEMBLEND_DP_RANK", "0")),
+            )
+            logger.info("[FUZZY] contract emission auto-enabled: worker_id=%d", worker_id)
+        except Exception:
+            logger.warning("[FUZZY] contract emission auto-config failed", exc_info=True)
+
     def configure_events(
         self,
         worker_id: int,
