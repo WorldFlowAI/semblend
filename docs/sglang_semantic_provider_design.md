@@ -6,7 +6,7 @@
 
 **Linked artifacts**:
 - SGLang draft: https://github.com/ibifrost/sglang/blob/feature/support_fuzzy_prefix_match_opensource/Draft_Prefix_Matching.md
-- SemBlend paper: `autoresearch-semblend/paper/semblend.pdf`
+- SemBlend paper: link or attach the current paper artifact with the PR / release notes.
 - Reference implementation: `semblend.integration.sglang.provider.SemBlendProviderAdapter` (this repo)
 
 ## 1. Summary
@@ -346,14 +346,14 @@ If `enable_bathtub=True` but `model_arch` is unset (or unrecognized), the adapte
 
 ## 12. Reproducibility — running the SemBlend bench yourself
 
-Everything below assumes a single-node EKS cluster with 1 GPU and the autoresearch-semblend repo checked out alongside this one. Image builds happen in CI; you do not build locally.
+Everything below assumes a Kubernetes cluster with at least one GPU node and a benchmark harness that can build a SemBlend-enabled SGLang image, launch a fresh backend pod, run the replay set, and collect server logs plus benchmark metrics. Use your own container registry and cluster-specific deployment wrapper; the SemBlend package itself does not require a particular cloud provider.
 
 ### 12.1 One-shot reproduction (recommended)
 
 ```bash
-cd autoresearch-semblend
+cd <benchmark-harness-repo>
 
-# Trigger the cloud build (writes to ECR as sglang-semblend:<sha>)
+# Trigger a SemBlend-enabled SGLang image build in your CI system.
 gh workflow run build-sglang-semblend.yml \
   --ref feature/semblend-sglang-integration \
   -f semblend_sha=<this-repo-sha> \
@@ -372,7 +372,7 @@ SEMBLEND_SHA=<this-repo-sha> SGLANG_SHA=<sglang-fork-sha> \
 # Results land in benchmarks/results/v0.3.x/<run-tag>/COMPARISON.md
 ```
 
-`run_sglang_semblend.sh` deploys a fresh SGLang pod via Helm, runs the bench-runner pod in-cluster, captures TTFT / PPL / hit rate / CI per variant, tears down the pod, and emits a single `COMPARISON.md`. `--restart-between-datasets` cuts the server between datasets so the cumulative pool drift hypothesized in § 10 row 5 cannot accumulate across dataset boundaries.
+`run_sglang_semblend.sh` should deploy a fresh SGLang pod, run the benchmark driver in-cluster, capture TTFT / PPL / hit rate / CI per variant, tear down the pod, and emit a single `COMPARISON.md`. `--restart-between-datasets` cuts the server between datasets so the cumulative pool drift hypothesized in § 10 row 5 cannot accumulate across dataset boundaries.
 
 ### 12.2 Server flags reference
 
@@ -414,7 +414,7 @@ python -m sglang.launch_server \
 
 ### 12.4 Latest validation snapshot
 
-Most recent reference run: A10G + Qwen2.5-1.5B-Instruct, 2026-04-29 (`autoresearch-semblend@36f6498:benchmarks/results/v0.3.x/a10g-leakfix-20260429-183007/COMPARISON.md`).
+Most recent reference run: A10G + Qwen2.5-1.5B-Instruct, 2026-04-29. Link the corresponding `COMPARISON.md` artifact from the public benchmark report or release notes.
 
 | Variant | Dataset | N served | HIT% | Mean speedup |
 |---|---|---|---|---|
