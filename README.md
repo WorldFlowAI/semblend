@@ -131,13 +131,13 @@ The connector also has an optional Synapse/semantic-KV contract emitter. Set
 `SEMBLEND_DONOR_TENANT` and `SEMBLEND_DONOR_TEMPLATE` populate the namespace
 `extra` map used by Synapse policy gates.
 
-The current GPU proof uses a SemBlend-owned TensorRT runtime engine patch,
-explicitly pinned to QwenModel in staging, to activate suffix-only execution
-after the SemBlend recompute boundary. This is the backend-neutral interface
-candidate: the engine path consumes `SemanticKvPlan` metadata, donor spans,
-target spans, target blocks, layer recompute masks, RoPE/layout metadata, and
-the suffix-attention boundary. Upstream TensorRT-LLM should eventually expose
-this as a clean engine API instead of requiring a runtime wrapper.
+The TensorRT-LLM integration includes an optional SemBlend-owned runtime engine
+wrapper that can activate suffix-only execution after a recompute boundary. This
+is a portable interface candidate: the engine path consumes `SemanticKvPlan`
+metadata, donor spans, target spans, target blocks, layer recompute masks,
+RoPE/layout metadata, and the suffix-attention boundary. A future TensorRT-LLM
+integration should expose this through a stable engine API instead of requiring
+a runtime wrapper.
 
 GPU validation harness:
 
