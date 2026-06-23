@@ -51,9 +51,7 @@ def _candidate_modules() -> list[str]:
     configured = os.environ.get("SEMBLEND_TRTLLM_ENGINE_PATCH_MODULES", "")
     modules = [part.strip() for part in configured.split(",") if part.strip()]
     modules.extend(
-        name
-        for name in sys.modules
-        if name.startswith("tensorrt_llm._torch.models.modeling_")
+        name for name in sys.modules if name.startswith("tensorrt_llm._torch.models.modeling_")
     )
     modules.extend(
         [

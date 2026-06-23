@@ -133,8 +133,7 @@ class SemBlendKvConnectorScheduler(KvCacheConnectorScheduler):
         if result.found and result.plan is not None:
             num_new_matched_tokens = max(
                 0,
-                int(getattr(result.plan, "computed_token_count", 0))
-                - int(num_computed_tokens),
+                int(getattr(result.plan, "computed_token_count", 0)) - int(num_computed_tokens),
             )
             if not _enable_materialization():
                 num_new_matched_tokens = 0
@@ -306,9 +305,7 @@ class SemBlendKvConnectorWorker(KvCacheConnectorWorker):
                 "tensor_type": type(kv_cache_tensor).__name__,
                 "shape": list(getattr(kv_cache_tensor, "shape", ()) or ()),
                 "stride": (
-                    list(kv_cache_tensor.stride())
-                    if hasattr(kv_cache_tensor, "stride")
-                    else []
+                    list(kv_cache_tensor.stride()) if hasattr(kv_cache_tensor, "stride") else []
                 ),
                 "dtype": str(getattr(kv_cache_tensor, "dtype", "")),
                 "device": str(getattr(kv_cache_tensor, "device", "")),

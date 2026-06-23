@@ -38,8 +38,8 @@ def build_cache_namespace(
         getattr(getattr(llm_args, "model", None), "model_config", None),
     )
 
-    resolved_model = model or _string_attr(llm_args, "model") or os.environ.get(
-        "SEMBLEND_MODEL_NAME", ""
+    resolved_model = (
+        model or _string_attr(llm_args, "model") or os.environ.get("SEMBLEND_MODEL_NAME", "")
     )
     resolved_tokenizer = tokenizer or _string_attr(llm_args, "tokenizer") or resolved_model
     resolved_block_size = int(
@@ -88,7 +88,9 @@ def build_cache_namespace(
         getattr(getattr(llm_args, "quant_config", None), "quant_algo", None), "name"
     )
     if not resolved_quant:
-        resolved_quant = _string_attr(getattr(model_config, "quantization_config", None), "quant_method")
+        resolved_quant = _string_attr(
+            getattr(model_config, "quantization_config", None), "quant_method"
+        )
 
     resolved_extra = dict(extra or {})
     tenant = os.environ.get("SEMBLEND_DONOR_TENANT")
@@ -102,8 +104,7 @@ def build_cache_namespace(
         model=resolved_model,
         tokenizer=resolved_tokenizer,
         model_revision=model_revision or os.environ.get("SEMBLEND_MODEL_REVISION", ""),
-        tokenizer_revision=tokenizer_revision
-        or os.environ.get("SEMBLEND_TOKENIZER_REVISION", ""),
+        tokenizer_revision=tokenizer_revision or os.environ.get("SEMBLEND_TOKENIZER_REVISION", ""),
         kv_layout=kv_layout,
         block_size=resolved_block_size,
         kv_dtype=kv_dtype or _string_attr(llm_args, "dtype"),

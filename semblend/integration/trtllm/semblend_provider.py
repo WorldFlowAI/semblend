@@ -115,9 +115,7 @@ class SemBlendTensorRTProvider(SemanticKvProvider):
             return SemanticKvLookupResult(found=False, rejection_reason="short_request")
 
         fallback = (
-            self._find_exact_prefix_donor(request)
-            if _exact_prefix_fast_path_enabled()
-            else None
+            self._find_exact_prefix_donor(request) if _exact_prefix_fast_path_enabled() else None
         )
         if fallback is None and _token_prefix_fast_path_enabled():
             fallback = self._find_token_prefix_run_donor(request)
@@ -458,9 +456,7 @@ class SemBlendTensorRTProvider(SemanticKvProvider):
                 "confidence_tier": str(getattr(result, "confidence_tier", "exact")),
                 "chunk_fast_path": bool(getattr(result, "chunk_fast_path_used", False)),
                 "engine_execution": (
-                    engine_execution.to_dict()
-                    if engine_execution is not None
-                    else None
+                    engine_execution.to_dict() if engine_execution is not None else None
                 ),
             },
         )
@@ -790,7 +786,9 @@ def _prefix_token_count(segments: list[SemanticKvSegment] | tuple[SemanticKvSegm
 def _longest_prefixable_segment(segments: list[SemanticKvSegment]) -> SemanticKvSegment:
     return max(
         segments,
-        key=lambda segment: sum(1 for i, target in enumerate(segment.target_positions) if target == i),
+        key=lambda segment: sum(
+            1 for i, target in enumerate(segment.target_positions) if target == i
+        ),
     )
 
 
@@ -1049,8 +1047,7 @@ def _rope_correct_k(k_tensor: Any, delta: int, rope_base: float) -> Any:
         inv_freq = 1.0 / (
             rope_base
             ** (
-                torch.arange(0, head_dim, 2, dtype=torch.float32, device=k_tensor.device)
-                / head_dim
+                torch.arange(0, head_dim, 2, dtype=torch.float32, device=k_tensor.device) / head_dim
             )
         )
         angles = float(delta) * inv_freq
@@ -1066,10 +1063,7 @@ def _rope_correct_k(k_tensor: Any, delta: int, rope_base: float) -> Any:
     half = head_dim // 2
     inv_freq = 1.0 / (
         rope_base
-        ** (
-            torch.arange(0, head_dim, 2, dtype=torch.float32, device=k_tensor.device)
-            / head_dim
-        )
+        ** (torch.arange(0, head_dim, 2, dtype=torch.float32, device=k_tensor.device) / head_dim)
     )
     angles = float(delta) * inv_freq
     cos = torch.cos(angles).to(k_tensor.dtype)
@@ -1086,11 +1080,7 @@ def _rope_base(rope_config: dict[str, Any]) -> float:
     env_value = os.environ.get("SEMBLEND_TRTLLM_ROPE_BASE")
     if env_value:
         return float(env_value)
-    return float(
-        rope_config.get("rope_theta")
-        or rope_config.get("rope_base")
-        or 10000.0
-    )
+    return float(rope_config.get("rope_theta") or rope_config.get("rope_base") or 10000.0)
 
 
 def _rope_style() -> str:

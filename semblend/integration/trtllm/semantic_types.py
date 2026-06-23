@@ -315,10 +315,7 @@ class SemanticKvPlan:
         if self.computed_token_count > self.prefix_token_count:
             raise ValueError("computed semantic KV tokens must be a prefix subset")
         if self.engine_execution is not None:
-            if (
-                self.engine_execution.materialized_prefix_token_count
-                > self.prefix_token_count
-            ):
+            if self.engine_execution.materialized_prefix_token_count > self.prefix_token_count:
                 raise ValueError("engine materialized prefix must be within plan prefix")
             if (
                 self.engine_execution.uses_suffix_only_attention
