@@ -107,12 +107,51 @@ vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
 ```bash
 pip install semblend[trtllm] tensorrt_llm
 
-semblend-trtllm --help
+python - <<'PY'
+from tensorrt_llm.llmapi.llm_args import KvCacheConnectorConfig
+
+kv_connector_config = KvCacheConnectorConfig(
+    connector_module="semblend.integration.trtllm.connector",
+    connector_scheduler_class="SemBlendKvConnectorScheduler",
+    connector_worker_class="SemBlendKvConnectorWorker",
+)
+print(kv_connector_config)
+PY
 ```
 
-TensorRT-LLM support should be treated as an integration surface, not a blanket guarantee of
-semantic materialization. The backend still owns connector metadata, KV block lifecycle, transfer
-semantics, and decline/fallback behavior.
+The TensorRT-LLM package exposes a dynamically importable KV connector and provider. It builds a
+strict cache namespace from model/tokenizer revision, KV/cache dtype, quantization, adapter/LoRA,
+RoPE config, tensor-parallel config, block size, and backend cache layout. Semantic hits are
+request-local plans: SemBlend may materialize non-identical donor KV into the recipient's allocated
+blocks with RoPE correction, but does not publish those blocks as exact cache state.
+
+The connector also has an optional Synapse/semantic-KV contract emitter. Set
+`SEMBLEND_NATS_URL` and `SEMBLEND_NATS_SUBJECT=semantic-kv-events` to publish
+`provider_generation_reset` and `donor_registered` events for fleet routing.
+`SEMBLEND_DONOR_TENANT` and `SEMBLEND_DONOR_TEMPLATE` populate the namespace
+`extra` map used by Synapse policy gates.
+
+The current GPU proof uses a SemBlend-owned TensorRT runtime engine patch,
+explicitly pinned to QwenModel in staging, to activate suffix-only execution
+after the SemBlend recompute boundary. This is the backend-neutral interface
+candidate: the engine path consumes `SemanticKvPlan` metadata, donor spans,
+target spans, target blocks, layer recompute masks, RoPE/layout metadata, and
+the suffix-attention boundary. Upstream TensorRT-LLM should eventually expose
+this as a clean engine API instead of requiring a runtime wrapper.
+
+GPU validation harness:
+
+```bash
+python -m benchmarks.suite.trtllm_semantic_validation \
+  --model Qwen/Qwen2.5-1.5B-Instruct \
+  --output results/trtllm-semblend.json \
+  --min-speedup 1.05 \
+  --min-rouge1 0.35 \
+  --min-token-f1 0.10
+```
+
+Use `--ppl-model <model>` for an optional perplexity delta and `--judge-command "<cmd>"` for an
+LLM-as-judge hook that reads `{baseline, semblend}` JSON on stdin and prints a numeric score.
 
 ## How It Works
 

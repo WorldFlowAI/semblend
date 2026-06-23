@@ -1,0 +1,27 @@
+FROM nvcr.io/nvidia/tensorrt-llm/release:1.2.1
+
+WORKDIR /opt/semblend
+
+RUN python3 -m pip install --no-cache-dir \
+    "sentence-transformers>=3.0,<4" \
+    "onnxruntime-gpu>=1.15" \
+    "onnxscript>=0.1" \
+    "rapidfuzz>=3.0"
+
+COPY pyproject.toml README.md LICENSE ./
+COPY semblend ./semblend
+COPY semblend_core ./semblend_core
+COPY synapse_kv_connector ./synapse_kv_connector
+
+RUN python3 -m pip install --no-cache-dir --no-deps -e .
+
+ENV PYTHONPATH=/opt/semblend
+ENV LD_LIBRARY_PATH=/usr/local/tensorrt/lib:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+ENV SEMBLEND_ENABLED=1
+ENV SEMBLEND_EMBEDDER=minilm
+ENV SEMBLEND_TRTLLM_ENABLE_MATERIALIZATION=1
+ENV SEMBLEND_TRTLLM_ENGINE_BLEND=1
+ENV SEMBLEND_TRTLLM_RECOMPUTE_LAYERS=24
+ENV SEMBLEND_TRTLLM_ENGINE_PATCH_CLASSES=QwenModel
+
+ENTRYPOINT ["python3", "-m", "semblend.integration.trtllm.launch_semblend_trtllm"]

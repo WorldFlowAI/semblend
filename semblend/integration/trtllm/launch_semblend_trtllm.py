@@ -5,19 +5,17 @@ serving with an OpenAI-compatible API endpoint.
 
 Usage:
     # Via entry point:
-    semblend-trtllm --engine-dir ./engines/qwen2.5-7b \\
-        --model Qwen/Qwen2.5-7B-Instruct-AWQ \\
+    semblend-trtllm --model Qwen/Qwen2.5-1.5B-Instruct \\
         --host 0.0.0.0 --port 8000
 
     # Via module:
     python -m semblend.integration.trtllm.launch_semblend_trtllm \\
-        --engine-dir ./engines/qwen2.5-7b \\
-        --model Qwen/Qwen2.5-7B-Instruct-AWQ
+        --model Qwen/Qwen2.5-1.5B-Instruct
 
     # Via environment variables:
     SEMBLEND_ENABLED=1 SEMBLEND_MIN_SIMILARITY=0.60 \\
     python -m semblend.integration.trtllm.launch_semblend_trtllm \\
-        --engine-dir ./engines/qwen2.5-7b
+        --model Qwen/Qwen2.5-1.5B-Instruct
 
 Environment variables (SemBlend-specific):
     SEMBLEND_ENABLED=1              Enable semantic donor search (default: 1)
@@ -49,13 +47,24 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--engine-dir",
-        required=True,
+        default="",
         help="Path to TRT-LLM engine directory",
     )
     parser.add_argument(
         "--model",
-        default="",
+        default="Qwen/Qwen2.5-1.5B-Instruct",
         help="Model name/path for tokenizer loading",
+    )
+    parser.add_argument(
+        "--tokenizer",
+        default="",
+        help="Optional tokenizer name/path",
+    )
+    parser.add_argument(
+        "--backend",
+        default="pytorch",
+        choices=["pytorch", "tensorrt", "trt"],
+        help="TensorRT-LLM backend",
     )
     parser.add_argument(
         "--host",
@@ -71,14 +80,32 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-batch-size",
         type=int,
-        default=64,
+        default=2048,
         help="Maximum batch size for inference",
+    )
+    parser.add_argument(
+        "--max-num-tokens",
+        type=int,
+        default=8192,
+        help="Maximum batched input tokens",
+    )
+    parser.add_argument(
+        "--max-seq-len",
+        type=int,
+        default=None,
+        help="Maximum sequence length",
     )
     parser.add_argument(
         "--tokens-per-block",
         type=int,
-        default=128,
+        default=32,
         help="KV cache block size in tokens",
+    )
+    parser.add_argument(
+        "--free-gpu-memory-fraction",
+        type=float,
+        default=0.9,
+        help="Fraction of free GPU memory reserved for KV cache",
     )
     parser.add_argument(
         "--semblend-enabled",
@@ -130,20 +157,21 @@ def main() -> None:
     args = _parse_args()
     _setup_env(args)
 
-    # Validate engine directory
-    engine_dir = os.path.abspath(args.engine_dir)
-    if not os.path.isdir(engine_dir):
-        logger.error("Engine directory not found: %s", engine_dir)
-        sys.exit(1)
+    model_ref = args.model
+    if args.engine_dir:
+        engine_dir = os.path.abspath(args.engine_dir)
+        if not os.path.isdir(engine_dir):
+            logger.error("Engine directory not found: %s", engine_dir)
+            sys.exit(1)
+        model_ref = engine_dir
 
     logger.info("SemBlend TRT-LLM launcher starting")
-    logger.info("  Engine directory: %s", engine_dir)
-    logger.info("  Model: %s", args.model or "(auto-detect)")
+    logger.info("  Model/engine: %s", model_ref)
     logger.info("  SemBlend enabled: %s", not args.no_semblend)
     logger.info("  Approach: %s", args.semblend_approach)
 
     try:
-        _launch_server(args, engine_dir)
+        _launch_server(args, model_ref)
     except ImportError as exc:
         logger.error(
             "TensorRT-LLM is required but not installed: %s\n"
@@ -156,40 +184,44 @@ def main() -> None:
         sys.exit(1)
 
 
-def _launch_server(args: argparse.Namespace, engine_dir: str) -> None:
+def _launch_server(args: argparse.Namespace, model_ref: str) -> None:
     """Import TRT-LLM and launch the server with SemBlend hooks.
 
     This function is separated to keep the import error handling clean.
     """
-    # Import TRT-LLM components
-    try:
-        from tensorrt_llm import LLM
-        from tensorrt_llm.serve import OpenAIServer
-    except ImportError:
-        # Fall back to older API names
-        from tensorrt_llm import LLM  # type: ignore[assignment]
-        from tensorrt_llm.serve import OpenAIServer  # type: ignore[assignment]
+    from tensorrt_llm.commands.serve import get_llm_args, launch_server
+    from tensorrt_llm.llmapi.llm_args import KvCacheConfig, KvCacheConnectorConfig
 
-    # Build LLM instance
-    logger.info("Loading TRT-LLM engine from %s", engine_dir)
-    llm = LLM(
-        model=engine_dir,
-        enable_prefix_caching=True,
-        tokens_per_block=args.tokens_per_block,
+    llm_args, _ = get_llm_args(
+        model=model_ref,
+        tokenizer=args.tokenizer or None,
+        backend=args.backend,
+        max_batch_size=args.max_batch_size,
+        max_num_tokens=args.max_num_tokens,
+        max_seq_len=args.max_seq_len,
+        free_gpu_memory_fraction=args.free_gpu_memory_fraction,
     )
+    kv_cache_config = llm_args.get("kv_cache_config")
+    if hasattr(kv_cache_config, "model_dump"):
+        kv_cache_data = kv_cache_config.model_dump()
+    else:
+        kv_cache_data = dict(kv_cache_config or {})
+    kv_cache_data["tokens_per_block"] = args.tokens_per_block
+    llm_args["kv_cache_config"] = KvCacheConfig(**kv_cache_data)
 
-    # Attach SemBlend hooks if enabled
-    if os.environ.get("SEMBLEND_ENABLED", "1") == "1":
-        _attach_semblend(llm, args)
+    if os.environ.get("SEMBLEND_ENABLED", "1") == "1" and not args.no_semblend:
+        llm_args["kv_connector_config"] = KvCacheConnectorConfig(
+            connector_module="semblend.integration.trtllm.connector",
+            connector_scheduler_class="SemBlendKvConnectorScheduler",
+            connector_worker_class="SemBlendKvConnectorWorker",
+        )
 
-    # Start OpenAI-compatible server
     logger.info(
         "Starting OpenAI-compatible server at http://%s:%d",
         args.host,
         args.port,
     )
-    server = OpenAIServer(llm)
-    server.start(host=args.host, port=args.port)
+    launch_server(args.host, args.port, llm_args)
 
 
 def _attach_semblend(llm: Any, args: argparse.Namespace) -> None:
