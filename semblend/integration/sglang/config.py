@@ -48,6 +48,43 @@ class SemBlendProviderConfig:
     quality_gate_ppl_threshold: float = 1.065
 
     # ----------------------------------------------------------------
+    # Multi-segment emission (v0.4 line). Default OFF: with emission off
+    # the adapter collapses to the single contiguous head run exactly as
+    # 0.3.x did. When ON, every aligned segment that passes the
+    # per-segment gate is emitted for the engine's segmented realizer.
+    # ----------------------------------------------------------------
+    multi_segment_emission: bool = False
+    # Per-segment gate: fraction of positions in the aligned run whose
+    # donor and target token ids are IDENTICAL. Reusing donor KV for
+    # non-identical tokens is the direct damage mechanism, and
+    # near-duplicate documents that differ only in entities (the
+    # entity-swap hazard) produce runs with identity just below 1.0 —
+    # a high default keeps them out.
+    segment_min_token_identity: float = 0.98
+    # Segments shorter than this are not worth a realization pass.
+    segment_min_tokens: int = 16
+    # Never realize donor KV into the first N target positions (attention
+    # sink): foreign KV there poisons all downstream attention. 0 = off.
+    sink_protect_tokens: int = 0
+    # Donor-side counterpart: never realize KV computed at the DONOR's own
+    # sink positions (phantom-sink import). 0 = off.
+    donor_sink_protect_tokens: int = 0
+    # Trim N tokens from BOTH ends of every gated run: run-boundary K/V
+    # carries the strongest cross-context mismatch (boundary artifacts),
+    # and trimmed positions are true-recomputed by the forward. 0 = off.
+    segment_edge_trim_tokens: int = 0
+    # Trim N tokens from the HEAD of every run: a run's first tokens carry
+    # the donor's local attention onset regardless of absolute position
+    # (H13 redesign). Combined with edge trim via max(). 0 = off.
+    donor_run_head_trim_tokens: int = 0
+    # Gated runs are concatenated into merged segments of up to this many
+    # positions before emission. Position arrays are explicit, so merged
+    # segments need no contiguity — this collapses hundreds of per-run
+    # realization kernel launches into a few scatter copies (unmerged
+    # plans can reach hundreds of segments per request).
+    segment_merge_max_positions: int = 4096
+
+    # ----------------------------------------------------------------
     # Operating modes
     # ----------------------------------------------------------------
 

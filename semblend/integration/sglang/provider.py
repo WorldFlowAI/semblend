@@ -24,6 +24,7 @@ Design goals:
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -34,6 +35,10 @@ from typing import Any, List, Optional
 import numpy as np
 
 from semblend.integration.sglang.config import SemBlendProviderConfig
+from semblend.integration.sglang.sparse_plan import (
+    build_sparse_plan,
+    sparse_plan_enabled,
+)
 from semblend.integration.sglang.types import (
     FuzzyMatchResult,
     FuzzyMatchSegment,
@@ -114,6 +119,10 @@ class SemBlendProviderAdapter:
         self._generation = 0
 
         self._stats = _Stats()
+        logger.info(
+            "[FUZZY] semblend adapter build=headfix-2026-08-02 gates="
+            "tail_reserve,position_aligned,sink,donor_sink,edge,min_tokens"
+        )
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -174,6 +183,12 @@ class SemBlendProviderAdapter:
         Returns:
             True if the donor was registered, False otherwise.
         """
+        # H8 probe gate: skip ALL registration work (incl. the async embed)
+        # so negative-arm overhead can be attributed to match vs register.
+        if os.environ.get("SEMBLEND_DISABLE_REGISTRATION"):
+            self._stats.register_rejected += 1
+            return False
+
         segment_tokens = list(token_ids[cache_start_pos:cache_end_pos])
 
         if len(segment_tokens) < self._config.min_match_length:
@@ -424,6 +439,7 @@ class SemBlendProviderAdapter:
             )
             return None
 
+        t_match_start = time.monotonic()
         try:
             with self._register_lock:
                 result = self._pipeline.find_donor(
@@ -485,11 +501,20 @@ class SemBlendProviderAdapter:
             self._stats.match_rejected_low_reuse += 1
             return None
 
+        t_pipeline_ms = (time.monotonic() - t_match_start) * 1000
+        t_convert_start = time.monotonic()
         converted = self._convert_result(
             pipeline_result=result,
             already_matched_len=already_matched_len,
             remaining=remaining,
             extra_key=extra_key,
+        )
+        t_convert_ms = (time.monotonic() - t_convert_start) * 1000
+        logger.info(
+            "[FUZZY] match timing: pipeline=%.0fms convert=%.0fms remaining=%d",
+            t_pipeline_ms,
+            t_convert_ms,
+            len(remaining),
         )
         if converted is None:
             logger.debug(
@@ -613,6 +638,7 @@ class SemBlendProviderAdapter:
             ]
 
         segments = self._build_segments(pipeline_result, handle, layer_mask)
+        all_segments = list(segments)
 
         # SGLang's prefix-cache device_indices contract treats the cached
         # span as a contiguous prefix [0..exact+N-1]. To surface a semantic
@@ -663,11 +689,89 @@ class SemBlendProviderAdapter:
         # the donor's source position so model_runner's
         # _correct_fuzzy_kv_rope_contiguous can RoPE-reverse from there
         # and re-apply at the recipient's already_matched_len boundary.
+        sparse_plan = None
         if segments:
             head = segments[0]
             kv_cache_indices = head.donor_kv_indices
             cached_start_pos = int(_first(head.donor_positions, 0))
             out_segments = None
+            if self._multi_segment_enabled():
+                gated = self._gate_segments(
+                    all_segments,
+                    list(pipeline_result.donor_tokens),
+                    list(remaining),
+                )
+                if not gated:
+                    # Everything gated out: emitting the UNGATED head would
+                    # bypass every safety gate (position-aligned self-matches
+                    # and full-coverage admissions wedged the engine —
+                    # admissions can wedge the engine). No safe mass -> miss.
+                    self._stats.match_hits_dropped_no_prefix_run += 1
+                    return None
+                # Contract Option A with the head derived from the GATED
+                # plan: cached_token_count / kv_cache_indices keep v1
+                # head-run semantics, but only gate-surviving mass is ever
+                # emitted on either path.
+                head = gated[0]
+                kv_cache_indices = head.donor_kv_indices
+                cached_start_pos = int(_first(head.donor_positions, 0))
+                total_covered = len(_as_list(head.target_positions))
+                head_target_start = int(_first(head.target_positions, -1))
+                if sparse_plan_enabled():
+                    sparse_plan = build_sparse_plan(
+                        gated,
+                        remaining_len=len(remaining),
+                        min_donor_span=int(
+                            os.environ.get("SEMBLEND_SPARSE_MIN_SPAN", "512")
+                        ),
+                        edge_shave=int(
+                            os.environ.get("SEMBLEND_SPARSE_EDGE_SHAVE", "0")
+                        ),
+                    )
+                if len(gated) == 1 and head_target_start == 0:
+                    # Positions are tail-relative: start 0 == anchored at the
+                    # prefix boundary.
+                    # A single run anchored AT the prefix boundary fits the
+                    # v1 contiguous contract exactly: prefix-integrated
+                    # consumption (RoPE-delta-corrected) — the near-lossless
+                    # mechanism (KL ~0.004 on shifted-offset content) that
+                    # also actually skips prefill. Scatter realization of
+                    # the same content class measured 0.19-0.40 ROUGE
+                    # — never scatter what can be contiguous.
+                    out_segments = None
+                else:
+                    out_segments = self._merge_segments(gated)
+                segment_mass = sum(len(_as_list(s.target_positions)) for s in gated)
+                logger.info(
+                    "[FUZZY] emission: head=%d mass=%d prompt_remaining=%d "
+                    "dropped(pa=%d tail=%d sink=%d)",
+                    total_covered,
+                    segment_mass,
+                    len(remaining),
+                    self._stats.segments_dropped_position_aligned,
+                    self._stats.segments_dropped_tail_reserve,
+                    self._stats.segments_dropped_sink,
+                )
+                logger.info(
+                    "[FUZZY] segment funnel (merged=%d): built=%d gated_out=%d emitted=%d "
+                    "head_run=%d segment_mass=%d dropped_short=%d dropped_identity=%d "
+                    "dropped_sink=%d dropped_donor_sink=%d dropped_edge=%d "
+                    "bathtub_mask=%s",
+                    len(out_segments) if out_segments else 0,
+                    len(all_segments),
+                    len(all_segments) - len(gated),
+                    len(gated),
+                    total_covered,
+                    segment_mass,
+                    self._stats.segments_dropped_short,
+                    self._stats.segments_dropped_low_identity,
+                    self._stats.segments_dropped_sink,
+                    self._stats.segments_dropped_donor_sink,
+                    self._stats.segments_dropped_edge_trim,
+                    ("%d-layers" % sum(layer_mask)) if layer_mask else "none",
+                )
+                # All segments gated out -> contiguous-head fallback (v1
+                # behavior) already set above.
         else:
             if handle.start_pos != already_matched_len:
                 self._stats.match_hits_dropped_no_prefix_run += 1
@@ -686,10 +790,342 @@ class SemBlendProviderAdapter:
             cached_start_pos=cached_start_pos,
             _match_entry=donor_id,
             segments=out_segments,
+            sparse_plan=sparse_plan,
             layer_recompute_mask=layer_mask,
             quality_signals=quality,
             donor_last_node_id=handle.last_node_id,
         )
+
+    def _segment_token_identity(
+        self,
+        segment: FuzzyMatchSegment,
+        donor_tokens: List[int],
+        target_tokens: List[int],
+    ) -> float:
+        """Fraction of aligned positions whose donor and target token ids match.
+
+        Reusing donor KV where the underlying tokens differ is the direct
+        damage mechanism; near-duplicates that differ only in entities sit
+        just below 1.0 and are exactly what the gate must keep out.
+        """
+        donor_positions = _as_list(segment.donor_positions)
+        target_positions = _as_list(segment.target_positions)
+        if not donor_positions or len(donor_positions) != len(target_positions):
+            return 0.0
+        same = 0
+        total = 0
+        for d_pos, t_pos in zip(donor_positions, target_positions):
+            if 0 <= d_pos < len(donor_tokens) and 0 <= t_pos < len(target_tokens):
+                total += 1
+                if donor_tokens[d_pos] == target_tokens[t_pos]:
+                    same += 1
+        return (same / total) if total else 0.0
+
+    def _segment_min_tokens(self) -> int:
+        override = os.environ.get("SEMBLEND_SEGMENT_MIN_TOKENS")
+        if override:
+            try:
+                return int(override)
+            except ValueError:
+                pass
+        return self._config.segment_min_tokens
+
+    def _tail_reserve_tokens(self, prompt_len: int) -> int:
+        """Never realize into the last N target positions. Near-full-coverage
+        admissions wedge the engine (request never scheduled: up-front
+        realized-mass alloc + extend + locked donor break the fit math —
+        observed as an idle-scheduler hang). Reserving a tail also
+        guarantees a nonzero extend. Default 64; env
+        SEMBLEND_TAIL_RESERVE_TOKENS."""
+        raw = os.environ.get("SEMBLEND_TAIL_RESERVE_TOKENS")
+        reserve = 64
+        if raw:
+            try:
+                reserve = int(raw)
+            except ValueError:
+                pass
+        if reserve <= 0 or prompt_len <= 4 * reserve:
+            return 0
+        return prompt_len - reserve
+
+    def _sink_protect_tokens(self) -> int:
+        override = os.environ.get("SEMBLEND_SINK_PROTECT_TOKENS")
+        if override:
+            try:
+                return int(override)
+            except ValueError:
+                pass
+        return self._config.sink_protect_tokens
+
+    def _donor_sink_protect_tokens(self) -> int:
+        override = os.environ.get("SEMBLEND_DONOR_SINK_PROTECT_TOKENS")
+        if override:
+            try:
+                return int(override)
+            except ValueError:
+                pass
+        return self._config.donor_sink_protect_tokens
+
+    def _segment_edge_trim_tokens(self) -> int:
+        override = os.environ.get("SEMBLEND_SEGMENT_EDGE_TRIM")
+        if override:
+            try:
+                return int(override)
+            except ValueError:
+                pass
+        return self._config.segment_edge_trim_tokens
+
+    def _donor_run_head_trim_tokens(self) -> int:
+        override = os.environ.get("SEMBLEND_DONOR_RUN_HEAD_TRIM")
+        if override:
+            try:
+                return int(override)
+            except ValueError:
+                pass
+        return self._config.donor_run_head_trim_tokens
+
+    @staticmethod
+    def _trim_tail_beyond(
+        segment: FuzzyMatchSegment, max_target_pos: int
+    ) -> Optional[FuzzyMatchSegment]:
+        """Drop positions with target position >= max_target_pos (ascending
+        runs): the reserved prompt tail must stay compute-fresh."""
+        positions = _as_list(segment.target_positions)
+        if not positions or positions[-1] < max_target_pos:
+            return segment
+        keep = 0
+        for pos in positions:
+            if pos >= max_target_pos:
+                break
+            keep += 1
+        if keep == 0:
+            return None
+        return FuzzyMatchSegment(
+            target_positions=positions[:keep],
+            donor_positions=_as_list(segment.donor_positions)[:keep],
+            donor_node_id=segment.donor_node_id,
+            donor_offset=segment.donor_offset,
+            length=keep if segment.length is not None else None,
+            donor_kv_indices=(
+                segment.donor_kv_indices[:keep]
+                if segment.donor_kv_indices is not None
+                else None
+            ),
+            donor_req_id=segment.donor_req_id,
+            layer_recompute_mask=segment.layer_recompute_mask,
+        )
+
+    @staticmethod
+    def _trim_run_edges(
+        segment: FuzzyMatchSegment, head: int, tail: int
+    ) -> Optional[FuzzyMatchSegment]:
+        """Drop ``head`` positions from the run's start and ``tail`` from its
+        end; trimmed positions are true-recomputed by the forward. Returns
+        None when nothing remains. NodeRef addressing rebased."""
+        positions = _as_list(segment.target_positions)
+        n = len(positions)
+        if head + tail <= 0:
+            return segment
+        if n <= head + tail:
+            return None
+        end = n - tail
+        return FuzzyMatchSegment(
+            target_positions=positions[head:end],
+            donor_positions=_as_list(segment.donor_positions)[head:end],
+            donor_node_id=segment.donor_node_id,
+            donor_offset=(
+                segment.donor_offset + head
+                if segment.donor_offset is not None
+                else None
+            ),
+            length=(end - head) if segment.length is not None else None,
+            donor_kv_indices=(
+                segment.donor_kv_indices[head:end]
+                if segment.donor_kv_indices is not None
+                else None
+            ),
+            donor_req_id=segment.donor_req_id,
+            layer_recompute_mask=segment.layer_recompute_mask,
+        )
+
+    @staticmethod
+    def _trim_sink(
+        segment: FuzzyMatchSegment,
+        protect: int,
+        *,
+        key: str = "target",
+    ) -> Optional[FuzzyMatchSegment]:
+        """Drop the run's positions whose ``key`` position is below ``protect``.
+
+        key="target": never realize INTO the recipient's attention sink.
+        key="donor": never realize KV COMPUTED AT the donor's sink — chunks
+        computed separately each carry their own sink structure (phantom-sink
+        import, arXiv 2603.20218); donor-sink K/V is the most
+        context-contaminated mass a donor has. Ascending runs assumed.
+
+        Returns None when the whole run is protected. NodeRef addressing is
+        rebased (donor_offset/length) alongside the parallel position arrays
+        so both consume paths stay coherent."""
+        keyed = _as_list(
+            segment.donor_positions if key == "donor" else segment.target_positions
+        )
+        positions = _as_list(segment.target_positions)
+        if not keyed or keyed[0] >= protect:
+            return segment
+        trim = 0
+        for pos in keyed:
+            if pos >= protect:
+                break
+            trim += 1
+        if trim >= len(positions):
+            return None
+        return FuzzyMatchSegment(
+            target_positions=positions[trim:],
+            donor_positions=_as_list(segment.donor_positions)[trim:],
+            donor_node_id=segment.donor_node_id,
+            donor_offset=(
+                segment.donor_offset + trim
+                if segment.donor_offset is not None
+                else None
+            ),
+            length=(len(positions) - trim) if segment.length is not None else None,
+            donor_kv_indices=(
+                segment.donor_kv_indices[trim:]
+                if segment.donor_kv_indices is not None
+                else None
+            ),
+            donor_req_id=segment.donor_req_id,
+            layer_recompute_mask=segment.layer_recompute_mask,
+        )
+
+    def _gate_segments(
+        self,
+        segments: List[FuzzyMatchSegment],
+        donor_tokens: List[int],
+        target_tokens: List[int],
+    ) -> List[FuzzyMatchSegment]:
+        min_tokens = self._segment_min_tokens()
+        protect = self._sink_protect_tokens()
+        tail_reserve = self._tail_reserve_tokens(len(target_tokens))
+        donor_protect = self._donor_sink_protect_tokens()
+        edge_trim = self._segment_edge_trim_tokens()
+        head_trim = self._donor_run_head_trim_tokens()
+        kept: List[FuzzyMatchSegment] = []
+        for segment in segments:
+            if protect > 0:
+                trimmed = self._trim_sink(segment, protect)
+                if trimmed is None:
+                    self._stats.segments_dropped_sink += 1
+                    continue
+                segment = trimmed
+            if donor_protect > 0:
+                trimmed = self._trim_sink(segment, donor_protect, key="donor")
+                if trimmed is None:
+                    self._stats.segments_dropped_donor_sink += 1
+                    continue
+                segment = trimmed
+            seg_tp = _as_list(segment.target_positions)
+            seg_dp = _as_list(segment.donor_positions)
+            if seg_tp and seg_dp and seg_tp[0] == seg_dp[0]:
+                # Position-aligned content is the exact radix cache's job;
+                # realizing it re-copies KV onto its own positions (donor-arm
+                # self-matches) and tripped the admission wedge.
+                self._stats.segments_dropped_position_aligned += 1
+                continue
+            if tail_reserve > 0:
+                trimmed = self._trim_tail_beyond(segment, tail_reserve)
+                if trimmed is None:
+                    self._stats.segments_dropped_tail_reserve += 1
+                    continue
+                segment = trimmed
+            if head_trim > 0 or edge_trim > 0:
+                trimmed = self._trim_run_edges(
+                    segment, max(edge_trim, head_trim), edge_trim
+                )
+                if trimmed is None:
+                    self._stats.segments_dropped_edge_trim += 1
+                    continue
+                segment = trimmed
+            length = len(_as_list(segment.target_positions))
+            if length < min_tokens:
+                self._stats.segments_dropped_short += 1
+                continue
+            identity = self._segment_token_identity(segment, donor_tokens, target_tokens)
+            if identity < self._config.segment_min_token_identity:
+                self._stats.segments_dropped_low_identity += 1
+                continue
+            kept.append(segment)
+        return kept
+
+    def _merge_segments(
+        self, segments: List[FuzzyMatchSegment]
+    ) -> List[FuzzyMatchSegment]:
+        """Concatenate gated runs into few large scatter segments.
+
+        Position/index arrays are explicit, so merged segments need no
+        contiguity; the realizer performs one RoPE-corrected scatter copy
+        per segment either way. Runs are only merged when they share the
+        donor and addressing mode."""
+        limit = self._config.segment_merge_max_positions
+        if limit <= 0 or len(segments) <= 1:
+            return segments
+        merged: List[FuzzyMatchSegment] = []
+        bucket: List[FuzzyMatchSegment] = []
+        bucket_size = 0
+
+        def flush() -> None:
+            nonlocal bucket, bucket_size
+            if not bucket:
+                return
+            if len(bucket) == 1:
+                merged.append(bucket[0])
+            else:
+                first = bucket[0]
+                merged.append(
+                    FuzzyMatchSegment(
+                        target_positions=[
+                            p for s in bucket for p in _as_list(s.target_positions)
+                        ],
+                        donor_positions=[
+                            p for s in bucket for p in _as_list(s.donor_positions)
+                        ],
+                        donor_node_id=first.donor_node_id,
+                        donor_offset=first.donor_offset,
+                        length=bucket_size,
+                        donor_kv_indices=(
+                            [i for s in bucket for i in _as_list(s.donor_kv_indices)]
+                            if all(s.donor_kv_indices is not None for s in bucket)
+                            else None
+                        ),
+                        donor_req_id=first.donor_req_id,
+                        layer_recompute_mask=first.layer_recompute_mask,
+                    )
+                )
+            bucket = []
+            bucket_size = 0
+
+        for segment in segments:
+            seg_len = len(_as_list(segment.target_positions))
+            same_group = (
+                not bucket
+                or (
+                    segment.donor_req_id == bucket[0].donor_req_id
+                    and segment.donor_node_id == bucket[0].donor_node_id
+                    and (segment.donor_kv_indices is None)
+                    == (bucket[0].donor_kv_indices is None)
+                )
+            )
+            if bucket and (not same_group or bucket_size + seg_len > limit):
+                flush()
+            bucket.append(segment)
+            bucket_size += seg_len
+        flush()
+        return merged
+
+    def _multi_segment_enabled(self) -> bool:
+        if self._config.multi_segment_emission:
+            return True
+        return os.environ.get("SEMBLEND_RETURN_SEGMENTS", "") == "1"
 
     def _build_segments(
         self,
@@ -783,6 +1219,14 @@ class _Stats:
     # cannot express it as device_indices. The match is dropped rather than
     # emitted as a no-op.
     match_hits_dropped_no_prefix_run: int = 0
+    # Multi-segment emission gates (v0.4 line)
+    segments_dropped_short: int = 0
+    segments_dropped_low_identity: int = 0
+    segments_dropped_sink: int = 0
+    segments_dropped_donor_sink: int = 0
+    segments_dropped_edge_trim: int = 0
+    segments_dropped_tail_reserve: int = 0
+    segments_dropped_position_aligned: int = 0
 
     def as_dict(self) -> dict:
         return {
