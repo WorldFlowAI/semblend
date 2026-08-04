@@ -41,6 +41,8 @@ def build_sparse_plan(
     remaining_len: int,
     min_donor_span: int = 16,
     edge_shave: int = 0,
+    gap_period: int = 0,
+    gap_size: int = 64,
 ) -> Optional[List[SparsePlanSpan]]:
     """Order segments into an alternating novel/donor cover of the window.
 
@@ -92,6 +94,39 @@ def build_sparse_plan(
 
     if not donor_spans:
         return None
+
+    if gap_period > 0:
+        # H20: interleave small in-prefill recompute gaps inside long donor
+        # spans. The gap tokens fall into the novel cover below and are
+        # computed attending the joined KV on both sides, refreshing the
+        # span-wide context that edge-only recomputation cannot reach.
+        split: List[SparsePlanSpan] = []
+        for span in donor_spans:
+            pos = span.target_start
+            while span.target_end - pos > gap_period + gap_size:
+                split.append(
+                    SparsePlanSpan(
+                        kind="donor",
+                        target_start=pos,
+                        target_end=pos + gap_period,
+                        donor_start=span.donor_start + (pos - span.target_start),
+                        segment_index=span.segment_index,
+                    )
+                )
+                pos += gap_period + gap_size
+            if span.target_end - pos >= min_donor_span:
+                split.append(
+                    SparsePlanSpan(
+                        kind="donor",
+                        target_start=pos,
+                        target_end=span.target_end,
+                        donor_start=span.donor_start + (pos - span.target_start),
+                        segment_index=span.segment_index,
+                    )
+                )
+        donor_spans = split
+        if not donor_spans:
+            return None
 
     plan: List[SparsePlanSpan] = []
     pos = 0

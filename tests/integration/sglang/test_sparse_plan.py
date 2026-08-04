@@ -98,6 +98,40 @@ class TestBuildSparsePlan:
         )
         assert plan is None  # 60 - 64 < min -> folded away
 
+    def test_gap_interleave_splits_long_spans(self):
+        plan = build_sparse_plan(
+            [_seg(0, 5000, 100)],
+            remaining_len=5000,
+            gap_period=2000,
+            gap_size=64,
+        )
+        kinds = [s.kind for s in plan]
+        # donor 2000, gap 64, donor 2000, gap 64, donor 872 (>= min 16)
+        assert kinds == ["donor", "novel", "donor", "novel", "donor"]
+        d = [s for s in plan if s.kind == "donor"]
+        assert (d[0].target_start, d[0].target_end, d[0].donor_start) == (0, 2000, 100)
+        assert (d[1].target_start, d[1].donor_start) == (2064, 2164)
+        assert _covers(plan, 5000)
+
+    def test_gap_interleave_leaves_short_spans_whole(self):
+        plan = build_sparse_plan(
+            [_seg(0, 1500, 100)], remaining_len=1600, gap_period=2000, gap_size=64
+        )
+        assert [s.kind for s in plan] == ["donor", "novel"]
+
+    def test_gap_remainder_below_min_folds_into_novel(self):
+        plan = build_sparse_plan(
+            [_seg(0, 2070, 100)],
+            remaining_len=2070,
+            min_donor_span=16,
+            gap_period=2000,
+            gap_size=64,
+        )
+        # remainder after donor(2000)+gap(64) is 6 tokens < min -> novel
+        assert [s.kind for s in plan] == ["donor", "novel"]
+        assert plan[0].target_end == 2000
+        assert _covers(plan, 2070)
+
     def test_span_exceeding_window_is_clamped(self):
         plan = build_sparse_plan([_seg(50, 100, 0)], remaining_len=100)
         donors = [s for s in plan if s.kind == "donor"]

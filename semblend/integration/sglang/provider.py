@@ -727,6 +727,12 @@ class SemBlendProviderAdapter:
                         edge_shave=int(
                             os.environ.get("SEMBLEND_SPARSE_EDGE_SHAVE", "0")
                         ),
+                        gap_period=int(
+                            os.environ.get("SEMBLEND_SPARSE_GAP_PERIOD", "0")
+                        ),
+                        gap_size=int(
+                            os.environ.get("SEMBLEND_SPARSE_GAP_SIZE", "64")
+                        ),
                     )
                 if len(gated) == 1 and head_target_start == 0:
                     # Positions are tail-relative: start 0 == anchored at the
