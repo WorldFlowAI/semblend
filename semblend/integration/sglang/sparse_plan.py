@@ -1,10 +1,10 @@
 """Sparse-plan construction: order gated segments into novel/donor spans.
 
-The plan is the H18 contract between alignment and the engine's plan-steered
+The plan is the contract between alignment and the engine's plan-steered
 chunked prefill: donor spans are consumed as boundary-anchored contiguous
 joins between chunks (prefill skipped), novel spans are computed in-prefill
 attending all earlier KV — which is what makes corrections propagate
-(in-prefill recompute); post-hoc cache substitution lacks this property.
+(in-prefill recompute), unlike post-hoc slot swapping (measured).
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def build_sparse_plan(
     ``edge_shave`` moves each donor span's first/last N tokens into the
     surrounding novel spans: span-edge KV carries the strongest donor-side
     context contamination, and shaved tokens are recomputed in-prefill
-    attending the joined interior (H19 quality lever).
+    attending the joined interior (a quality lever).
 
     Returns None when no donor span survives — callers fall back to the
     non-sparse contract.
@@ -99,7 +99,8 @@ def build_sparse_plan(
         # H20: interleave small in-prefill recompute gaps inside long donor
         # spans. The gap tokens fall into the novel cover below and are
         # computed attending the joined KV on both sides, refreshing the
-        # span-wide context that edge-only recomputation cannot reach.
+        # span-wide context contamination that edge-only recomputation
+        # (refuted) cannot reach.
         split: List[SparsePlanSpan] = []
         for span in donor_spans:
             pos = span.target_start

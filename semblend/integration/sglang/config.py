@@ -75,13 +75,12 @@ class SemBlendProviderConfig:
     segment_edge_trim_tokens: int = 0
     # Trim N tokens from the HEAD of every run: a run's first tokens carry
     # the donor's local attention onset regardless of absolute position
-    # (H13 redesign). Combined with edge trim via max(). 0 = off.
+    # Combined with edge trim via max(). 0 = off.
     donor_run_head_trim_tokens: int = 0
     # Gated runs are concatenated into merged segments of up to this many
     # positions before emission. Position arrays are explicit, so merged
     # segments need no contiguity — this collapses hundreds of per-run
-    # realization kernel launches into a few scatter copies (unmerged
-    # plans can reach hundreds of segments per request).
+    # realization kernel launches into a few scatter copies (measured in live serving).
     segment_merge_max_positions: int = 4096
 
     # ----------------------------------------------------------------

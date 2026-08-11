@@ -132,3 +132,9 @@ class MultiDonorAlignmentResult:
     fuzzy_chunks: int = 0
     recompute_chunks: int = 0
     chunk_index_hits: int = 0  # Chunks found via ChunkIndex (skipped embedding)
+    # Tolerance adoption: chunks adopted from the diagonal despite token mismatches
+    # (identity-relaxed mode), with the mismatch inventory for analysis
+    # and leak auditing. Empty under tolerance 0.
+    tolerated_chunks: int = 0
+    tolerated_mismatch_tokens: int = 0
+    mismatched_positions: tuple = ()  # ((donor_pos, target_pos), ...)

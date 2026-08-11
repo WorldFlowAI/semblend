@@ -42,8 +42,7 @@ class TestChunkFastPathDonorStore:
             embedding_dim=4,
             chunk_size=CHUNK_SIZE,
         )
-        embeddings = store._embeddings
-        valid_mask = store._valid_mask
+        vector_index = store._vector_index
 
         node = DonorNode(
             request_id="d1",
@@ -62,11 +61,9 @@ class TestChunkFastPathDonorStore:
         assert store.chunk_index.num_donors == 0
         assert store.chunk_index.num_entries == 0
         assert store.token_index.num_donors == 0
-        assert store._id_to_idx == {}
-        assert store._next_idx == 0
-        assert not store._valid_mask.any()
-        assert store._embeddings is embeddings
-        assert store._valid_mask is valid_mask
+        # collaborators are emptied in place, never reallocated
+        assert store._vector_index is vector_index
+        assert store._vector_index.size() == 0
 
     def test_eviction_removes_from_chunk_index(self):
         store = DonorStore(

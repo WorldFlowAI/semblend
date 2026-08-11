@@ -69,6 +69,30 @@ class _DonorKVHandle:
     end_pos: int
     extra_key: Optional[str] = None
     last_node_id: Optional[int] = None
+    # Canonical matching: donor prompt text + engine token ids for
+    # tokenization-invariant alignment; retained only when
+    # SEMBLEND_CANONICAL_MATCH=1.
+    prompt_text: Optional[str] = None
+    token_ids: Optional[List[int]] = None
+
+
+def _canonical_match_enabled() -> bool:
+    return os.environ.get("SEMBLEND_CANONICAL_MATCH", "") == "1"
+
+
+def _offsets_tokenizer(model_arch: str):
+    """HF fast tokenizer for offset mapping (lazy; None on failure)."""
+    try:
+        from transformers import AutoTokenizer
+
+        name = {
+            "qwen2.5-7b": "Qwen/Qwen2.5-7B-Instruct",
+            "llama-3.1-8b": "meta-llama/Llama-3.1-8B-Instruct",
+        }.get(model_arch, model_arch)
+        return AutoTokenizer.from_pretrained(name)
+    except Exception:
+        logger.warning("[FUZZY] canonical match: tokenizer unavailable")
+        return None
 
 
 class SemBlendProviderAdapter:
@@ -118,6 +142,11 @@ class SemBlendProviderAdapter:
         self._register_lock = threading.Lock()
         self._generation = 0
 
+        self._offsets_tok = (
+            _offsets_tokenizer(config.model_arch)
+            if _canonical_match_enabled()
+            else None
+        )
         self._stats = _Stats()
         logger.info(
             "[FUZZY] semblend adapter build=headfix-2026-08-02 gates="
@@ -143,7 +172,13 @@ class SemBlendProviderAdapter:
         return SemBlendPipeline(
             max_donors=config.max_entries,
             min_similarity=config.min_similarity,
-            min_reuse_ratio=config.min_reuse_ratio,
+            # Canonical mode: the inner reuse gate would reject the reformat
+            # class before the adapter's canonical rescue can run; the
+            # adapter enforces the same floor (with canonical coverage as an
+            # alternative pass), so behavior is preserved for all matches.
+            min_reuse_ratio=(
+                0.0 if _canonical_match_enabled() else config.min_reuse_ratio
+            ),
             embedder_type=embedder_type,
             model_name=config.model_arch,
             chunk_size=config.block_size,
@@ -215,6 +250,8 @@ class SemBlendProviderAdapter:
                 start_pos=cache_start_pos,
                 end_pos=cache_end_pos,
                 extra_key=extra_key,
+                prompt_text=(prompt_text if _canonical_match_enabled() else None),
+                token_ids=(list(token_ids) if _canonical_match_enabled() else None),
             )
             generation = self._generation
             try:
@@ -492,14 +529,54 @@ class SemBlendProviderAdapter:
             self._stats.match_misses += 1
             return None
 
+        canonical_segments: List[FuzzyMatchSegment] = []
+        if (
+            _canonical_match_enabled()
+            and not getattr(result, "segments", None)
+            and result.reuse_ratio >= self._config.min_reuse_ratio
+        ):
+            pre_donor_id, handle_pre = self._resolve_canon_handle(result)
+            if handle_pre is not None:
+                canonical_segments = self._canonical_augment_segments(
+                    remaining=list(remaining),
+                    remaining_text=prompt_text or "",
+                    donor_id=pre_donor_id,
+                    handle=handle_pre,
+                    donor_tokens=list(handle_pre.token_ids),
+                )
         if result.reuse_ratio < self._config.min_reuse_ratio:
-            logger.info(
-                "[FUZZY] adapter.match: reuse_ratio=%.3f < gate=%.3f, reject",
-                float(result.reuse_ratio),
-                float(self._config.min_reuse_ratio),
+            # Token-level reuse starving under HIGH similarity is the
+            # signature of the reformat class — canonical matching runs
+            # BEFORE rejection (a canonical-covered window passes on its
+            # own coverage).
+            canon_donor_id, handle_for_canon = self._resolve_canon_handle(result)
+            if handle_for_canon is not None:
+                canonical_segments = self._canonical_augment_segments(
+                    remaining=list(remaining),
+                    remaining_text=prompt_text or "",
+                    donor_id=canon_donor_id,
+                    handle=handle_for_canon,
+                    donor_tokens=list(handle_for_canon.token_ids),
+                )
+            canon_cover = sum(s_.length for s_ in canonical_segments) / max(
+                len(remaining), 1
             )
-            self._stats.match_rejected_low_reuse += 1
-            return None
+            if canon_cover < self._config.min_reuse_ratio:
+                logger.info(
+                    "[FUZZY] adapter.match: reuse_ratio=%.3f < gate=%.3f "
+                    "(canonical cover=%.3f), reject",
+                    float(result.reuse_ratio),
+                    float(self._config.min_reuse_ratio),
+                    canon_cover,
+                )
+                self._stats.match_rejected_low_reuse += 1
+                return None
+            logger.info(
+                "[FUZZY] adapter.match: canonical cover=%.3f rescues "
+                "low token reuse=%.3f",
+                canon_cover,
+                float(result.reuse_ratio),
+            )
 
         t_pipeline_ms = (time.monotonic() - t_match_start) * 1000
         t_convert_start = time.monotonic()
@@ -508,6 +585,8 @@ class SemBlendProviderAdapter:
             already_matched_len=already_matched_len,
             remaining=remaining,
             extra_key=extra_key,
+            prompt_text=prompt_text,
+            canonical_segments=canonical_segments,
         )
         t_convert_ms = (time.monotonic() - t_convert_start) * 1000
         logger.info(
@@ -595,6 +674,8 @@ class SemBlendProviderAdapter:
         already_matched_len: int,
         remaining: List[int],
         extra_key: Optional[str],
+        prompt_text: Optional[str] = None,
+        canonical_segments: Optional[List[FuzzyMatchSegment]] = None,
     ) -> Optional[FuzzyMatchResult]:
         """Translate `PipelineResult` → `FuzzyMatchResult`.
 
@@ -640,6 +721,27 @@ class SemBlendProviderAdapter:
         segments = self._build_segments(pipeline_result, handle, layer_mask)
         all_segments = list(segments)
 
+        # Canonical runs are token-VERIFIED; chunk-fuzzy segments are
+        # not (embedding-matched, token-different) — mixing them double-
+        # covers the window and re-opens scatter-quality risk. Canonical
+        # REPLACES the pipeline's segment set when present.
+        if canonical_segments:
+            all_segments = list(canonical_segments)
+        else:
+            aligned_mass = sum(
+                len(_as_list(s_.target_positions)) for s_ in all_segments
+            )
+            if aligned_mass < max(1, len(remaining) // 4):
+                all_segments.extend(
+                    self._canonical_augment_segments(
+                        remaining=list(remaining),
+                        remaining_text=prompt_text or "",
+                        donor_id=donor_id,
+                        handle=handle,
+                        donor_tokens=list(pipeline_result.donor_tokens),
+                    )
+                )
+
         # SGLang's prefix-cache device_indices contract treats the cached
         # span as a contiguous prefix [0..exact+N-1]. To surface a semantic
         # match whose target_positions sit at a non-prefix offset, we pick
@@ -660,6 +762,18 @@ class SemBlendProviderAdapter:
         # K/V at those positions. The bathtub layer_recompute_mask is
         # designed to recompute layers where the deviation is largest;
         # see SEMANTIC_FUZZY_MATCH.md for the quality bound.
+        # Chunk-fuzzy matches can report high reuse while yielding zero
+        # consumable (token-identical) segments; canonical runs are the
+        # consumable form of the same content. Inject them whenever the
+        # pipeline produced no segments.
+        if canonical_segments:
+            logger.info(
+                "[FUZZY] canonical: %d verified runs replace %d pipeline segments",
+                len(canonical_segments),
+                len(segments or []),
+            )
+            segments = list(canonical_segments)
+
         if segments:
             best = max(
                 segments,
@@ -705,7 +819,7 @@ class SemBlendProviderAdapter:
                     # Everything gated out: emitting the UNGATED head would
                     # bypass every safety gate (position-aligned self-matches
                     # and full-coverage admissions wedged the engine —
-                    # admissions can wedge the engine). No safe mass -> miss.
+                    # measured live). No safe mass -> miss.
                     self._stats.match_hits_dropped_no_prefix_run += 1
                     return None
                 # Contract Option A with the head derived from the GATED
@@ -743,7 +857,7 @@ class SemBlendProviderAdapter:
                     # mechanism (KL ~0.004 on shifted-offset content) that
                     # also actually skips prefill. Scatter realization of
                     # the same content class measured 0.19-0.40 ROUGE
-                    # — never scatter what can be contiguous.
+                    # (measured live) — never scatter what can be contiguous.
                     out_segments = None
                 else:
                     out_segments = self._merge_segments(gated)
@@ -802,6 +916,158 @@ class SemBlendProviderAdapter:
             donor_last_node_id=handle.last_node_id,
         )
 
+    def _resolve_canon_handle(self, result):
+        """Resolve the donor handle for canonical alignment.
+
+        Composite (multi-donor) results can carry a donor_id that is not a
+        registry key; falling back to the composite's donor ids, then to
+        the sole registered donor, keeps the rescue from silently
+        skipping. Returns (donor_id, handle_or_None); a usable handle
+        always carries token_ids.
+        """
+        donor_id = getattr(result, "donor_id", None)
+        handle = self._donor_kv.get(donor_id)
+        if handle is not None and handle.token_ids is not None:
+            return donor_id, handle
+        for cand in list(getattr(result, "donor_ids", None) or []):
+            h = self._donor_kv.get(cand)
+            if h is not None and h.token_ids is not None:
+                logger.info(
+                    "[FUZZY] canonical: donor_id=%s not registered; using "
+                    "composite donor %s",
+                    donor_id,
+                    cand,
+                )
+                return cand, h
+        if len(self._donor_kv) == 1:
+            sole_id, h = next(iter(self._donor_kv.items()))
+            if h.token_ids is not None:
+                logger.info(
+                    "[FUZZY] canonical: donor_id=%s not registered; falling "
+                    "back to sole registered donor %s",
+                    donor_id,
+                    sole_id,
+                )
+                return sole_id, h
+        logger.info(
+            "[FUZZY] canonical: donor_id=%s unresolvable (registered=%d); "
+            "rescue skipped",
+            donor_id,
+            len(self._donor_kv),
+        )
+        return donor_id, None
+
+    def _canonical_augment_segments(
+        self,
+        remaining: List[int],
+        remaining_text: str,
+        donor_id: str,
+        handle: "_DonorKVHandle",
+        donor_tokens: List[int],
+    ) -> List[FuzzyMatchSegment]:
+        """Tokenization-invariant runs vs a donor, as segments.
+
+        Runs are computed in canonical text space and token-verified, so the
+        emitted segments carry exactly the token-identical guarantee the
+        join machinery expects; positions are remaining-window token
+        indices (target) and donor-sequence token indices (donor).
+        """
+        if not _canonical_match_enabled():
+            logger.info("[FUZZY] canonical: disabled (env)")
+            return []
+        if not remaining_text or not handle.prompt_text:
+            logger.info(
+                "[FUZZY] canonical: missing text (remaining=%s donor=%s)",
+                bool(remaining_text),
+                bool(handle.prompt_text),
+            )
+            return []
+        if self._offsets_tok is None:
+            logger.info("[FUZZY] canonical: no offsets tokenizer")
+            return []
+        try:
+            from semblend_core.canonical_alignment import resynced_token_runs
+
+            t_enc = self._offsets_tok(
+                remaining_text, add_special_tokens=False, return_offsets_mapping=True
+            )
+            d_enc = self._offsets_tok(
+                handle.prompt_text, add_special_tokens=False, return_offsets_mapping=True
+            )
+            runs = resynced_token_runs(
+                donor_text=handle.prompt_text,
+                target_text=remaining_text,
+                donor_ids_offsets=(d_enc["input_ids"], d_enc["offset_mapping"]),
+                target_ids_offsets=(t_enc["input_ids"], t_enc["offset_mapping"]),
+                min_run_tokens=self._config.segment_min_tokens,
+            )
+            # Boundary telemetry: one line per attempt so a zero-run
+            # outcome is never silent (each earlier failure of this class
+            # was invisible until reproduced offline).
+            logger.info(
+                "[FUZZY] canonical align: target_text=%d donor_text=%d "
+                "target_toks=%d donor_toks=%d engine_window=%d min_run=%d "
+                "-> runs=%d",
+                len(remaining_text),
+                len(handle.prompt_text),
+                len(t_enc["input_ids"]),
+                len(d_enc["input_ids"]),
+                len(remaining),
+                self._config.segment_min_tokens,
+                len(runs),
+            )
+            if not runs and t_enc["input_ids"]:
+                probe = min(32, len(t_enc["input_ids"]), len(d_enc["input_ids"]))
+                logger.info(
+                    "[FUZZY] canonical align: zero runs; head sample "
+                    "target=%s donor=%s",
+                    t_enc["input_ids"][:probe],
+                    d_enc["input_ids"][:probe],
+                )
+        except Exception:
+            logger.exception("[FUZZY] canonical augmentation failed")
+            return []
+        segments: List[FuzzyMatchSegment] = []
+        dropped_by_guard = 0
+        for r in runs:
+            # ``remaining_text`` is the engine-decoded text of the SAME
+            # window ``remaining`` covers, so run indices are already
+            # window-relative — no rebase.
+            tw, d0, ln = r["target_token_start"], r["donor_token_start"], r["length"]
+            # Guard: run token ids must match the ENGINE tokenizations too
+            # (offsets tokenizer may disagree with serving tokenizer).
+            if tw + ln > len(remaining) or d0 + ln > len(donor_tokens):
+                continue
+            if remaining[tw : tw + ln] != donor_tokens[d0 : d0 + ln]:
+                dropped_by_guard += 1
+                continue
+            kv_slice = _slice_indices(handle.kv_indices, offset=d0, length=ln)
+            segments.append(
+                FuzzyMatchSegment(
+                    target_positions=list(range(tw, tw + ln)),
+                    donor_positions=list(range(d0, d0 + ln)),
+                    donor_node_id=handle.last_node_id,
+                    donor_offset=d0,
+                    length=ln,
+                    donor_kv_indices=kv_slice,
+                    donor_req_id=donor_id,
+                )
+            )
+        if runs and not segments:
+            logger.info(
+                "[FUZZY] canonical: %d aligned runs but none survived "
+                "(engine-id guard drops=%d)",
+                len(runs),
+                dropped_by_guard,
+            )
+        if segments:
+            logger.info(
+                "[FUZZY] canonical augmentation: %d runs, %d tokens",
+                len(segments),
+                sum(s_.length for s_ in segments),
+            )
+        return segments
+
     def _segment_token_identity(
         self,
         segment: FuzzyMatchSegment,
@@ -840,7 +1106,7 @@ class SemBlendProviderAdapter:
         """Never realize into the last N target positions. Near-full-coverage
         admissions wedge the engine (request never scheduled: up-front
         realized-mass alloc + extend + locked donor break the fit math —
-        observed as an idle-scheduler hang). Reserving a tail also
+        py-spy-confirmed live, idle scheduler). Reserving a tail also
         guarantees a nonzero extend. Default 64; env
         SEMBLEND_TAIL_RESERVE_TOKENS."""
         raw = os.environ.get("SEMBLEND_TAIL_RESERVE_TOKENS")
@@ -1035,7 +1301,7 @@ class SemBlendProviderAdapter:
             if seg_tp and seg_dp and seg_tp[0] == seg_dp[0]:
                 # Position-aligned content is the exact radix cache's job;
                 # realizing it re-copies KV onto its own positions (donor-arm
-                # self-matches) and tripped the admission wedge.
+                # self-matches) and tripped the admission wedge (observed live).
                 self._stats.segments_dropped_position_aligned += 1
                 continue
             if tail_reserve > 0:

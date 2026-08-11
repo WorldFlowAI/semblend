@@ -893,3 +893,17 @@ def test_public_exports():
     assert FMS is types.FuzzyMatchSegment
     assert QS is types.QualitySignals
     assert Cfg is not None
+
+
+def test_disable_registration_env_gate(monkeypatch, adapter):
+    monkeypatch.setenv("SEMBLEND_DISABLE_REGISTRATION", "1")
+    ok = adapter.register_donor(
+        request_id="d1",
+        token_ids=list(range(100)),
+        kv_cache=None,
+        cache_start_pos=0,
+        cache_end_pos=100,
+        prompt_text="donor text",
+    )
+    assert ok is False
+    assert adapter._stats.register_rejected == 1

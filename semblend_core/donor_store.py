@@ -31,6 +31,7 @@ from semblend_core.alignment import (
     estimate_reuse_ratio,
 )
 from semblend_core.chunk_index import ChunkIndex
+from semblend_core.donor_index import BruteForceIndex, DonorVectorIndex
 from semblend_core.token_index import TokenIndex
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ class DonorStore:
         min_similarity: float = 0.60,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_index: ChunkIndex | None = None,
+        vector_index: "DonorVectorIndex | None" = None,
     ) -> None:
         self._max_entries = max_entries
         self._embedding_dim = embedding_dim
@@ -92,11 +94,8 @@ class DonorStore:
         # Ordered dict for LRU eviction
         self._entries: OrderedDict[str, DonorNode] = OrderedDict()
 
-        # Numpy matrix for vectorized cosine search
-        self._embeddings = np.zeros((max_entries, embedding_dim), dtype=np.float32)
-        self._valid_mask = np.zeros(max_entries, dtype=bool)
-        self._id_to_idx: dict[str, int] = {}
-        self._next_idx = 0
+        # Pluggable vector index for candidate proposal (exact by default)
+        self._vector_index = vector_index or BruteForceIndex(embedding_dim)
 
         # ChunkIndex for O(1) cross-donor chunk lookup (exact hash)
         self._chunk_index = chunk_index or ChunkIndex(
@@ -137,27 +136,19 @@ class DonorStore:
         cold pipeline initialization path.
         """
         self._entries.clear()
-        self._valid_mask.fill(False)
-        self._embeddings.fill(0.0)
-        self._id_to_idx.clear()
-        self._next_idx = 0
+        self._vector_index.clear()
         self._chunk_index.clear()
         self._token_index.clear()
 
-    def _valid_indices_for_extra_key(self, extra_key: str | None) -> np.ndarray:
-        """Return valid embedding rows visible to the supplied namespace."""
-        valid_indices = np.where(self._valid_mask)[0]
-        if extra_key is None or valid_indices.size == 0:
-            return valid_indices
-
-        idx_to_id = {v: k for k, v in self._id_to_idx.items()}
-        allowed = []
-        for storage_idx in valid_indices:
-            donor_id = idx_to_id.get(int(storage_idx))
-            donor = self._entries.get(donor_id) if donor_id is not None else None
-            if donor is not None and donor.extra_key == extra_key:
-                allowed.append(int(storage_idx))
-        return np.asarray(allowed, dtype=valid_indices.dtype)
+    def _allowed_ids_for_extra_key(self, extra_key: str | None) -> set[str] | None:
+        """Donor ids visible to the supplied namespace (None = all)."""
+        if extra_key is None:
+            return None
+        return {
+            donor_id
+            for donor_id, donor in self._entries.items()
+            if donor.extra_key == extra_key
+        }
 
     def add_donor(self, node: DonorNode) -> None:
         """Add a donor to the store with O(1) append + O(chunks) indexing.
@@ -173,25 +164,18 @@ class DonorStore:
         # Evict LRU if at capacity
         while len(self._entries) >= self._max_entries:
             evicted_id, _ = self._entries.popitem(last=False)
-            evicted_idx = self._id_to_idx.pop(evicted_id, None)
-            if evicted_idx is not None:
-                self._valid_mask[evicted_idx] = False
-            # Remove from indexes
+            self._vector_index.remove(evicted_id)
             self._chunk_index.remove_donor(evicted_id)
             self._token_index.remove_donor(evicted_id)
 
-        # Assign storage index (reuse evicted slots or append)
-        idx = self._next_idx % self._max_entries
-        self._next_idx += 1
-
-        # Store embedding if available
         if node.embedding is not None and len(node.embedding) == self._embedding_dim:
-            self._embeddings[idx] = node.embedding
+            self._vector_index.add(node.request_id, np.asarray(node.embedding))
         else:
-            self._embeddings[idx] = 0.0
-
-        self._valid_mask[idx] = True
-        self._id_to_idx[node.request_id] = idx
+            # zero vector: never clears the similarity threshold, matching
+            # the previous zero-row behavior for embedding-less donors
+            self._vector_index.add(
+                node.request_id, np.zeros(self._embedding_dim, dtype=np.float32)
+            )
         self._entries[node.request_id] = node
 
         # Index chunks in ChunkIndex (exact hash) and TokenIndex (fuzzy)
@@ -228,44 +212,31 @@ class DonorStore:
 
         t0 = time.monotonic()
 
-        n_valid = int(self._valid_mask.sum())
-        if n_valid == 0:
-            return None
-
         if query_embedding is None or len(query_embedding) != self._embedding_dim:
             return None
 
-        valid_indices = self._valid_indices_for_extra_key(extra_key)
-        if len(valid_indices) == 0:
+        allowed = self._allowed_ids_for_extra_key(extra_key)
+        if allowed is not None and not allowed:
             return None
 
-        # Step 1: Cosine similarity (vectorized matrix multiply)
+        # Step 1: candidate proposal via the vector index; the threshold
+        # stays here so approximate backends only affect recall
         query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-8)
-        similarities = self._embeddings[valid_indices] @ query_norm
-
-        # Filter by threshold
-        cos_mask = similarities >= self._min_similarity
-        if not cos_mask.any():
-            max_sim = float(similarities.max()) if len(similarities) > 0 else 0.0
+        proposals = [
+            (donor_id, sim)
+            for donor_id, sim in self._vector_index.search(
+                query_norm, top_k=top_k, allowed=allowed
+            )
+            if sim >= self._min_similarity
+        ]
+        if not proposals:
             logger.debug(
-                "DonorStore: no candidates above threshold (max_sim=%.4f < %.2f)",
-                max_sim,
+                "DonorStore: no candidates above threshold %.2f",
                 self._min_similarity,
             )
             return None
 
-        candidate_indices = valid_indices[cos_mask]
-        similarities = similarities[cos_mask]
-
-        # Top-k by similarity
-        if len(candidate_indices) > top_k:
-            topk_idx = np.argpartition(similarities, -top_k)[-top_k:]
-            candidate_indices = candidate_indices[topk_idx]
-            similarities = similarities[topk_idx]
-
         # Step 2: Two-phase scoring
-        idx_to_id = {v: k for k, v in self._id_to_idx.items()}
-
         # Pre-compute query token set for fast Jaccard pre-filter
         query_set = set(query_tokens)
 
@@ -273,11 +244,7 @@ class DonorStore:
         best_candidate: tuple[float, float, DonorNode] | None = None
         best_score = 0.0
 
-        for i, storage_idx in enumerate(candidate_indices):
-            donor_id = idx_to_id.get(int(storage_idx))
-            if donor_id is None:
-                continue
-
+        for donor_id, sim in proposals:
             donor = self._entries.get(donor_id)
             if donor is None or donor.token_ids == query_tokens:
                 continue
@@ -299,10 +266,10 @@ class DonorStore:
             if reuse < min_reuse_ratio:
                 continue
 
-            score = float(similarities[i]) * reuse
+            score = float(sim) * reuse
             if score > best_score:
                 best_score = score
-                best_candidate = (score, float(similarities[i]), donor)
+                best_candidate = (score, float(sim), donor)
 
         # Phase 2: Full alignment only for the winner
         best_match: DonorMatch | None = None
@@ -325,8 +292,8 @@ class DonorStore:
             logger.debug(
                 "DonorStore.find_donor: %.1fms (N=%d, candidates=%d)",
                 elapsed_ms,
-                n_valid,
-                len(candidate_indices),
+                len(self._entries),
+                len(proposals),
             )
 
         return best_match
@@ -352,45 +319,30 @@ class DonorStore:
         if len(query_embedding) != self._embedding_dim:
             return []
 
-        n_valid = int(self._valid_mask.sum())
-        if n_valid == 0:
+        allowed = self._allowed_ids_for_extra_key(extra_key)
+        if allowed is not None and not allowed:
             return []
 
-        valid_indices = self._valid_indices_for_extra_key(extra_key)
-        if len(valid_indices) == 0:
-            return []
-
-        # Cosine similarity
+        # Widened top-k proposal for fallback; threshold stays here
         query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-8)
-        similarities = self._embeddings[valid_indices] @ query_norm
-
-        cos_mask = similarities >= self._min_similarity
-        if not cos_mask.any():
+        proposals = [
+            (donor_id, sim)
+            for donor_id, sim in self._vector_index.search(
+                query_norm, top_k=top_k * 2, allowed=allowed
+            )
+            if sim >= self._min_similarity
+        ]
+        if not proposals:
             return []
-
-        candidate_indices = valid_indices[cos_mask]
-        similarities = similarities[cos_mask]
-
-        # Widen top-k to give more candidates for fallback
-        fetch_k = min(len(candidate_indices), top_k * 2)
-        if len(candidate_indices) > fetch_k:
-            topk_idx = np.argpartition(similarities, -fetch_k)[-fetch_k:]
-            candidate_indices = candidate_indices[topk_idx]
-            similarities = similarities[topk_idx]
 
         # Scoring with fast reuse estimation + recency tiebreaker
-        idx_to_id = {v: k for k, v in self._id_to_idx.items()}
         now = time.monotonic()
         scored_candidates: list[tuple[float, float, DonorNode]] = []
 
         # Pre-compute query token set for fast Jaccard pre-filter
         query_set = set(query_tokens)
 
-        for i, storage_idx in enumerate(candidate_indices):
-            donor_id = idx_to_id.get(int(storage_idx))
-            if donor_id is None:
-                continue
-
+        for donor_id, sim in proposals:
             donor = self._entries.get(donor_id)
             if donor is None or donor.token_ids == query_tokens:
                 continue
@@ -412,7 +364,7 @@ class DonorStore:
             if reuse < min_reuse_ratio:
                 continue
 
-            sim = float(similarities[i])
+            sim = float(sim)
             age = now - donor.timestamp
             recency_bonus = max(0.0, 0.01 * (1.0 - age / 60.0))
             score = sim * reuse + recency_bonus
@@ -560,12 +512,25 @@ class DonorStore:
             MultiDonorAlignmentResult or None.
         """
         from semblend_core.multi_donor_alignment import (
+            compute_cdc_alignment,
             compute_multi_donor_alignment,
         )
 
         donor_token_store = self.get_all_donor_tokens(extra_key=extra_key)
         if not donor_token_store:
             return None
+
+        from semblend_core.chunk_index import cdc_enabled
+
+        if cdc_enabled():
+            cdc_result = compute_cdc_alignment(
+                target_tokens=query_tokens,
+                chunk_index=self._chunk_index,
+                donor_token_store=donor_token_store,
+            )
+            if cdc_result is not None and cdc_result.reuse_ratio >= min_reuse_ratio:
+                return cdc_result
+            # fall through to grid alignment when CDC finds nothing usable
 
         result = compute_multi_donor_alignment(
             target_tokens=query_tokens,
