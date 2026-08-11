@@ -279,7 +279,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         self._use_pipeline = os.environ.get("SEMBLEND_USE_PIPELINE", "1") == "1"
         if self._use_pipeline:
             try:
-                from synapse_kv_connector.pipeline import create_vllm_pipeline
+                from semblend_kv_connector.pipeline import create_vllm_pipeline
 
                 model_name = None
                 try:
@@ -306,7 +306,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         # Prefers ONNX GPU (co-located on inference GPU), falls back to MiniLM GPU/CPU.
         self._local_embedder = None
         try:
-            from synapse_kv_connector.embedder import create_embedder
+            from semblend_kv_connector.embedder import create_embedder
 
             self._local_embedder = create_embedder(os.environ.get("SEMBLEND_EMBEDDER", "minilm"))
             print(
@@ -481,7 +481,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
                 flush=True,
             )
         # Apply RoPE correction AFTER LMCache loads donor KV.
-        import synapse_kv_connector.semblend_connector as _mod_rope
+        import semblend_kv_connector.semblend_connector as _mod_rope
 
         hook = getattr(_mod_rope, "_semblend_active_hook", None)
         if hook is not None and not hook.executed:
@@ -582,7 +582,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
             except (FileNotFoundError, ValueError, KeyError):
                 pass
             if force_delta != 0:
-                from synapse_kv_connector.rope_correction import apply_rope_delta_inplace
+                from semblend_kv_connector.rope_correction import apply_rope_delta_inplace
 
                 pos_map = hook._position_map
                 num_matched = pos_map.num_pairs if hasattr(pos_map, "num_pairs") else 0
@@ -618,7 +618,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
 
             print(f"[SemBlend] RoPE FAILED:\n{traceback.format_exc()}", file=sys.stderr, flush=True)
         finally:
-            import synapse_kv_connector.semblend_connector as _m
+            import semblend_kv_connector.semblend_connector as _m
 
             _m._semblend_active_hook = None
 
@@ -980,7 +980,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
                 self._position_maps[request.request_id] = pipeline_result.position_map
                 # Create RoPE hook and share with worker via module global
                 try:
-                    from synapse_kv_connector.model_runner_hook import RoPECorrectionHook
+                    from semblend_kv_connector.model_runner_hook import RoPECorrectionHook
 
                     _rope_hook = RoPECorrectionHook(
                         position_map=pipeline_result.position_map,
@@ -988,7 +988,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
                         request_id=request.request_id,
                     )
                     self._active_hook = _rope_hook
-                    import synapse_kv_connector.semblend_connector as _mod_hook
+                    import semblend_kv_connector.semblend_connector as _mod_hook
 
                     _mod_hook._semblend_active_hook = _rope_hook
                 except Exception as _rope_err:
@@ -1024,7 +1024,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
                 plan = self._pipeline.build_partial_attention_plan(pipeline_result)
                 if plan is not None:
                     try:
-                        from synapse_kv_connector.model_runner_hook import (
+                        from semblend_kv_connector.model_runner_hook import (
                             RoPECorrectionHook,
                         )
 
@@ -1037,7 +1037,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
                             plan=plan,
                             request_id=request.request_id,
                         )
-                        import synapse_kv_connector.semblend_connector as _mod_hook2
+                        import semblend_kv_connector.semblend_connector as _mod_hook2
 
                         _mod_hook2._semblend_active_hook = self._active_hook
                         self._stats["partial_attn_applied"] += 1
@@ -1189,7 +1189,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
             # 256-token chunks; requesting a non-aligned count causes
             # "retrieved tokens < expected" errors and falls back to
             # full recomputation.
-            from synapse_kv_connector.alignment import LMCACHE_CHUNK_SIZE
+            from semblend_kv_connector.alignment import LMCACHE_CHUNK_SIZE
 
             chunk_size = LMCACHE_CHUNK_SIZE
             # Leave at least one full chunk (256 tokens) for the model to
@@ -1267,7 +1267,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
             if _force_delta_legacy != 0:
                 try:
                     from semblend_core.pipeline import PositionMapping
-                    from synapse_kv_connector.model_runner_hook import RoPECorrectionHook
+                    from semblend_kv_connector.model_runner_hook import RoPECorrectionHook
 
                     _pos_map = PositionMapping(
                         donor_positions=list(range(donor_hit)),
@@ -1279,7 +1279,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
                         request_id=request.request_id,
                     )
                     self._active_hook = _rope_hook
-                    import synapse_kv_connector.semblend_connector as _mod_fd
+                    import semblend_kv_connector.semblend_connector as _mod_fd
 
                     _mod_fd._semblend_active_hook = _rope_hook
                     print(
@@ -1660,14 +1660,14 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
             if pos_map and pos_map.needs_correction and not self._disable_rope_correction:
                 self._position_maps[request.request_id] = pipeline_result.position_map
                 try:
-                    from synapse_kv_connector.model_runner_hook import RoPECorrectionHook
+                    from semblend_kv_connector.model_runner_hook import RoPECorrectionHook
 
                     self._active_hook = RoPECorrectionHook(
                         position_map=pipeline_result.position_map,
                         plan=None,
                         request_id=request.request_id,
                     )
-                    import synapse_kv_connector.semblend_connector as _mod
+                    import semblend_kv_connector.semblend_connector as _mod
 
                     _mod._semblend_active_hook = self._active_hook
                 except Exception as e:
@@ -1781,7 +1781,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         Called during register_kv_caches (worker-side).
         """
         try:
-            from synapse_kv_connector.model_runner_hook import patch_model_runner
+            from semblend_kv_connector.model_runner_hook import patch_model_runner
 
             for frame_info in inspect.stack():
                 local_self = frame_info.frame.f_locals.get("self")

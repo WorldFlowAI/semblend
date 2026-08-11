@@ -18,7 +18,7 @@ try:
 except ImportError:
     HAS_TORCH = False
 
-from synapse_kv_connector.triton_kernels import (
+from semblend_kv_connector.triton_kernels import (
     PartialPrefillResult,
     masked_qkv_projection,
     partial_prefill,
@@ -772,7 +772,7 @@ class TestModelRunnerPatch:
 
     def test_patch_applies_to_mock_runner(self):
         """patch_model_runner should wrap execute_model on a compatible object."""
-        from synapse_kv_connector.model_runner_hook import patch_model_runner
+        from semblend_kv_connector.model_runner_hook import patch_model_runner
 
         class MockRunner:
             def __init__(self):
@@ -798,7 +798,7 @@ class TestModelRunnerPatch:
 
     def test_patch_skips_incompatible_runner(self):
         """patch_model_runner should return False for objects without execute_model."""
-        from synapse_kv_connector.model_runner_hook import patch_model_runner
+        from semblend_kv_connector.model_runner_hook import patch_model_runner
 
         result = patch_model_runner(object(), object())
         assert result is False
@@ -814,7 +814,7 @@ class TestPipelinePlanBuilding:
 
     def test_build_plan_from_pipeline_result(self):
         """Build PartialAttention plan from a successful pipeline result."""
-        from synapse_kv_connector.pipeline import PipelineResult, SemBlendPipeline
+        from semblend_kv_connector.pipeline import PipelineResult, SemBlendPipeline
 
         pipeline = SemBlendPipeline(
             embedder_type="jaccard",
@@ -852,7 +852,7 @@ class TestPipelinePlanBuilding:
 
     def test_build_plan_from_not_found(self):
         """Should return None for a not-found result."""
-        from synapse_kv_connector.pipeline import PipelineResult, SemBlendPipeline
+        from semblend_kv_connector.pipeline import PipelineResult, SemBlendPipeline
 
         pipeline = SemBlendPipeline(embedder_type="jaccard")
         result = PipelineResult(found=False)

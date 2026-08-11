@@ -48,15 +48,15 @@ from dataclasses import dataclass, field
 
 import torch
 
-from synapse_kv_connector.partial_attention import (
+from semblend_kv_connector.partial_attention import (
     AttentionMode,
     PartialAttentionPlan,
     compute_attention_mask,
 )
-from synapse_kv_connector.rope_correction import (
+from semblend_kv_connector.rope_correction import (
     nope_permute_paged_kv,
 )
-from synapse_kv_connector.triton_kernels import (
+from semblend_kv_connector.triton_kernels import (
     partial_prefill_attention,
     scatter_donor_kv,
 )
@@ -255,7 +255,7 @@ class PartialAttentionHook:
                         self._target_positions,
                     )
                     # Apply RoPE delta correction to K at target positions
-                    from synapse_kv_connector.rope_correction import rope_correct_k
+                    from semblend_kv_connector.rope_correction import rope_correct_k
 
                     k_cache = target_layer[0, 0]  # [num_heads, seq_len, head_dim]
                     head_dim = k_cache.shape[-1]
@@ -543,7 +543,7 @@ class RoPECorrectionHook:
                     )
                 else:
                     # Delta correction: RoPE(target - donor) in one step (default)
-                    from synapse_kv_connector.rope_correction import (
+                    from semblend_kv_connector.rope_correction import (
                         permute_paged_kv_with_rope,
                     )
 

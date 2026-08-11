@@ -78,8 +78,18 @@ class TestVllmImportPaths:
 
     @pytest.mark.skip(reason="Requires full vLLM mock — tested in E2E")
     def test_old_path_import(self):
-        """The old synapse_kv_connector.semblend_connector path."""
-        mod = importlib.import_module("synapse_kv_connector.semblend_connector")
+        """The old synapse_kv_connector path stays importable through the
+        deprecation alias, warns, and shares module identity with the
+        canonical package (no duplicate instances)."""
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            mod = importlib.import_module("synapse_kv_connector.semblend_connector")
+        canonical = importlib.import_module(
+            "semblend_kv_connector.semblend_connector"
+        )
+        assert mod is canonical
         assert hasattr(mod, "SemBlendConnectorV1")
 
     def test_vllm_integration_init(self):

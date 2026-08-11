@@ -36,7 +36,7 @@ class TestRoPECorrection:
 
     def test_identity_no_delta(self):
         """When donor_pos == target_pos, correction should be identity."""
-        from synapse_kv_connector.rope_correction import rope_correct_k
+        from semblend_kv_connector.rope_correction import rope_correct_k
 
         num_heads, seq_len, head_dim = 4, 8, 128
         k = torch.randn(num_heads, seq_len, head_dim, dtype=torch.float16)
@@ -48,7 +48,7 @@ class TestRoPECorrection:
 
     def test_exact_correction_single_position(self):
         """Correcting K from pos 5 to pos 10 should match fresh RoPE at pos 10."""
-        from synapse_kv_connector.rope_correction import rope_correct_k
+        from semblend_kv_connector.rope_correction import rope_correct_k
 
         num_heads, head_dim = 4, 128
         raw_k = torch.randn(num_heads, 1, head_dim, dtype=torch.float32)
@@ -81,7 +81,7 @@ class TestRoPECorrection:
 
     def test_exact_correction_reorder(self):
         """REORDER: same tokens at different positions should be exact."""
-        from synapse_kv_connector.rope_correction import rope_correct_k
+        from semblend_kv_connector.rope_correction import rope_correct_k
 
         num_heads, seq_len, head_dim = 4, 4, 64
         raw_k = torch.randn(num_heads, seq_len, head_dim)
@@ -115,7 +115,7 @@ class TestRoPECorrection:
 
     def test_negative_delta(self):
         """Correction works for negative deltas (moving to earlier position)."""
-        from synapse_kv_connector.rope_correction import rope_correct_k
+        from semblend_kv_connector.rope_correction import rope_correct_k
 
         num_heads, head_dim = 2, 64
         raw_k = torch.randn(num_heads, 1, head_dim)
@@ -142,7 +142,7 @@ class TestRoPECorrection:
 
     def test_large_sequence(self):
         """Verify correction works for 8K tokens (typical RAG prompt)."""
-        from synapse_kv_connector.rope_correction import rope_correct_k
+        from semblend_kv_connector.rope_correction import rope_correct_k
 
         num_heads, seq_len, head_dim = 4, 8192, 128
         k = torch.randn(num_heads, seq_len, head_dim, dtype=torch.float16)
@@ -158,7 +158,7 @@ class TestRoPECorrection:
 
     def test_v_unchanged(self):
         """V cache should not be modified (no position encoding)."""
-        from synapse_kv_connector.rope_correction import rope_correct_scatter_paged
+        from semblend_kv_connector.rope_correction import rope_correct_scatter_paged
 
         num_blocks, num_heads, block_size, head_dim = 4, 2, 16, 64
         kv_cache = torch.zeros(num_blocks, 2, num_heads, block_size, head_dim)
@@ -189,7 +189,7 @@ class TestRoPECorrection:
 
     def test_paged_scatter_k_corrected(self):
         """K in paged cache should have RoPE correction applied."""
-        from synapse_kv_connector.rope_correction import rope_correct_scatter_paged
+        from semblend_kv_connector.rope_correction import rope_correct_scatter_paged
 
         num_blocks, num_heads, block_size, head_dim = 4, 2, 16, 64
         kv_cache = torch.zeros(num_blocks, 2, num_heads, block_size, head_dim)
@@ -231,7 +231,7 @@ class TestRoPECorrection:
 
     def test_permute_paged_kv(self):
         """Test in-place permutation with RoPE correction."""
-        from synapse_kv_connector.rope_correction import permute_paged_kv_with_rope
+        from semblend_kv_connector.rope_correction import permute_paged_kv_with_rope
 
         num_blocks, num_heads, block_size, head_dim = 2, 2, 16, 64
         kv_cache = torch.randn(num_blocks, 2, num_heads, block_size, head_dim)
@@ -264,7 +264,7 @@ class TestRoPECorrection:
         """Verify correction overhead is negligible (<1ms for 8K tokens)."""
         import time
 
-        from synapse_kv_connector.rope_correction import rope_correct_k
+        from semblend_kv_connector.rope_correction import rope_correct_k
 
         num_heads, seq_len, head_dim = 4, 8192, 128
         k = torch.randn(num_heads, seq_len, head_dim)
@@ -290,7 +290,7 @@ class TestRoPECorrectionComposition:
 
     def test_composition_identity(self):
         """RoPE(a) × RoPE(-a) = Identity."""
-        from synapse_kv_connector.rope_correction import rope_correct_k
+        from semblend_kv_connector.rope_correction import rope_correct_k
 
         num_heads, head_dim = 2, 64
         k = torch.randn(num_heads, 10, head_dim)
@@ -321,7 +321,7 @@ class TestRoPECorrectionComposition:
 
     def test_different_rope_bases(self):
         """Correction works with non-standard RoPE bases."""
-        from synapse_kv_connector.rope_correction import rope_correct_k
+        from semblend_kv_connector.rope_correction import rope_correct_k
 
         for rope_base in [500.0, 10000.0, 1000000.0]:
             num_heads, head_dim = 2, 32
@@ -355,7 +355,7 @@ class TestPositionMapping:
 
     def test_position_map_needs_correction(self):
         """PositionMapping.needs_correction is True when positions differ."""
-        from synapse_kv_connector.pipeline import PositionMapping
+        from semblend_kv_connector.pipeline import PositionMapping
 
         # Same positions — no correction needed
         pm = PositionMapping(
@@ -373,8 +373,8 @@ class TestPositionMapping:
 
     def test_position_map_to_rope_correction(self):
         """PositionMapping drives correct RoPE delta correction."""
-        from synapse_kv_connector.pipeline import PositionMapping
-        from synapse_kv_connector.rope_correction import rope_correct_k
+        from semblend_kv_connector.pipeline import PositionMapping
+        from semblend_kv_connector.rope_correction import rope_correct_k
 
         num_heads, head_dim = 2, 64
         raw_k = torch.randn(num_heads, 1, head_dim)
@@ -408,8 +408,8 @@ class TestPositionMapping:
 
     def test_reorder_position_map(self):
         """REORDER scenario: same tokens, different positions, exact correction."""
-        from synapse_kv_connector.pipeline import PositionMapping
-        from synapse_kv_connector.rope_correction import rope_correct_k
+        from semblend_kv_connector.pipeline import PositionMapping
+        from semblend_kv_connector.rope_correction import rope_correct_k
 
         num_heads, seq_len, head_dim = 2, 4, 32
 
@@ -488,7 +488,7 @@ class TestNoPePermutation:
 
     def test_nope_identity_no_shift(self):
         """NoPE with src_pos == tgt_pos: K should be unchanged."""
-        from synapse_kv_connector.rope_correction import nope_permute_paged_kv
+        from semblend_kv_connector.rope_correction import nope_permute_paged_kv
 
         num_heads, head_dim, block_size = 4, 64, 16
         raw_k = torch.randn(num_heads, head_dim, dtype=torch.float32)
@@ -504,7 +504,7 @@ class TestNoPePermutation:
 
     def test_nope_matches_delta_arbitrary_shift(self):
         """NoPE two-step produces same result as delta correction for Δ ≠ 0."""
-        from synapse_kv_connector.rope_correction import (
+        from semblend_kv_connector.rope_correction import (
             nope_permute_paged_kv,
             permute_paged_kv_with_rope,
         )
@@ -545,7 +545,7 @@ class TestNoPePermutation:
 
     def test_nope_matches_fresh_rope_at_target(self):
         """NoPE-corrected K matches fresh RoPE computed at target position."""
-        from synapse_kv_connector.rope_correction import nope_permute_paged_kv
+        from semblend_kv_connector.rope_correction import nope_permute_paged_kv
 
         num_heads, head_dim, block_size = 4, 128, 16
         raw_k = torch.randn(num_heads, head_dim, dtype=torch.float32)
@@ -573,7 +573,7 @@ class TestNoPePermutation:
 
     def test_nope_v_cache_unchanged(self):
         """V cache should be copied directly without any rotation (both modes)."""
-        from synapse_kv_connector.rope_correction import nope_permute_paged_kv
+        from semblend_kv_connector.rope_correction import nope_permute_paged_kv
 
         num_heads, head_dim, block_size = 4, 64, 16
         kv_cache, block_table = self._build_paged_cache(num_heads, head_dim, 32, block_size)
@@ -590,7 +590,7 @@ class TestNoPePermutation:
     @pytest.mark.parametrize("delta", [0, 1, 5, 50, 100, 256, 1000])
     def test_nope_delta_correction_parity(self, delta: int):
         """NoPE == delta for all Δ values: 0, 1, 5, 50, 100, 256, 1000."""
-        from synapse_kv_connector.rope_correction import (
+        from semblend_kv_connector.rope_correction import (
             nope_permute_paged_kv,
             permute_paged_kv_with_rope,
         )

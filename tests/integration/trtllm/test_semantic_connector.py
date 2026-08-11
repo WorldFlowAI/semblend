@@ -108,7 +108,7 @@ def test_namespace_includes_env_routing_extra(monkeypatch):
     assert namespace.extra["template"] == "wf-rag-v1"
 
 
-def test_trtllm_contract_emitter_builds_synapse_wire_event():
+def test_trtllm_contract_emitter_builds_wire_event():
     from semblend.integration.trtllm.events import TrtllmContractEmitter
     from semblend.integration.trtllm.semblend_provider import SemBlendTensorRTProvider
 

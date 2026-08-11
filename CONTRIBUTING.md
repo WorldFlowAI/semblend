@@ -64,7 +64,7 @@ semblend/integration/
   vllm/                 vLLM + LMCache connector (KVConnectorBase_V1)
   sglang/               SGLang RadixCache patcher + SemanticPrefixProvider
 
-synapse_kv_connector/   Legacy vLLM connector (thin re-export for backward compat)
+semblend_kv_connector/  Legacy vLLM connector (canonical name; synapse_kv_connector remains as a deprecated alias)
 tests/                  Unit tests
 ```
 

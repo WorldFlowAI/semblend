@@ -85,12 +85,12 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["semblend*", "semblend_core*", "synapse_kv_connector*"]
-exclude = ["benchmarks*", "paper*", "patent*", "infra*", "literature*", "results*", "tests*", "synapse_kv_connector.tests*", "scripts*"]
+include = ["semblend*", "semblend_core*", "semblend_kv_connector*", "synapse_kv_connector*"]
+exclude = ["benchmarks*", "paper*", "patent*", "infra*", "literature*", "results*", "tests*", "semblend_kv_connector.tests*", "scripts*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--ignore=synapse_kv_connector/tests/test_rope_correction.py --ignore=synapse_kv_connector/tests/test_triton_kernels.py"
+addopts = "--ignore=semblend_kv_connector/tests/test_rope_correction.py --ignore=semblend_kv_connector/tests/test_triton_kernels.py"
 
 [tool.ruff]
 line-length = 100

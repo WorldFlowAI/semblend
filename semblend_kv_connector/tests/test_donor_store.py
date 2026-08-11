@@ -13,7 +13,7 @@ import numpy as np
 
 def test_simhash_identical():
     """Identical sequences should have distance 0."""
-    from synapse_kv_connector.simhash import compute_simhash, hamming_distance
+    from semblend_kv_connector.simhash import compute_simhash, hamming_distance
 
     tokens = [1, 2, 3, 4, 5, 6, 7, 8]
     h1 = compute_simhash(tokens)
@@ -23,7 +23,7 @@ def test_simhash_identical():
 
 def test_simhash_similar():
     """Similar sequences should have low hamming distance."""
-    from synapse_kv_connector.simhash import compute_simhash, hamming_distance
+    from semblend_kv_connector.simhash import compute_simhash, hamming_distance
 
     tokens1 = list(range(100))
     tokens2 = list(range(100))
@@ -37,7 +37,7 @@ def test_simhash_similar():
 
 def test_simhash_different():
     """Very different sequences should have high hamming distance."""
-    from synapse_kv_connector.simhash import compute_simhash, hamming_distance
+    from semblend_kv_connector.simhash import compute_simhash, hamming_distance
 
     tokens1 = list(range(100))
     tokens2 = list(range(1000, 1100))
@@ -50,7 +50,7 @@ def test_simhash_different():
 
 def test_simhash_plausible_donor():
     """is_plausible_donor should filter correctly."""
-    from synapse_kv_connector.simhash import compute_simhash, is_plausible_donor
+    from semblend_kv_connector.simhash import compute_simhash, is_plausible_donor
 
     similar = compute_simhash([1, 2, 3, 4, 5])
     same = compute_simhash([1, 2, 3, 4, 5])
@@ -59,7 +59,7 @@ def test_simhash_plausible_donor():
 
 def test_simhash_short_sequence():
     """Short sequences (< ngram_size) should still produce a hash."""
-    from synapse_kv_connector.simhash import compute_simhash
+    from semblend_kv_connector.simhash import compute_simhash
 
     h = compute_simhash([1, 2])
     assert isinstance(h, int)
@@ -68,7 +68,7 @@ def test_simhash_short_sequence():
 
 def test_simhash_latency():
     """SimHash on 8K tokens should complete in <0.2ms."""
-    from synapse_kv_connector.simhash import compute_simhash
+    from semblend_kv_connector.simhash import compute_simhash
 
     tokens = list(range(8000))
     t0 = time.monotonic()
@@ -88,7 +88,7 @@ def test_simhash_latency():
 
 def _make_store(n: int = 0, dim: int = 384, max_entries: int = 1000):
     """Create a DonorStore with n random donors."""
-    from synapse_kv_connector.donor_store import DonorNode, DonorStore
+    from semblend_kv_connector.donor_store import DonorNode, DonorStore
 
     store = DonorStore(
         max_entries=max_entries,
@@ -124,7 +124,7 @@ def test_donor_store_empty():
 
 def test_donor_store_add_and_find():
     """Adding a donor and querying with same embedding should find it."""
-    from synapse_kv_connector.donor_store import DonorNode
+    from semblend_kv_connector.donor_store import DonorNode
 
     store = _make_store(0)
     tokens = list(range(100))
@@ -166,7 +166,7 @@ def test_donor_store_lru_eviction():
 
 def test_donor_store_duplicate_add():
     """Adding same request_id twice should not increase size."""
-    from synapse_kv_connector.donor_store import DonorNode
+    from semblend_kv_connector.donor_store import DonorNode
 
     store = _make_store(0)
     node = DonorNode(
@@ -182,7 +182,7 @@ def test_donor_store_duplicate_add():
 
 def test_donor_store_no_self_match():
     """Should not return a donor with identical token_ids as the query."""
-    from synapse_kv_connector.donor_store import DonorNode
+    from semblend_kv_connector.donor_store import DonorNode
 
     store = _make_store(0)
     tokens = list(range(100))
@@ -223,7 +223,7 @@ def test_donor_store_1k_entries():
 
 def test_donor_store_no_embedding_fallback():
     """Should handle None embedding gracefully."""
-    from synapse_kv_connector.donor_store import DonorNode
+    from semblend_kv_connector.donor_store import DonorNode
 
     store = _make_store(0)
     tokens = list(range(100))
