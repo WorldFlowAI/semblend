@@ -80,6 +80,10 @@ def _canonical_match_enabled() -> bool:
     return os.environ.get("SEMBLEND_CANONICAL_MATCH", "") == "1"
 
 
+def _paraphrase_serve_enabled() -> bool:
+    return os.environ.get("SEMBLEND_PARAPHRASE_SERVE", "") == "1"
+
+
 def _offsets_tokenizer(model_arch: str):
     """HF fast tokenizer for offset mapping (lazy; None on failure)."""
     try:
@@ -562,6 +566,40 @@ class SemBlendProviderAdapter:
                 len(remaining), 1
             )
             if canon_cover < self._config.min_reuse_ratio:
+                # Verified paraphrase serve: high semantic similarity with
+                # low token/canonical coverage is the paraphrase signature.
+                # A fail-closed lexical fact gate over the retained donor
+                # text decides; accepted spans serve the donor KV directly
+                # (measured at serving scale: fact-preserving substitution
+                # sits at the exact-cache quality floor).
+                if (
+                    _paraphrase_serve_enabled()
+                    and prompt_text
+                    and handle_for_canon is not None
+                    and handle_for_canon.prompt_text
+                    and result.similarity >= self._config.paraphrase_min_similarity
+                ):
+                    from semblend_core.fact_gate import spans_fact_consistent
+
+                    if spans_fact_consistent(
+                        handle_for_canon.prompt_text, prompt_text
+                    ):
+                        logger.info(
+                            "[FUZZY] adapter.match: paraphrase serve "
+                            "(similarity=%.3f, fact gate passed)",
+                            float(result.similarity),
+                        )
+                        return self._paraphrase_result(
+                            donor_id=canon_donor_id,
+                            handle=handle_for_canon,
+                            remaining=remaining,
+                            similarity=float(result.similarity),
+                        )
+                    logger.info(
+                        "[FUZZY] adapter.match: paraphrase candidate REJECTED "
+                        "by fact gate (similarity=%.3f)",
+                        float(result.similarity),
+                    )
                 logger.info(
                     "[FUZZY] adapter.match: reuse_ratio=%.3f < gate=%.3f "
                     "(canonical cover=%.3f), reject",
@@ -914,6 +952,48 @@ class SemBlendProviderAdapter:
             layer_recompute_mask=layer_mask,
             quality_signals=quality,
             donor_last_node_id=handle.last_node_id,
+        )
+
+    def _paraphrase_result(
+        self,
+        donor_id: str,
+        handle: "_DonorKVHandle",
+        remaining: List[int],
+        similarity: float,
+    ) -> Optional[FuzzyMatchResult]:
+        """Contiguous result serving a fact-verified paraphrase span.
+
+        The donor KV is served directly (no token identity claim); the
+        engine's realization path applies positional correction. Length
+        caps at the shorter of donor coverage and the remaining window,
+        minus the tail reserve so the final tokens always compute.
+        """
+        donor_len = handle.end_pos - handle.start_pos
+        # _tail_reserve_tokens returns the last servable BOUNDARY position
+        # (prompt_len minus the reserved tail), or 0 when the prompt is too
+        # short for a reserve to apply.
+        serve_cap = self._tail_reserve_tokens(len(remaining))
+        if serve_cap <= 0:
+            serve_cap = max(0, len(remaining) - 1)
+        serve_len = min(donor_len, serve_cap)
+        if serve_len < self._config.min_match_length:
+            return None
+        kv = _slice_indices(handle.kv_indices, offset=0, length=serve_len)
+        return FuzzyMatchResult(
+            cached_token_count=serve_len,
+            cached_token_ids=list(remaining[:serve_len]),
+            prompt_token_count=len(remaining),
+            kv_cache_indices=kv,
+            position_offset=0,
+            cached_start_pos=handle.start_pos,
+            donor_last_node_id=handle.last_node_id,
+            quality_signals=QualitySignals(
+                cosine_similarity=similarity,
+                reuse_ratio=serve_len / max(1, len(remaining)),
+                confidence_tier="paraphrase_verified",
+                passed_quality_gate=True,
+                rejection_reason=None,
+            ),
         )
 
     def _resolve_canon_handle(self, result):

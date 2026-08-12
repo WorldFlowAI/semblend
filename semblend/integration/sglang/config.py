@@ -63,6 +63,12 @@ class SemBlendProviderConfig:
     segment_min_token_identity: float = 0.98
     # Segments shorter than this are not worth a realization pass.
     segment_min_tokens: int = 16
+    # Verified paraphrase serve: minimum embedding similarity before the
+    # lexical fact gate is even consulted (the gate, not similarity, is
+    # the acceptance decision; this floor just bounds gate volume).
+    # Faithful full paraphrases of long documents measure ~0.84 cosine,
+    # so the floor sits below that band.
+    paraphrase_min_similarity: float = 0.80
     # Never realize donor KV into the first N target positions (attention
     # sink): foreign KV there poisons all downstream attention. 0 = off.
     sink_protect_tokens: int = 0
