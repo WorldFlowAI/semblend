@@ -7,7 +7,7 @@ import time
 
 def test_alignment_exact_match():
     """Exact token sequences should have 100% reuse."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         SlotActionType,
         compute_alignment,
     )
@@ -22,7 +22,7 @@ def test_alignment_exact_match():
 
 def test_alignment_prefix_match():
     """Shared prefix should be marked as copy_from_donor."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         SlotActionType,
         compute_alignment,
     )
@@ -40,7 +40,7 @@ def test_alignment_prefix_match():
 
 def test_alignment_no_overlap():
     """Completely different sequences should have 0% reuse."""
-    from synapse_kv_connector.alignment import compute_alignment
+    from semblend_kv_connector.alignment import compute_alignment
 
     donor = [1, 2, 3, 4, 5]
     target = [10, 20, 30, 40, 50]
@@ -52,7 +52,7 @@ def test_alignment_no_overlap():
 
 def test_alignment_reorder():
     """Reordered tokens: edit distance detects rearrangement."""
-    from synapse_kv_connector.alignment import compute_alignment
+    from semblend_kv_connector.alignment import compute_alignment
 
     donor = [1, 2, 3, 4, 5]
     target = [1, 3, 2, 4, 5]
@@ -65,7 +65,7 @@ def test_alignment_reorder():
 
 def test_alignment_insertion():
     """Inserting tokens in the middle."""
-    from synapse_kv_connector.alignment import compute_alignment
+    from semblend_kv_connector.alignment import compute_alignment
 
     donor = [1, 2, 3, 4, 5]
     target = [1, 2, 99, 3, 4, 5]
@@ -79,7 +79,7 @@ def test_alignment_insertion():
 
 def test_alignment_latency_8k():
     """Alignment on 8K tokens must complete in <5ms."""
-    from synapse_kv_connector.alignment import compute_alignment
+    from semblend_kv_connector.alignment import compute_alignment
 
     donor = list(range(8000))
     target = list(range(100)) + list(range(200, 8100))
@@ -94,7 +94,7 @@ def test_alignment_latency_8k():
 
 def test_batch_alignment():
     """Batch alignment returns best candidate."""
-    from synapse_kv_connector.alignment import compute_batch_alignment
+    from semblend_kv_connector.alignment import compute_batch_alignment
 
     target = [1, 2, 3, 4, 5]
     candidates = [
@@ -111,7 +111,7 @@ def test_batch_alignment():
 
 def test_fallback_alignment():
     """Fallback prefix alignment works without rapidfuzz."""
-    from synapse_kv_connector.alignment import _fallback_prefix_alignment
+    from semblend_kv_connector.alignment import _fallback_prefix_alignment
 
     donor = [1, 2, 3, 4, 5]
     target = [1, 2, 3, 10, 11]
@@ -128,10 +128,10 @@ def test_fallback_alignment():
 
 def test_context_gate_rejects_isolated_match():
     """A single isolated chunk match should be rejected by the context gate."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
     )
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         SlotActionType,
         compute_chunk_alignment,
     )
@@ -157,10 +157,10 @@ def test_context_gate_rejects_isolated_match():
 
 def test_context_gate_accepts_contiguous_matches():
     """Two or more contiguous matching chunks should pass the context gate."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
     )
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         compute_chunk_alignment,
     )
 
@@ -183,10 +183,10 @@ def test_context_gate_accepts_contiguous_matches():
 
 def test_context_gate_disabled_accepts_isolated():
     """With context gate disabled, isolated matches should be accepted."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
     )
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         compute_chunk_alignment,
     )
 
@@ -208,10 +208,10 @@ def test_context_gate_disabled_accepts_isolated():
 
 def test_context_gate_full_match_accepted():
     """All chunks matching should all pass the context gate."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
     )
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         compute_chunk_alignment,
     )
 
@@ -222,10 +222,10 @@ def test_context_gate_full_match_accepted():
 
 def test_context_gate_reorder_with_contiguous():
     """REORDER scenario: swapped paragraph blocks should pass gate if contiguous."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
     )
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         compute_chunk_alignment,
     )
 
@@ -245,10 +245,10 @@ def test_context_gate_reorder_with_contiguous():
 
 def test_context_gate_scattered_isolated_all_rejected():
     """Multiple isolated matches (no two adjacent) should all be rejected."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
     )
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         compute_chunk_alignment,
     )
 
@@ -278,7 +278,7 @@ def test_context_gate_scattered_isolated_all_rejected():
 
 def test_adaptive_threshold_boundaries():
     """Adaptive threshold should respect similarity bounds."""
-    from synapse_kv_connector.bathtub import adaptive_threshold
+    from semblend_kv_connector.bathtub import adaptive_threshold
 
     # Zero similarity → minimum threshold (base only, most recomputation)
     assert abs(adaptive_threshold(0.0) - 0.3) < 1e-6
@@ -292,7 +292,7 @@ def test_adaptive_threshold_boundaries():
 
 def test_adaptive_threshold_monotonic():
     """Higher similarity should produce higher threshold (fewer recomputed layers)."""
-    from synapse_kv_connector.bathtub import adaptive_threshold
+    from semblend_kv_connector.bathtub import adaptive_threshold
 
     sims = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
     thresholds = [adaptive_threshold(s) for s in sims]
@@ -306,7 +306,7 @@ def test_adaptive_threshold_monotonic():
 
 def test_adaptive_threshold_fewer_recompute_layers():
     """Higher similarity → higher threshold → fewer layers flagged for recompute."""
-    from synapse_kv_connector.bathtub import compute_layer_deviations
+    from semblend_kv_connector.bathtub import compute_layer_deviations
 
     high_sim = compute_layer_deviations(num_layers=28, similarity=0.95)
     low_sim = compute_layer_deviations(num_layers=28, similarity=0.65)
@@ -322,7 +322,7 @@ def test_adaptive_threshold_fewer_recompute_layers():
 
 def test_adaptive_threshold_backward_compat():
     """Without similarity param, fixed threshold should be used."""
-    from synapse_kv_connector.bathtub import compute_layer_deviations
+    from semblend_kv_connector.bathtub import compute_layer_deviations
 
     # Without similarity: uses fixed threshold=0.3
     fixed = compute_layer_deviations(num_layers=28, threshold=0.3)
@@ -340,7 +340,7 @@ def test_adaptive_threshold_backward_compat():
 
 def test_bathtub_early_late_deviation():
     """Early and late layers should have higher deviation than middle."""
-    from synapse_kv_connector.bathtub import compute_layer_deviations
+    from semblend_kv_connector.bathtub import compute_layer_deviations
 
     devs = compute_layer_deviations(num_layers=28)
 
@@ -354,7 +354,7 @@ def test_bathtub_early_late_deviation():
 
 def test_bathtub_symmetry():
     """Bathtub should be roughly symmetric around the middle."""
-    from synapse_kv_connector.bathtub import sigma
+    from semblend_kv_connector.bathtub import sigma
 
     early = sigma(layer_idx=2, num_layers=28)
     late = sigma(layer_idx=25, num_layers=28)
@@ -366,7 +366,7 @@ def test_bathtub_symmetry():
 
 def test_bathtub_sigma_bounds():
     """sigma() should return values in [0, 1]."""
-    from synapse_kv_connector.bathtub import sigma
+    from semblend_kv_connector.bathtub import sigma
 
     for num_layers in [24, 28, 32, 80]:
         for i in range(num_layers):
@@ -376,7 +376,7 @@ def test_bathtub_sigma_bounds():
 
 def test_bathtub_preset_lookup():
     """Model name matching should work with full HuggingFace names."""
-    from synapse_kv_connector.bathtub import get_preset
+    from semblend_kv_connector.bathtub import get_preset
 
     preset = get_preset("Qwen/Qwen2.5-7B-Instruct-AWQ")
     assert preset.num_layers == 28
@@ -387,7 +387,7 @@ def test_bathtub_preset_lookup():
 
 def test_bathtub_mismatch_scaling():
     """Higher mismatch fraction should increase deviation scores."""
-    from synapse_kv_connector.bathtub import compute_layer_deviations
+    from semblend_kv_connector.bathtub import compute_layer_deviations
 
     low = compute_layer_deviations(num_layers=28, mismatch_fraction=0.1)
     high = compute_layer_deviations(num_layers=28, mismatch_fraction=0.5)
@@ -398,7 +398,7 @@ def test_bathtub_mismatch_scaling():
 
 def test_bathtub_latency():
     """Bathtub computation must complete in <0.1ms."""
-    from synapse_kv_connector.bathtub import compute_layer_deviations
+    from semblend_kv_connector.bathtub import compute_layer_deviations
 
     t0 = time.monotonic()
     for _ in range(1000):
@@ -416,10 +416,10 @@ def test_bathtub_latency():
 
 def test_fuzzy_exact_chunks_still_work():
     """Exact chunk matches should still work with fuzzy alignment enabled."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
     )
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         SlotActionType,
         compute_fuzzy_chunk_alignment,
     )
@@ -435,10 +435,10 @@ def test_fuzzy_exact_chunks_still_work():
 
 def test_fuzzy_shifted_prefix_recovers_reuse():
     """Shifted prefix (Δ=1 token) should produce fuzzy matches for document chunks."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
     )
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         SlotActionType,
         compute_chunk_alignment,
         compute_fuzzy_chunk_alignment,
@@ -486,10 +486,10 @@ def test_fuzzy_shifted_prefix_recovers_reuse():
 
 def test_fuzzy_high_overlap_threshold():
     """Chunks with overlap below threshold should not match."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
     )
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         compute_fuzzy_chunk_alignment,
     )
 
@@ -511,10 +511,10 @@ def test_fuzzy_high_overlap_threshold():
 
 def test_fuzzy_low_overlap_threshold():
     """Chunks with overlap above a lower threshold should match."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
     )
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         compute_fuzzy_chunk_alignment,
     )
 
@@ -533,7 +533,7 @@ def test_fuzzy_low_overlap_threshold():
 
     # Use a permissive fuzzy config to test overlap-only matching
     # (bag-cosine gate would reject 90% overlap with sequential tokens)
-    from synapse_kv_connector.alignment import FuzzyMatchConfig
+    from semblend_kv_connector.alignment import FuzzyMatchConfig
 
     permissive_config = FuzzyMatchConfig(
         bag_cosine_min=0.50,
@@ -556,10 +556,10 @@ def test_fuzzy_low_overlap_threshold():
 
 def test_fuzzy_context_gate_integration():
     """Fuzzy matches should respect the context gate (adjacent match required)."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
     )
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         compute_fuzzy_chunk_alignment,
     )
 
@@ -594,10 +594,10 @@ def test_fuzzy_context_gate_integration():
 
 def test_fuzzy_compute_alignment_integration():
     """compute_alignment with fuzzy=True should use fuzzy chunk matching."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
     )
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         compute_alignment,
     )
 
@@ -628,10 +628,10 @@ def test_fuzzy_compute_alignment_integration():
 
 def test_fuzzy_delta_values_correct():
     """Verify that fuzzy match Δ values are correct for a constant shift."""
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         LMCACHE_CHUNK_SIZE as CS,
     )
-    from synapse_kv_connector.alignment import (
+    from semblend_kv_connector.alignment import (
         SlotActionType,
         compute_fuzzy_chunk_alignment,
     )

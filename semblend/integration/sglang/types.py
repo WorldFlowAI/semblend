@@ -105,3 +105,7 @@ class FuzzyMatchResult:
     # Populated by SemBlendProviderAdapter.match() from the donor's
     # _DonorKVHandle.last_node_id (set in on_donor_inserted).
     donor_last_node_id: Optional[int] = None
+    # Sparse plan: ordered novel/donor spans covering the remaining
+    # window, for plan-steered chunked prefill (donor spans consumed as
+    # boundary-anchored joins between chunks). None -> non-sparse contract.
+    sparse_plan: Optional[List[Any]] = None

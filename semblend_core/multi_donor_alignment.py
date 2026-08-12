@@ -91,6 +91,184 @@ def _get_chunk_embeddings(
         return None
 
 
+def compute_cdc_alignment(
+    target_tokens: list[int],
+    chunk_index,
+    donor_token_store: dict[str, list[int]],
+):
+    """CDC-boundary alignment: offset-invariant, diagonal-coherent, long runs.
+
+    Chunks the target with the SAME content-defined boundaries the index
+    used for donors, so identical content matches its corresponding donor
+    occurrence at any positional offset (anchored at any offset). Diagonal continuation is
+    preferred among duplicate occurrences; unmatched spans become recompute
+    holes. Returns MultiDonorAlignmentResult or None when nothing matched.
+    """
+    from semblend_core.chunk_index import cdc_boundaries
+
+    bounds = cdc_boundaries(target_tokens)
+    if not bounds:
+        return None
+    _dbg = {"chunks": 0, "with_locs": 0, "locs_total": 0, "diag_hits": 0, "verify_fail": 0}
+    import os as _os
+
+    try:
+        mismatch_tolerance = float(
+            _os.environ.get("SEMBLEND_SPAN_MISMATCH_TOLERANCE", "0") or 0
+        )
+    except ValueError:
+        mismatch_tolerance = 0.0
+    tolerated_chunks = 0
+    tolerated_mismatch_tokens = 0
+    mismatched_positions: list[tuple[int, int]] = []
+
+    map_donor_ids: list[str] = []
+    map_donor_positions: list[int] = []
+    map_target_positions: list[int] = []
+    slot_actions: list[MultiDonorSlotAction] = []
+    donor_id_set: list[str] = []
+    exact_chunks = 0
+    recompute_chunks = 0
+    prev_donor: tuple[str, int] | None = None  # (donor_id, expected next pos)
+
+    for t_start, t_end in bounds:
+        chunk = target_tokens[t_start:t_end]
+        locations = chunk_index.lookup_chunk(chunk)
+        chosen = None
+        diagonal_hit = False
+        if locations:
+            if prev_donor is not None:
+                for loc in locations:
+                    if loc.donor_id == prev_donor[0] and loc.pos == prev_donor[1]:
+                        chosen = loc
+                        diagonal_hit = True
+                        break
+            if chosen is None:
+                chosen = locations[0]
+        _dbg["chunks"] += 1
+        _dbg["with_locs"] += 1 if locations else 0
+        _dbg["locs_total"] += len(locations) if locations else 0
+        _dbg["diag_hits"] += 1 if diagonal_hit else 0
+        if chosen is None:
+            # Identity-relaxed adoption: a hash-missed chunk between
+            # diagonal matches may be adopted from the same donor diagonal
+            # when its token-mismatch fraction is within tolerance.
+            adopted = False
+            if mismatch_tolerance > 0 and prev_donor is not None:
+                d_tokens = donor_token_store.get(prev_donor[0])
+                d_pos = prev_donor[1]
+                seg_len = t_end - t_start
+                if d_tokens is not None and len(d_tokens) >= d_pos + seg_len:
+                    window = d_tokens[d_pos : d_pos + seg_len]
+                    mism = [
+                        k for k in range(seg_len) if window[k] != chunk[k]
+                    ]
+                    if mism and len(mism) <= mismatch_tolerance * seg_len:
+                        tolerated_chunks += 1
+                        tolerated_mismatch_tokens += len(mism)
+                        for k in mism:
+                            mismatched_positions.append(
+                                (d_pos + k, t_start + k)
+                            )
+                        exact_chunks += 1
+                        if prev_donor[0] not in donor_id_set:
+                            donor_id_set.append(prev_donor[0])
+                        for i in range(seg_len):
+                            slot_actions.append(
+                                MultiDonorSlotAction(
+                                    action="copy_from_donor",
+                                    target_pos=t_start + i,
+                                    donor_pos=d_pos + i,
+                                    donor_id=prev_donor[0],
+                                )
+                            )
+                            map_donor_ids.append(prev_donor[0])
+                            map_donor_positions.append(d_pos + i)
+                            map_target_positions.append(t_start + i)
+                        prev_donor = (prev_donor[0], d_pos + seg_len)
+                        adopted = True
+            if adopted:
+                continue
+            recompute_chunks += 1
+            prev_donor = None
+            for i in range(t_start, t_end):
+                slot_actions.append(
+                    MultiDonorSlotAction(action="recompute", target_pos=i)
+                )
+            continue
+        # Verify token equality (hash is never trusted alone).
+        donor_tokens = donor_token_store.get(chosen.donor_id)
+        seg_len = t_end - t_start
+        if (
+            donor_tokens is None
+            or donor_tokens[chosen.pos : chosen.pos + seg_len] != chunk
+        ):
+            _dbg["verify_fail"] += 1
+            recompute_chunks += 1
+            prev_donor = None
+            for i in range(t_start, t_end):
+                slot_actions.append(
+                    MultiDonorSlotAction(action="recompute", target_pos=i)
+                )
+            continue
+        exact_chunks += 1
+        if chosen.donor_id not in donor_id_set:
+            donor_id_set.append(chosen.donor_id)
+        for i in range(seg_len):
+            slot_actions.append(
+                MultiDonorSlotAction(
+                    action="copy_from_donor",
+                    target_pos=t_start + i,
+                    donor_pos=chosen.pos + i,
+                    donor_id=chosen.donor_id,
+                )
+            )
+            map_donor_ids.append(chosen.donor_id)
+            map_donor_positions.append(chosen.pos + i)
+            map_target_positions.append(t_start + i)
+        prev_donor = (chosen.donor_id, chosen.pos + seg_len)
+
+    num_reused = len(map_target_positions)
+    if num_reused == 0:
+        return None
+    reuse_ratio = num_reused / max(len(target_tokens), 1)
+    position_map = MultiDonorPositionMapping(
+        donor_ids=tuple(map_donor_ids),
+        donor_positions=tuple(map_donor_positions),
+        target_positions=tuple(map_target_positions),
+    )
+    donor_ids = tuple(donor_id_set)
+    composite_plan = CompositeKVPlan(
+        donor_ids=donor_ids,
+        chunk_assignments=tuple(),
+        slot_actions=tuple(slot_actions),
+        position_map=position_map,
+        total_reuse_ratio=reuse_ratio,
+        donors_per_composite=len(donor_ids),
+    )
+    logger.info("cdc_alignment dbg: %s", _dbg)
+    logger.info(
+        "cdc_alignment: %d exact + %d recompute cdc-chunks, reuse=%.3f, donors=%d",
+        exact_chunks,
+        recompute_chunks,
+        reuse_ratio,
+        len(donor_ids),
+    )
+    return MultiDonorAlignmentResult(
+        reuse_ratio=reuse_ratio,
+        chunk_assignments=tuple(),
+        composite_plan=composite_plan,
+        donor_ids=donor_ids,
+        exact_chunks=exact_chunks,
+        fuzzy_chunks=0,
+        recompute_chunks=recompute_chunks,
+        chunk_index_hits=exact_chunks,
+        tolerated_chunks=tolerated_chunks,
+        tolerated_mismatch_tokens=tolerated_mismatch_tokens,
+        mismatched_positions=tuple(mismatched_positions),
+    )
+
+
 def compute_multi_donor_alignment(
     target_tokens: list[int],
     chunk_index: ChunkIndex,
@@ -136,28 +314,54 @@ def compute_multi_donor_alignment(
     used_donor_chunks: dict[str, set[int]] = {}  # donor_id → set of used chunk_idx
     chunk_index_hits = 0
 
+    prev_exact: ChunkAssignment | None = None
     for t_idx, t_chunk in enumerate(target_chunks):
         if len(t_chunk) != chunk_size:
+            prev_exact = None
             continue
 
         locations = chunk_index.lookup_chunk(t_chunk)
         if not locations:
+            prev_exact = None
             continue
 
-        # Pick first available location (prefer donors with more matches)
-        for loc in locations:
-            used = used_donor_chunks.get(loc.donor_id, set())
-            if loc.chunk_idx not in used:
-                assignments[t_idx] = ChunkAssignment(
-                    target_chunk_idx=t_idx,
-                    donor_id=loc.donor_id,
-                    donor_chunk_idx=loc.chunk_idx,
-                    match_type=MatchType.EXACT,
-                    confidence=1.0,
-                )
-                used_donor_chunks.setdefault(loc.donor_id, set()).add(loc.chunk_idx)
-                chunk_index_hits += 1
-                break
+        # Diagonal-coherent selection: self-similar documents contain many
+        # duplicate chunks, and first-fit picks ARBITRARY occurrences — the
+        # donor side then ping-pongs thousands of positions while the target
+        # advances (observed: verbatim-identical 17k docs fragmenting into
+        # ~1300 runs). Prefer the occurrence that continues the previous
+        # chunk's (donor, position) diagonal; fall back to first-unused.
+        chosen = None
+        if prev_exact is not None:
+            want_idx = prev_exact.donor_chunk_idx + 1
+            # Diagonal continuation ignores the used-set: donor KV reads are
+            # non-destructive, and duplicate chunks earlier in the target
+            # otherwise consume the occurrence this diagonal needs, forcing
+            # a position jump. The used-set still guards NEW diagonal seeds
+            # below (bounds boilerplate stamping at seed choice).
+            for loc in locations:
+                if loc.donor_id == prev_exact.donor_id and loc.chunk_idx == want_idx:
+                    chosen = loc
+                    break
+        if chosen is None:
+            for loc in locations:
+                used = used_donor_chunks.get(loc.donor_id, set())
+                if loc.chunk_idx not in used:
+                    chosen = loc
+                    break
+        if chosen is None:
+            prev_exact = None
+            continue
+        assignments[t_idx] = ChunkAssignment(
+            target_chunk_idx=t_idx,
+            donor_id=chosen.donor_id,
+            donor_chunk_idx=chosen.chunk_idx,
+            match_type=MatchType.EXACT,
+            confidence=1.0,
+        )
+        used_donor_chunks.setdefault(chosen.donor_id, set()).add(chosen.chunk_idx)
+        chunk_index_hits += 1
+        prev_exact = assignments[t_idx]
 
     # Phase 1.5: PQ semantic chunk matching for unmatched chunks
     # Uses per-chunk embeddings to find semantically similar chunks across

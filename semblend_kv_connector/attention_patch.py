@@ -36,7 +36,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from synapse_kv_connector.partial_attention import (
+from semblend_kv_connector.partial_attention import (
     PartialAttentionPlan,
     compute_attention_mask,
     compute_donor_kv_indices,
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 try:
     import torch
 
-    from synapse_kv_connector.triton_kernels import (
+    from semblend_kv_connector.triton_kernels import (
         PartialPrefillResult,
         partial_prefill,
         scatter_donor_kv,

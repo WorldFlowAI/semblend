@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from synapse_kv_connector.partial_attention import (
+from semblend_kv_connector.partial_attention import (
     AttentionMode,
     PositionMask,
     build_attention_plan,

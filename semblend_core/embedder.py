@@ -30,6 +30,28 @@ class EmbedderType(Enum):
     JACCARD = "jaccard"
 
 
+def _bound_embed_text(text: str) -> str:
+    """Cap embedding input to roughly the first N encoder windows.
+
+    SEMBLEND_EMBED_MAX_WINDOWS=N bounds BOTH the pooled embedding and
+    per-segment embeddings to the document head (~N*512 wordpieces via the
+    same ~4 chars/token estimate the segmentation decision uses). Donor
+    registration cost on long prompts is otherwise linear in prompt length
+    and starves the scheduler (measured: negatives 0.587x -> 0.963x
+    with registration off). Unset or <=0 = unbounded (full-document mean).
+    """
+    raw = os.environ.get("SEMBLEND_EMBED_MAX_WINDOWS")
+    if not raw:
+        return text
+    try:
+        windows = int(raw)
+    except ValueError:
+        return text
+    if windows <= 0:
+        return text
+    return text[: windows * 512 * 4]
+
+
 class MiniLMEmbedder:
     """In-process embedder using all-MiniLM-L6-v2.
 
@@ -79,6 +101,13 @@ class MiniLMEmbedder:
                     device = "cpu"
             except ImportError:
                 device = "cpu"
+            if device == "cpu" and os.environ.get("SEMBLEND_EMBED_SINGLE_THREAD"):
+                # In-scheduler CPU embedding: torch intra-op threads otherwise
+                # saturate the pod's whole vCPU allocation during donor
+                # registration and starve the serving process (measured live:
+                # negatives 0.586x with registration on, 0.963x off). One
+                # thread trades embed wall-time for server responsiveness.
+                torch.set_num_threads(1)
             self._model = SentenceTransformer(self.MODEL_NAME, device=device)
             self._load_time_ms = (time.monotonic() - t0) * 1000
             self._available = True
@@ -123,6 +152,7 @@ class MiniLMEmbedder:
         self._ensure_loaded()
         if not self._available or not text.strip():
             return None
+        text = _bound_embed_text(text)
 
         t0 = time.monotonic()
 
@@ -209,6 +239,7 @@ class MiniLMEmbedder:
         self._ensure_loaded()
         if not self._available or not text.strip():
             return None
+        text = _bound_embed_text(text)
 
         # Lazy import to avoid circular dependency
         from semblend_core.segment_embeddings import EmbedResult, SegmentEmbeddings
@@ -412,6 +443,7 @@ class OnnxGpuEmbedder:
         """
         if not self._available or not text.strip():
             return None
+        text = _bound_embed_text(text)
 
         t0 = time.monotonic()
 
@@ -534,6 +566,7 @@ class OnnxGpuEmbedder:
         """
         if not self._available or not text.strip():
             return None
+        text = _bound_embed_text(text)
 
         from semblend_core.segment_embeddings import EmbedResult, SegmentEmbeddings
 
@@ -648,6 +681,7 @@ class E5SmallEmbedder:
         """Embed text with E5 query prefix for semantic matching."""
         if not self._available or not text.strip():
             return None
+        text = _bound_embed_text(text)
 
         t0 = time.monotonic()
         # E5 models require "query: " prefix for retrieval tasks

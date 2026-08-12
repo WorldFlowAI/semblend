@@ -62,9 +62,9 @@ def verify_k8s_pod_code(
     pod_name: str,
     namespace: str = "autoresearch",
     pipeline_paths: tuple[str, ...] = (
-        "/opt/synapse/synapse_kv_connector/pipeline.py",
+        "/opt/semblend/semblend_kv_connector/pipeline.py",
         "/opt/semblend_core/pipeline.py",
-        "/opt/synapse/semblend_core/pipeline.py",
+        "/opt/semblend/semblend_core/pipeline.py",
     ),
 ) -> VerifyResult:
     """Verify that a K8s pod is running v0.2.0 semblend code.
@@ -267,7 +267,7 @@ def verify_k8s_pod_code(
                 "--",
                 "python3",
                 "-c",
-                "from synapse_kv_connector.alignment import FuzzyMatchConfig, "
+                "from semblend_kv_connector.alignment import FuzzyMatchConfig, "
                 "compute_fuzzy_chunk_alignment; print('ok')",
             ],
             capture_output=True,
@@ -278,7 +278,7 @@ def verify_k8s_pod_code(
         checks["fuzzy_matching"] = has_fuzzy
         if not has_fuzzy:
             errors.append(
-                "MISSING: Fuzzy chunk matching not available in synapse_kv_connector. "
+                "MISSING: Fuzzy chunk matching not available in semblend_kv_connector. "
                 "Overlay semblend_core/alignment.py into the connector."
             )
     except Exception as e:
@@ -297,7 +297,7 @@ def verify_k8s_pod_code(
                 "--",
                 "python3",
                 "-c",
-                "import inspect; from synapse_kv_connector.bathtub import compute_layer_deviations; "
+                "import inspect; from semblend_kv_connector.bathtub import compute_layer_deviations; "
                 "print('ok' if 'fuzzy_fraction' in inspect.getsource(compute_layer_deviations) else 'missing')",
             ],
             capture_output=True,

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import struct
 import threading
 from collections import OrderedDict
@@ -30,6 +31,54 @@ class ChunkLocation:
     donor_id: str
     chunk_idx: int
     pos: int  # Token position in the donor sequence (chunk_idx * chunk_size)
+
+
+_GEAR_TABLE: list[int] | None = None
+
+
+def _gear_table() -> list[int]:
+    global _GEAR_TABLE
+    if _GEAR_TABLE is None:
+        import random as _random
+
+        rng = _random.Random(0x5EB1E4D)
+        _GEAR_TABLE = [rng.getrandbits(64) for _ in range(1 << 16)]
+    return _GEAR_TABLE
+
+
+def cdc_boundaries(
+    tokens: list[int],
+    min_len: int = 24,
+    avg_bits: int = 5,
+    max_len: int = 192,
+) -> list[tuple[int, int]]:
+    """Content-defined chunk boundaries over token ids (Gear rolling hash).
+
+    Boundaries follow content, so identical content chunks identically at
+    ANY offset — the property fixed-grid chunking structurally lacks (a property
+    a wrapper shift of N mod chunk_size != 0 makes corresponding-occurrence
+    grid hashes unmatchable). Deterministic across processes (seeded table).
+    Returns (start, end_exclusive) spans covering the sequence.
+    """
+    table = _gear_table()
+    mask = (1 << avg_bits) - 1
+    bounds: list[tuple[int, int]] = []
+    start = 0
+    h = 0
+    for i, tok in enumerate(tokens):
+        h = ((h << 1) + table[tok & 0xFFFF]) & 0xFFFFFFFFFFFFFFFF
+        length = i - start + 1
+        if (length >= min_len and (h & mask) == 0) or length >= max_len:
+            bounds.append((start, i + 1))
+            start = i + 1
+            h = 0
+    if start < len(tokens):
+        bounds.append((start, len(tokens)))
+    return bounds
+
+
+def cdc_enabled() -> bool:
+    return os.environ.get("SEMBLEND_CDC_CHUNKS", "") == "1"
 
 
 class ChunkIndex:
@@ -111,10 +160,14 @@ class ChunkIndex:
         """
         # Phase 1: hash outside the lock (CPU-bound, no shared state)
         chunk_data: list[tuple[str, int]] = []  # (hash, chunk_start)
-        for chunk_start in range(0, len(token_ids), self._chunk_size):
-            chunk = token_ids[chunk_start : chunk_start + self._chunk_size]
-            if len(chunk) == self._chunk_size:
-                chunk_data.append((_chunk_hash(chunk), chunk_start))
+        if cdc_enabled():
+            for start, end in cdc_boundaries(token_ids):
+                chunk_data.append((_chunk_hash(token_ids[start:end]), start))
+        else:
+            for chunk_start in range(0, len(token_ids), self._chunk_size):
+                chunk = token_ids[chunk_start : chunk_start + self._chunk_size]
+                if len(chunk) == self._chunk_size:
+                    chunk_data.append((_chunk_hash(chunk), chunk_start))
 
         if not chunk_data:
             return 0
@@ -196,7 +249,9 @@ class ChunkIndex:
         Returns:
             List of ChunkLocations, empty if no match.
         """
-        if len(chunk_tokens) != self._chunk_size:
+        if not cdc_enabled() and len(chunk_tokens) != self._chunk_size:
+            return []
+        if not chunk_tokens:
             return []
 
         h = _chunk_hash(chunk_tokens)

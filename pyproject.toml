@@ -1,6 +1,6 @@
 [project]
 name = "semblend"
-version = "0.3.13"
+version = "0.3.14"
 description = "Semantic KV cache reuse for LLM inference engines (vLLM, SGLang, TRT-LLM)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -85,12 +85,12 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["semblend*", "semblend_core*", "synapse_kv_connector*"]
-exclude = ["benchmarks*", "paper*", "patent*", "infra*", "literature*", "results*", "tests*", "synapse_kv_connector.tests*", "scripts*"]
+include = ["semblend*", "semblend_core*", "semblend_kv_connector*", "synapse_kv_connector*"]
+exclude = ["benchmarks*", "paper*", "patent*", "infra*", "literature*", "results*", "tests*", "semblend_kv_connector.tests*", "scripts*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--ignore=synapse_kv_connector/tests/test_rope_correction.py --ignore=synapse_kv_connector/tests/test_triton_kernels.py"
+addopts = "--ignore=semblend_kv_connector/tests/test_rope_correction.py --ignore=semblend_kv_connector/tests/test_triton_kernels.py"
 
 [tool.ruff]
 line-length = 100

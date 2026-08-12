@@ -343,7 +343,13 @@ class SemBlendPipeline:
                     token_ids,
                     min_matches=1,
                 )
-                if len(chunk_matches) >= self._fast_path_min_hits:
+                from semblend_core.chunk_index import cdc_enabled
+
+                if len(chunk_matches) >= self._fast_path_min_hits or cdc_enabled():
+                    # Under CDC the grid-based gate starves (grid hashes miss
+                    # CDC-indexed donors) while find_multi_donor's CDC path
+                    # does its own matching — skipping the ~seconds-scale
+                    # query embed is exactly the fast path's purpose.
                     # Fast path: try multi-donor alignment directly
                     fast_result = self._try_chunk_fast_path(
                         token_ids,
@@ -681,9 +687,12 @@ class SemBlendPipeline:
 
         embedding = None
         segment_embeddings = None
+        t_start = time.monotonic()
+        t_order = t_embed = t_start
 
         if prompt_text:
             text = _order_invariant_text(prompt_text)
+            t_order = time.monotonic()
 
             # Try embed_with_segments for PQ store integration
             if self._pq_store and hasattr(self._embedder, "embed_with_segments"):
@@ -700,6 +709,7 @@ class SemBlendPipeline:
                 raw = self._embedder.embed(text)
                 if raw is not None:
                     embedding = np.asarray(raw, dtype=np.float32)
+            t_embed = time.monotonic()
 
         node = DonorNode(
             request_id=request_id,
@@ -714,6 +724,23 @@ class SemBlendPipeline:
         # Store segment embeddings in PQ store
         if self._pq_store and segment_embeddings is not None:
             self._pq_store.add_segments(request_id, segment_embeddings.matrix)
+        if os.environ.get("SEMBLEND_REGISTER_TIMING"):
+            t_end = time.monotonic()
+            n_seg = (
+                int(segment_embeddings.matrix.shape[0])
+                if segment_embeddings is not None
+                else 0
+            )
+            logger.info(
+                "[FUZZY] register timing: order=%.0fms embed=%.0fms "
+                "store=%.0fms total=%.0fms segments=%d tokens=%d",
+                (t_order - t_start) * 1000,
+                (t_embed - t_order) * 1000,
+                (t_end - t_embed) * 1000,
+                (t_end - t_start) * 1000,
+                n_seg,
+                len(token_ids),
+            )
 
     # ------------------------------------------------------------------
     # PartialAttention plan building

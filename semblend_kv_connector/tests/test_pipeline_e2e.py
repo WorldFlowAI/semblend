@@ -19,7 +19,7 @@ def _create_pipeline(embedder_type: str = "jaccard"):
 
     os.environ["SEMBLEND_EMBEDDER"] = embedder_type
 
-    from synapse_kv_connector.pipeline import SemBlendPipeline
+    from semblend_kv_connector.pipeline import SemBlendPipeline
 
     return SemBlendPipeline(
         max_donors=1000,

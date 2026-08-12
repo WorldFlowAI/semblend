@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from synapse_kv_connector.attention_patch import (
+from semblend_kv_connector.attention_patch import (
     PrefillPatchResult,
     apply_kv_patch,
     get_compute_mask,
     summarize_patch,
 )
-from synapse_kv_connector.partial_attention import (
+from semblend_kv_connector.partial_attention import (
     LayerMask,
     PartialAttentionPlan,
     build_attention_plan,

@@ -1,77 +1,47 @@
-"""Legacy compatibility namespace for SemBlend vLLM integration.
+"""Deprecated alias: this package was renamed to ``semblend_kv_connector``.
 
-New code should import SemBlend through ``semblend.integration.*``. This
-namespace remains only for older vLLM connector module paths.
+Any import under the old name (including submodule paths) resolves to
+the canonical module objects — never a duplicate instance — via a
+meta-path alias. The alias will be removed in a future release.
 """
 
-from synapse_kv_connector.partial_attention import (
-    AttentionMode,
-    PartialAttentionPlan,
-    build_attention_plan,
-    compute_attention_mask,
-    compute_donor_kv_indices,
+import importlib
+import importlib.abc
+import importlib.util
+import sys
+import warnings
+
+_OLD = "synapse_kv_connector"
+_NEW = "semblend_kv_connector"
+
+warnings.warn(
+    f"{_OLD} has been renamed to {_NEW}; update imports, this alias "
+    "will be removed in a future release",
+    DeprecationWarning,
+    stacklevel=2,
 )
 
-# Triton kernels — optional, require torch + triton
-try:
-    from synapse_kv_connector.triton_kernels import (
-        PartialPrefillResult,
-        masked_qkv_projection,
-        partial_prefill,
-        partial_prefill_attention,
-        scatter_donor_kv,
-        scatter_donor_kv_paged,
-    )
 
-    HAS_TRITON_KERNELS = True
-except ImportError:
-    HAS_TRITON_KERNELS = False
+class _AliasLoader(importlib.abc.Loader):
+    def __init__(self, real_name):
+        self._real_name = real_name
 
-# Model runner hook — optional, requires torch
-try:
-    from synapse_kv_connector.model_runner_hook import (
-        PartialAttentionHook,
-        patch_model_runner,
-    )
+    def create_module(self, spec):
+        # return the canonical module object so both names share one
+        # instance (module-level state, isinstance checks)
+        return importlib.import_module(self._real_name)
 
-    HAS_MODEL_HOOK = True
-except ImportError:
-    HAS_MODEL_HOOK = False
+    def exec_module(self, module):
+        pass
 
-# SemBlend vLLM connector — optional, requires vLLM + LMCache
-try:
-    from synapse_kv_connector.semblend_connector import SemBlendConnectorV1
 
-    HAS_SEMBLEND_CONNECTOR = True
-except ImportError:
-    HAS_SEMBLEND_CONNECTOR = False
+class _AliasFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != _OLD and not fullname.startswith(_OLD + "."):
+            return None
+        real = _NEW + fullname[len(_OLD):]
+        return importlib.util.spec_from_loader(fullname, _AliasLoader(real))
 
-# SemBlend pipeline — in-process semantic donor discovery
-try:
-    from synapse_kv_connector.pipeline import SemBlendPipeline
 
-    HAS_SEMBLEND_PIPELINE = True
-except ImportError:
-    HAS_SEMBLEND_PIPELINE = False
-
-__all__ = [
-    "AttentionMode",
-    "HAS_MODEL_HOOK",
-    "HAS_SEMBLEND_CONNECTOR",
-    "HAS_SEMBLEND_PIPELINE",
-    "HAS_TRITON_KERNELS",
-    "PartialAttentionHook",
-    "PartialAttentionPlan",
-    "PartialPrefillResult",
-    "SemBlendConnectorV1",
-    "SemBlendPipeline",
-    "build_attention_plan",
-    "compute_attention_mask",
-    "compute_donor_kv_indices",
-    "masked_qkv_projection",
-    "partial_prefill",
-    "partial_prefill_attention",
-    "patch_model_runner",
-    "scatter_donor_kv",
-    "scatter_donor_kv_paged",
-]
+sys.meta_path.insert(0, _AliasFinder())
+sys.modules[_OLD] = importlib.import_module(_NEW)
