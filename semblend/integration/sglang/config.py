@@ -38,7 +38,12 @@ class SemBlendProviderConfig:
     embedding_model_name: str = "all-MiniLM-L6-v2"
 
     # Bathtub (per-layer recomputation)
-    enable_bathtub: bool = True
+    # Per layer zeroing of provider flagged layers. Defaults off: on the
+    # reference ablation the zeroing caused most of the warm output drift
+    # (hit pairs ROUGE 0.38 masked vs 0.86 all copy), so all copy is the
+    # safe default. Opt back in per deployment with SEMBLEND_LAYER_MASK=1
+    # or this flag.
+    enable_bathtub: bool = False
     model_arch: Optional[str] = None  # "llama" | "qwen2.5-7b" | None
 
     # Search

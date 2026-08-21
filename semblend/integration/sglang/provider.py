@@ -99,6 +99,14 @@ def _offsets_tokenizer(model_arch: str):
         return None
 
 
+def _layer_mask_enabled(config) -> bool:
+    """All copy by default; the mask is an explicit opt in via config or
+    the SEMBLEND_LAYER_MASK=1 environment override."""
+    if config.enable_bathtub:
+        return True
+    return os.environ.get("SEMBLEND_LAYER_MASK", "") == "1"
+
+
 class SemBlendProviderAdapter:
     """Semantic fuzzy-match provider backed by SemBlendPipeline.
 
@@ -751,7 +759,7 @@ class SemBlendProviderAdapter:
 
         # Build layer_recompute_mask from pipeline_result.layer_deviations.
         layer_mask = None
-        if self._config.enable_bathtub and pipeline_result.layer_deviations:
+        if _layer_mask_enabled(self._config) and pipeline_result.layer_deviations:
             layer_mask = [
                 bool(d.get("shouldRecompute", False)) for d in pipeline_result.layer_deviations
             ]
