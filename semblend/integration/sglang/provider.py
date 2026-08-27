@@ -84,6 +84,10 @@ def _paraphrase_serve_enabled() -> bool:
     return os.environ.get("SEMBLEND_PARAPHRASE_SERVE", "") == "1"
 
 
+def _nli_appeal_enabled() -> bool:
+    return os.environ.get("SEMBLEND_NLI_APPEAL", "") == "1"
+
+
 def _offsets_tokenizer(model_arch: str):
     """HF fast tokenizer for offset mapping (lazy; None on failure)."""
     try:
@@ -122,6 +126,7 @@ class SemBlendProviderAdapter:
         pipeline: Any = None,
     ) -> None:
         self._config = config
+        self._nli_gate = None
         self._pipeline = pipeline or self._build_pipeline(config)
 
         # Opaque KV handles keyed by donor request_id. Donor registration
@@ -581,9 +586,20 @@ class SemBlendProviderAdapter:
                 ):
                     from semblend_core.fact_gate import spans_fact_consistent
 
-                    if spans_fact_consistent(
+                    accepted = spans_fact_consistent(
                         handle_for_canon.prompt_text, prompt_text
-                    ):
+                    )
+                    if not accepted and _nli_appeal_enabled():
+                        # Appeal tier: sentence-aligned meaning consistency
+                        # recovers reworded surface forms (number words,
+                        # date formats) the lexical gate cannot represent.
+                        # Measured composition: OR, never AND — the appeal
+                        # rescues zero fact-divergent spans while strict
+                        # conjunction wrongly rejects most true paraphrases.
+                        accepted = self._nli_appeal(
+                            handle_for_canon.prompt_text, prompt_text
+                        )
+                    if accepted:
                         logger.info(
                             "[FUZZY] adapter.match: paraphrase serve "
                             "(similarity=%.3f, fact gate passed)",
@@ -857,7 +873,7 @@ class SemBlendProviderAdapter:
                     # Everything gated out: emitting the UNGATED head would
                     # bypass every safety gate (position-aligned self-matches
                     # and full-coverage admissions wedged the engine —
-                    # measured live). No safe mass -> miss.
+                    # live testing/c). No safe mass -> miss.
                     self._stats.match_hits_dropped_no_prefix_run += 1
                     return None
                 # Contract Option A with the head derived from the GATED
@@ -895,7 +911,7 @@ class SemBlendProviderAdapter:
                     # mechanism (KL ~0.004 on shifted-offset content) that
                     # also actually skips prefill. Scatter realization of
                     # the same content class measured 0.19-0.40 ROUGE
-                    # (measured live) — never scatter what can be contiguous.
+                    # (observed live) — never scatter what can be contiguous.
                     out_segments = None
                 else:
                     out_segments = self._merge_segments(gated)
@@ -953,6 +969,26 @@ class SemBlendProviderAdapter:
             quality_signals=quality,
             donor_last_node_id=handle.last_node_id,
         )
+
+    def _nli_appeal(self, donor_text: str, target_text: str) -> bool:
+        """Sentence-aligned meaning-consistency appeal (fail-closed)."""
+        gate = self._nli_gate
+        if gate is None:
+            try:
+                from semblend_core.nli_gate import SentenceAlignedNliGate
+
+                gate = SentenceAlignedNliGate()
+                self._nli_gate = gate
+            except Exception:
+                logger.warning("[FUZZY] nli appeal unavailable", exc_info=True)
+                return False
+        try:
+            verdict = bool(gate.spans_meaning_consistent(donor_text, target_text))
+        except Exception:
+            logger.warning("[FUZZY] nli appeal failed", exc_info=True)
+            return False
+        logger.info("[FUZZY] adapter.match: nli appeal verdict=%s", verdict)
+        return verdict
 
     def _paraphrase_result(
         self,

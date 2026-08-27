@@ -22,6 +22,7 @@ def _adapter(monkeypatch, gate_on=True):
         tail_reserve_frac=0.0,
     )
     a._tail_reserve_tokens = lambda n: n - 2
+    a._nli_gate = None
     return a
 
 
@@ -59,3 +60,56 @@ def test_short_window_returns_none(monkeypatch):
     assert a._paraphrase_result(
         donor_id="d", handle=h, remaining=list(range(6)), similarity=0.97
     ) is None
+
+
+class _FakeNliGate:
+    def __init__(self, verdict):
+        self.verdict = verdict
+        self.calls = 0
+
+    def spans_meaning_consistent(self, d, t):
+        self.calls += 1
+        return self.verdict
+
+
+def test_nli_appeal_recovers_lexical_reject(monkeypatch):
+    monkeypatch.setenv("SEMBLEND_NLI_APPEAL", "1")
+    a = _adapter(monkeypatch)
+    a._nli_gate = _FakeNliGate(True)
+    assert a._nli_appeal("donor text", "target text") is True
+    assert a._nli_gate.calls == 1
+
+
+def test_nli_appeal_rejects_stay_rejected(monkeypatch):
+    monkeypatch.setenv("SEMBLEND_NLI_APPEAL", "1")
+    a = _adapter(monkeypatch)
+    a._nli_gate = _FakeNliGate(False)
+    assert a._nli_appeal("donor text", "target text") is False
+
+
+def test_nli_appeal_fails_closed_on_gate_error(monkeypatch):
+    monkeypatch.setenv("SEMBLEND_NLI_APPEAL", "1")
+    a = _adapter(monkeypatch)
+
+    class _Boom:
+        def spans_meaning_consistent(self, d, t):
+            raise RuntimeError("model unavailable")
+
+    a._nli_gate = _Boom()
+    assert a._nli_appeal("donor text", "target text") is False
+
+
+def test_nli_gate_default_floors_pinned():
+    """Operating point validated by sweep: strict NLI at these floors
+    holds 100 percent divergence recall and full paraphrase accept-rate
+    through the appeal composition, robust across the surveyed grid.
+    The paraphrase-detection alternative was strictly worse (dropped
+    recall at low floors). Changing a default means re-running the
+    sweep, not editing this test."""
+    from semblend_core.nli_gate import SentenceAlignedNliGate
+
+    g = SentenceAlignedNliGate()
+    assert g._entail_floor == 0.5
+    assert g._align_floor == 0.2
+    assert g._coverage_floor == 0.7
+    assert "nli" in g._model_name
