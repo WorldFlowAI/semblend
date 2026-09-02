@@ -138,9 +138,16 @@ class SemBlendPipeline:
         fuzzy_config: object | None = None,
         recompute_config: object | None = None,
         enable_pq_segments: bool = True,
+        paraphrase_min_similarity: float = 0.80,
+        paraphrase_tail_reserve: int = 8,
+        paraphrase_min_tokens: int = 16,
     ) -> None:
         self._min_similarity = min_similarity
         self._min_reuse_ratio = min_reuse_ratio
+        self._paraphrase_min_similarity = paraphrase_min_similarity
+        self._paraphrase_tail_reserve = paraphrase_tail_reserve
+        self._paraphrase_min_tokens = paraphrase_min_tokens
+        self._paraphrase_arbiter = None
         self._model_name = model_name
         self._backend = backend
         self._fuzzy_config = fuzzy_config
@@ -418,6 +425,21 @@ class SemBlendPipeline:
                 if fuzzy_result is not None:
                     return fuzzy_result
 
+            # Stage 2.75: Verified paraphrase serve — every candidate was
+            # rejected on token alignment, the signature of a paraphrase
+            # (high embedding similarity, near-zero token overlap).
+            paraphrase_result = self._try_paraphrase_serve(
+                token_ids=token_ids,
+                prompt_text=prompt_text,
+                query_embedding=query_embedding,
+                top_k=top_k,
+                extra_key=extra_key,
+                timings=timings,
+                t_start=t_start,
+            )
+            if paraphrase_result is not None:
+                return paraphrase_result
+
             timings.total_ms = (time.monotonic() - t_start) * 1000
             try:
                 from semblend_core.metrics import METRICS
@@ -666,6 +688,96 @@ class SemBlendPipeline:
     # Donor registration
     # ------------------------------------------------------------------
 
+    def _try_paraphrase_serve(
+        self,
+        token_ids: list[int],
+        prompt_text: str,
+        query_embedding,
+        top_k: int,
+        extra_key: str | None,
+        timings: PipelineTimings,
+        t_start: float,
+    ) -> PipelineResult | None:
+        """Serve a fact-verified paraphrase donor whole, or None.
+
+        The identity position map (delta 0) keeps the engine realization
+        path unchanged: connectors align and serve the span exactly as a
+        token-verified segment, and positional correction is a no-op.
+        """
+        from semblend_core.paraphrase_serve import (
+            ParaphraseArbiter,
+            paraphrase_serve_enabled,
+        )
+
+        if not paraphrase_serve_enabled() or not prompt_text:
+            return None
+        if query_embedding is None:
+            return None
+        candidates = self._donor_store.find_donors(
+            query_embedding=query_embedding,
+            query_tokens=token_ids,
+            top_k=top_k,
+            min_reuse_ratio=0.0,
+            extra_key=extra_key,
+        )
+        best = None
+        for cand in candidates:
+            if cand.similarity < self._paraphrase_min_similarity:
+                continue
+            if not cand.donor.prompt_text:
+                continue
+            if best is None or cand.similarity > best.similarity:
+                best = cand
+        if best is None:
+            return None
+
+        serve_len = min(
+            len(best.donor.token_ids),
+            len(token_ids) - self._paraphrase_tail_reserve,
+        )
+        if serve_len < self._paraphrase_min_tokens:
+            return None
+
+        if self._paraphrase_arbiter is None:
+            self._paraphrase_arbiter = ParaphraseArbiter()
+        if not self._paraphrase_arbiter.verdict(best.donor.prompt_text, prompt_text):
+            logger.info(
+                "[SemBlend] paraphrase candidate rejected by fact gate "
+                "(similarity=%.3f, donor=%s)",
+                float(best.similarity),
+                best.donor.request_id,
+            )
+            return None
+
+        logger.info(
+            "[SemBlend] paraphrase serve (similarity=%.3f, donor=%s, tokens=%d)",
+            float(best.similarity),
+            best.donor.request_id,
+            serve_len,
+        )
+        timings.total_ms = (time.monotonic() - t_start) * 1000
+        try:
+            from semblend_core.metrics import METRICS
+
+            METRICS.record_pipeline_result(hit=True)
+        except Exception:
+            pass
+        positions = list(range(serve_len))
+        return PipelineResult(
+            found=True,
+            donor_id=best.donor.request_id,
+            similarity=float(best.similarity),
+            reuse_ratio=serve_len / max(1, len(token_ids)),
+            donor_tokens=list(best.donor.token_ids),
+            position_map=PositionMapping(
+                donor_positions=positions,
+                target_positions=list(positions),
+            ),
+            timings=timings,
+            confidence_tier="paraphrase_verified",
+            fuzzy_confidence=float(best.similarity),
+        )
+
     def register_donor(
         self,
         request_id: str,
@@ -711,12 +823,17 @@ class SemBlendPipeline:
                     embedding = np.asarray(raw, dtype=np.float32)
             t_embed = time.monotonic()
 
+        from semblend_core.paraphrase_serve import paraphrase_serve_enabled
+
+        # The paraphrase fact gate compares full span texts; without the
+        # tier only a short preview is worth retaining per donor.
+        retain = 100_000 if paraphrase_serve_enabled() else 200
         node = DonorNode(
             request_id=request_id,
             token_ids=token_ids,
             embedding=embedding,
             timestamp=time.monotonic(),
-            prompt_text=prompt_text[:200],
+            prompt_text=prompt_text[:retain],
             extra_key=extra_key,
         )
         self._donor_store.add_donor(node)
