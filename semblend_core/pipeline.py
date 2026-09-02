@@ -230,6 +230,21 @@ class SemBlendPipeline:
             except Exception:
                 logger.warning("PQ segment store init failed", exc_info=True)
 
+        # Optional: emit the cross-engine semantic-KV contract for fleet
+        # semantic routing (e.g. the Synapse llm-d EPP scorer). Off unless
+        # SEMBLEND_NATS_URL is set; fail-safe — never blocks inference.
+        self._event_emitter = None
+        try:
+            from semblend.integration.vllm.events import VllmContractEmitter
+
+            self._event_emitter = VllmContractEmitter.from_env(
+                model=model_name or "",
+                tokenizer=model_name or "",
+                block_size=self._chunk_size,
+            )
+        except Exception:
+            logger.warning("[SemBlend] contract event emitter init failed", exc_info=True)
+
         logger.info(
             "SemBlend pipeline initialized: mode=%s, embedder=%s (dim=%d), "
             "store=%s, max_donors=%d, min_sim=%.2f, min_reuse=%.2f, "
@@ -784,6 +799,8 @@ class SemBlendPipeline:
         token_ids: list[int],
         prompt_text: str = "",
         extra_key: str | None = None,
+        tenant: str | None = None,
+        template: str | None = None,
     ) -> None:
         """Register a completed request as a potential donor.
 
@@ -794,6 +811,8 @@ class SemBlendPipeline:
             request_id: Unique request identifier.
             token_ids: Token IDs of the completed request.
             prompt_text: Decoded prompt text for embedding.
+            tenant: Optional request tenant for fleet-routing policy.
+            template: Optional prompt/template id for fleet-routing policy.
         """
         from semblend_core.donor_store import DonorNode
 
@@ -857,6 +876,17 @@ class SemBlendPipeline:
                 (t_end - t_start) * 1000,
                 n_seg,
                 len(token_ids),
+            )
+
+        # Emit the DonorRegistered contract event, reusing the donor embedding
+        # the store just indexed (identical-embedder with the fleet router).
+        if self._event_emitter is not None and embedding is not None:
+            self._event_emitter.donor_registered(
+                request_id,
+                token_ids,
+                embedding,
+                tenant=tenant,
+                template=template,
             )
 
     # ------------------------------------------------------------------
