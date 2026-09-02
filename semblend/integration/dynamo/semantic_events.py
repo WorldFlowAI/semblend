@@ -49,6 +49,10 @@ class CacheNamespace:
     block_size: int
     lora: Optional[str] = None
     quant: Optional[str] = None
+    # Open map for provider-defined routing keys (tenant, template, SLA, ...),
+    # per the semantic-KV contract. Consumers gate donor reuse on these
+    # (e.g. the Synapse scorer reads extra.tenant / extra.template).
+    extra: Optional[dict] = None
 
     def to_wire(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -62,6 +66,8 @@ class CacheNamespace:
             d["lora"] = self.lora
         if self.quant is not None:
             d["quant"] = self.quant
+        if self.extra:
+            d["extra"] = dict(self.extra)
         return d
 
 

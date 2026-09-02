@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from collections import OrderedDict
 from typing import Any, Optional
@@ -115,6 +116,20 @@ def _tokens_to_text(token_ids: list[int]) -> Optional[str]:
 
     sampled = _sample_token_ids(token_ids)
     return tokenizer.decode(sampled, skip_special_tokens=True)
+
+
+def _worker_ordinal() -> int:
+    """Stable integer worker id from the pod name's trailing ordinal.
+
+    StatefulSet / ordinally-named pods (``sglang-worker-3``) give a clean id
+    the fleet router maps back to a worker address; otherwise fall back to a
+    stable hash of the name.
+    """
+    name = os.environ.get("POD_NAME") or os.environ.get("SEMBLEND_WORKER_ID", "")
+    m = re.search(r"(\d+)\s*$", name)
+    if m:
+        return int(m.group(1))
+    return abs(hash(name)) % 100000
 
 
 # ---------------------------------------------------------------------------
@@ -332,12 +347,73 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
                 "donors_registered": 0,
             }
 
+            # Optional fleet event emission (off until SEMBLEND_NATS_URL is set).
+            self._semblend_emit = None
+            if self._semblend_enabled and os.environ.get("SEMBLEND_NATS_URL"):
+                try:
+                    self._setup_event_emission()
+                except Exception:
+                    logger.warning(
+                        "SemBlend event emission setup failed", exc_info=True
+                    )
+
             if self._semblend_enabled:
                 logger.info(
                     "SemBlend RadixCache initialized "
                     f"(threshold="
                     f"{self._semblend_donor_store._min_similarity})"
                 )
+
+        def _setup_event_emission(self) -> None:
+            """Wire NATS publishing of donor lifecycle events for the fleet."""
+            from semblend.integration.dynamo.nats_publisher import ThreadedNatsPublisher
+            from semblend.integration.dynamo.semantic_events import (
+                CacheNamespace,
+                generation_reset_event,
+            )
+
+            publisher = ThreadedNatsPublisher.from_env()
+            if publisher is None:
+                return
+
+            model = os.environ.get("SEMBLEND_MODEL_NAME", "unknown")
+            worker_id = _worker_ordinal()
+            dp_rank = int(os.environ.get("SEMBLEND_DP_RANK", "0"))
+            namespace = CacheNamespace(
+                model=model,
+                tokenizer=model,
+                kv_layout="sglang",
+                block_size=int(os.environ.get("SEMBLEND_BLOCK_SIZE", "1")),
+            )
+
+            publisher.wait_ready(10.0)
+            self._semblend_emit = {
+                "publisher": publisher,
+                "namespace": namespace,
+                "worker_id": worker_id,
+                "dp_rank": dp_rank,
+                "event_id": 0,
+            }
+            # Generation-reset at the stream head tells consumers to drop any
+            # stale donors from a prior incarnation of this worker.
+            publisher.publish(
+                generation_reset_event(
+                    event_id=self._next_event_id(),
+                    worker_id=worker_id,
+                    generation=0,
+                    dp_rank=dp_rank,
+                )
+            )
+            logger.info(
+                "SemBlend fleet event emission enabled: worker_id=%d model=%s",
+                worker_id,
+                model,
+            )
+
+        def _next_event_id(self) -> int:
+            eid = self._semblend_emit["event_id"]
+            self._semblend_emit["event_id"] = eid + 1
+            return eid
 
         def _get_embedder(self) -> Any:
             """Lazily initialize the MiniLM embedder."""
@@ -496,8 +572,40 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
                 self._semblend_donor_store.add_donor(tuple(token_ids), embedding)
                 self._semblend_stats["donors_registered"] += 1
 
+                if self._semblend_emit is not None:
+                    self._emit_donor_registered(req, token_ids, embedding)
+
             except Exception as e:
                 logger.debug(f"SemBlend donor registration failed: {e}")
+
+        def _emit_donor_registered(
+            self, req: Any, token_ids: list[int], embedding: Any
+        ) -> None:
+            """Publish a DonorRegistered contract event for this donor.
+
+            Reuses the embedding already computed for the local store, so the
+            embedding the fleet routes on is identical to the one this worker
+            matches against.
+            """
+            from semblend.integration.dynamo.semantic_events import donor_registered_event
+
+            try:
+                emit = self._semblend_emit
+                donor_id = getattr(req, "rid", None) or str(abs(hash(tuple(token_ids))))
+                emb = embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
+                event = donor_registered_event(
+                    event_id=self._next_event_id(),
+                    worker_id=emit["worker_id"],
+                    donor_id=str(donor_id),
+                    namespace=emit["namespace"],
+                    token_ids=token_ids,
+                    embedding=emb,
+                    dp_rank=emit["dp_rank"],
+                    provider_generation=0,
+                )
+                emit["publisher"].publish(event)
+            except Exception as e:
+                logger.debug(f"SemBlend donor event emit failed: {e}")
 
         @staticmethod
         def _extract_req_token_ids(req: Any) -> list[int]:

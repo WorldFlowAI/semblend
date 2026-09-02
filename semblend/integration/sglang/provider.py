@@ -158,6 +158,16 @@ class SemBlendProviderAdapter:
                 tokenizer=model,
                 kv_layout="sglang",
                 block_size=int(os.environ.get("SEMBLEND_BLOCK_SIZE", "1")),
+                extra={
+                    key: value
+                    for key, value in {
+                        "tenant": os.environ.get("SEMBLEND_DONOR_TENANT"),
+                        "template": os.environ.get("SEMBLEND_DONOR_TEMPLATE"),
+                        "endpoint": os.environ.get("SEMBLEND_ENDPOINT_ID") or os.environ.get("POD_NAME"),
+                    }.items()
+                    if value
+                }
+                or None,
             )
             self.configure_events(
                 worker_id=worker_id,
