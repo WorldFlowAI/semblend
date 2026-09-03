@@ -196,6 +196,10 @@ class SemBlendProviderAdapter:
             min_reuse_ratio=(
                 0.0 if _canonical_match_enabled() else config.min_reuse_ratio
             ),
+            # The consumable gate keeps the adapter's floor either way, so a
+            # scattered page-level match reaches the pipeline's top-k
+            # paraphrase probe instead of the adapter's single-candidate check.
+            min_consumable_coverage=config.min_reuse_ratio,
             embedder_type=embedder_type,
             model_name=config.model_arch,
             chunk_size=config.block_size,

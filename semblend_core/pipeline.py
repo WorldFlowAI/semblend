@@ -167,6 +167,7 @@ class SemBlendPipeline:
         paraphrase_min_tokens: int = 16,
         min_run_tokens: int = 16,
         chunk_fast_path_max_tokens: int | None = None,
+        min_consumable_coverage: float | None = None,
     ) -> None:
         self._min_similarity = min_similarity
         self._min_reuse_ratio = min_reuse_ratio
@@ -176,6 +177,12 @@ class SemBlendPipeline:
         self._paraphrase_arbiter = None
         # Reuse counts only in runs an engine can realize contiguously.
         self._min_run_tokens = min_run_tokens
+        # Integrations that keep min_reuse_ratio at 0 (they apply their own
+        # reuse floor later) still need the consumable gate to hand
+        # unrealizable matches to the paraphrase probe.
+        self._min_consumable_coverage = (
+            min_reuse_ratio if min_consumable_coverage is None else min_consumable_coverage
+        )
         # The chunk fast path's fuzzy alignment is quadratic in prompt length
         # (measured ~1.35 s per lookup at 3.5K tokens); above this it is
         # skipped and the embedding path decides.
@@ -660,13 +667,13 @@ class SemBlendPipeline:
         if not result.found or result.confidence_tier == "paraphrase_verified":
             return result
         coverage = contiguous_coverage(result.position_map, len(token_ids), self._min_run_tokens)
-        if coverage >= self._min_reuse_ratio:
+        if coverage >= self._min_consumable_coverage:
             return result
         logger.info(
             "[SemBlend] match rejected: consumable coverage %.2f < %.2f "
             "(reported reuse %.2f, donor=%s)",
             coverage,
-            self._min_reuse_ratio,
+            self._min_consumable_coverage,
             float(result.reuse_ratio),
             result.donor_id,
         )
