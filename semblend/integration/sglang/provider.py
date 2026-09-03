@@ -784,7 +784,16 @@ class SemBlendProviderAdapter:
         """
         if prompt_text:
             try:
-                vec = self._pipeline._embedder.embed(prompt_text)  # noqa: SLF001
+                # Same canonicalization as the pipeline's query embedding
+                # (first SEMBLEND_EMBED_MAX_CHARS); embedding the donor's full
+                # text while the query is truncated put identical documents
+                # under different wrappers at cosine 0.6 to 0.9 (LongBench:
+                # 10 of 24 same-document items missed the 0.60 floor).
+                from semblend_core.pipeline import _order_invariant_text
+
+                vec = self._pipeline._embedder.embed(  # noqa: SLF001
+                    _order_invariant_text(prompt_text)
+                )
                 if vec is None:
                     return None
                 return np.asarray(vec, dtype=np.float32)
