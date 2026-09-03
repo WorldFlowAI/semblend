@@ -31,7 +31,14 @@ Environment variables:
 
 from __future__ import annotations
 
-__version__ = "0.3.13"
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+try:
+    # Single source of truth is the installed distribution; a hand-kept
+    # literal here shipped stale in 0.3.17 and tripped engine version gates.
+    __version__ = _dist_version("semblend")
+except PackageNotFoundError:  # running from a source tree without install
+    __version__ = "0.0.0+source"
 
 # Re-export core public API from semblend_core
 from semblend_core.alignment import (
