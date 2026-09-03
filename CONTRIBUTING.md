@@ -73,7 +73,7 @@ tests/                  Unit tests
 SemBlend is driving standardized semantic caching interfaces upstream:
 
 - **LMCache** — [`SemanticLookupProvider`](https://github.com/LMCache/LMCache/pull/2803) and [`PostLoadHook`](https://github.com/LMCache/LMCache/pull/2804)
-- **SGLang** — [`SemanticPrefixProvider`](https://github.com/sgl-project/sglang/pull/20806)
+- **SGLang** — [`SemanticPrefixProvider`](https://github.com/sgl-project/sglang/pull/31057)
 - **vLLM** — [`register_model` for CacheBlend](https://github.com/vllm-project/vllm/pull/37339)
 
 If you're working on an engine integration, coordinate with these upstream PRs to avoid duplicate work.

@@ -83,7 +83,7 @@ patch_radix_cache()
 ```
 
 A first-class `SemanticPrefixProvider` interface is in progress upstream:
-https://github.com/sgl-project/sglang/pull/20806
+https://github.com/sgl-project/sglang/pull/31057
 
 ## Quick Start: vLLM Compatibility Path
 
