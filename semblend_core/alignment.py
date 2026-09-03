@@ -46,6 +46,10 @@ _CONTEXT_GATE_ENABLED = os.environ.get("SEMBLEND_CONTEXT_GATE", "1") != "0"
 # Enable with SEMBLEND_FUZZY_CHUNKS=1. Default threshold 0.90 (90% overlap).
 _FUZZY_CHUNKS_ENABLED = os.environ.get("SEMBLEND_FUZZY_CHUNKS", "1") == "1"
 _FUZZY_CHUNK_MIN_OVERLAP = float(os.environ.get("SEMBLEND_FUZZY_CHUNK_OVERLAP", "0.90"))
+# Chunks on either side of a target chunk that fuzzy matching may pair it
+# with; 0 scans every donor chunk (quadratic). 16 chunks covers wrapper
+# shifts of a few hundred tokens at chunk 16.
+_FUZZY_CHUNK_WINDOW = int(os.environ.get("SEMBLEND_FUZZY_CHUNK_WINDOW", "16"))
 _FUZZY_CHUNK_MAX_TOKENS = int(os.environ.get("SEMBLEND_FUZZY_CHUNK_MAX_TOKENS", "8192"))
 
 # Exact run recovery: recovers long shifted contiguous spans before chunk
@@ -385,6 +389,8 @@ def _fuzzy_match_chunk(
     donor_chunk_starts: list[int],
     used_donor_chunks: set[int],
     min_overlap: float,
+    candidate_range: tuple[int, int] | None = None,
+    donor_counters: list | None = None,
 ) -> tuple[int, list[tuple[int, int]], float] | None:
     """Find the best fuzzy-matching donor chunk for a target chunk.
 
@@ -414,14 +420,19 @@ def _fuzzy_match_chunk(
     best_idx: int | None = None
     best_overlap = 0
 
-    for d_idx, d_chunk in enumerate(donor_chunks):
+    if candidate_range is None:
+        lo, hi = 0, len(donor_chunks)
+    else:
+        lo, hi = max(0, candidate_range[0]), min(len(donor_chunks), candidate_range[1])
+    for d_idx in range(lo, hi):
+        d_chunk = donor_chunks[d_idx]
         if d_idx in used_donor_chunks:
             continue
         if len(d_chunk) != target_len:
             continue
 
         # Fast overlap check: count matching tokens (multiset intersection)
-        donor_counts = Counter(d_chunk)
+        donor_counts = donor_counters[d_idx] if donor_counters is not None else Counter(d_chunk)
         overlap_count = sum(
             min(target_counts[tok], donor_counts[tok])
             for tok in target_counts
@@ -547,6 +558,15 @@ def compute_fuzzy_chunk_alignment(
     fuzzy_donor_idx: dict[int, int] = {}
     fuzzy_overlap_ratios: dict[int, float] = {}  # track overlap for context gate
 
+    # Fuzzy candidates are confined to a positional window around the
+    # target chunk (exact hash matches above already found anything that
+    # moved further). Scanning every donor chunk per target chunk made the
+    # lookup quadratic: 1.3 s at 8K tokens, chunk 16, on the serving path.
+    from collections import Counter
+
+    donor_counters = [Counter(chunk) for chunk in donor_chunks]
+    window = _FUZZY_CHUNK_WINDOW
+
     for t_idx, t_chunk in enumerate(target_chunks):
         if t_idx in exact_matches:
             continue
@@ -559,6 +579,8 @@ def compute_fuzzy_chunk_alignment(
             donor_chunk_starts,
             used_donor_chunks,
             overlap_threshold,
+            candidate_range=(t_idx - window, t_idx + window + 1) if window > 0 else None,
+            donor_counters=donor_counters,
         )
         if result is not None:
             d_idx, pairs, overlap_ratio = result
