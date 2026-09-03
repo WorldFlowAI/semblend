@@ -49,6 +49,22 @@ def fact_sets(text: str) -> tuple:
     return numbers, entities
 
 
+def identifier_set(text: str) -> set:
+    """Lowercase or code-like identifiers: hyphenated/underscored compounds
+    ("billing-eu", "us-east-1", "cart_sync") and upper-case codes with a
+    digit ("INC-4471"). Two documents that share every number and differ
+    only in such an identifier are different facts, not a rewording."""
+    compounds = {
+        m.group(0).lower()
+        for m in re.finditer(r"\b[a-z0-9]+(?:[-_][a-z0-9]+)+\b", text)
+    }
+    codes = {
+        m.group(0)
+        for m in re.finditer(r"\b[A-Z]{2,}[-_]?\d[\w-]*\b", text)
+    }
+    return compounds | codes
+
+
 def spans_fact_consistent(
     donor_text: str,
     target_text: str,
@@ -58,7 +74,13 @@ def spans_fact_consistent(
     tn, te = fact_sets(target_text)
     if dn != tn:
         return False
-    union = de | te
-    if union and len(de ^ te) / len(union) > entity_diff_ratio_max:
+    if _diff_ratio(de, te) > entity_diff_ratio_max:
+        return False
+    if _diff_ratio(identifier_set(donor_text), identifier_set(target_text)) > entity_diff_ratio_max:
         return False
     return True
+
+
+def _diff_ratio(a: set, b: set) -> float:
+    union = a | b
+    return len(a ^ b) / len(union) if union else 0.0

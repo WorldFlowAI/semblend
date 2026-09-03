@@ -62,3 +62,36 @@ def test_mid_sentence_entity_still_detected():
         "The delegates met in Geneva for cycle 3.",
         "The delegates met in Zurich for cycle 3.",
     )
+
+
+def test_lowercase_identifier_swap_rejects():
+    # regression: two reports that share every number and differ only in
+    # a lowercase service identifier passed the gate and served the wrong
+    # document's KV (cart-sync answered as billing-eu)
+    assert not spans_fact_consistent(
+        "during window 0 the billing-eu service handled 1200 requests with p99 at 340 ms.",
+        "in window 0, service cart-sync processed 1200 requests, p99 340 ms.",
+    )
+
+
+def test_same_identifier_reworded_accepts():
+    assert spans_fact_consistent(
+        "during window 0 the billing-eu service handled 1200 requests with p99 at 340 ms.",
+        "in window 0, service billing-eu processed 1200 requests, p99 340 ms.",
+    )
+
+
+def test_common_hyphenated_word_dropped_still_accepts():
+    # ordinary rewording may un-hyphenate a compound word; one such change
+    # among several stable identifiers stays within the tolerance
+    assert spans_fact_consistent(
+        "the long-term plan for us-east-1 and eu-west-2 keeps 3 replicas.",
+        "the long term plan for us-east-1 and eu-west-2 keeps 3 replicas.",
+    )
+
+
+def test_code_identifier_swap_rejects():
+    assert not spans_fact_consistent(
+        "incident INC-4471 was opened at 09:15 and closed after 40 minutes.",
+        "incident INC-4472 was opened at 09:15 and closed after 40 minutes.",
+    )
