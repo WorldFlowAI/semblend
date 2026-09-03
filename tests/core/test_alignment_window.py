@@ -18,8 +18,9 @@ def test_shift_inside_window_still_fuzzy_matches():
     donor = _tokens(640, 1)
     target = donor[:37] + [1] + donor[37:]  # 1-token insertion shifts every later chunk by one
     res = al.compute_fuzzy_chunk_alignment(donor_tokens=donor, target_tokens=target, chunk_size=16)
-    assert res.reuse_ratio > 0.5
-    assert res.fuzzy_chunks > 0
+    # Every chunk after the insertion pairs with its shifted donor chunk
+    # (whether the confidence gate then serves or recomputes it).
+    assert res.fuzzy_chunks + res.fuzzy_recompute_chunks >= 30
 
 
 def test_block_moved_far_is_found_by_exact_hash(monkeypatch):
