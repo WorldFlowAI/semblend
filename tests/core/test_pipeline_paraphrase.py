@@ -182,3 +182,20 @@ def test_probe_context_compares_full_text_and_offsets_donor(monkeypatch) -> None
     assert result.position_map.target_positions[0] == 0
     assert result.position_map.donor_positions[0] == 9
     assert len(result.position_map.donor_positions) <= len(DONOR_TOKENS) - 9
+
+
+def test_probe_tries_candidates_in_rank_order_until_one_verifies(monkeypatch) -> None:
+    """With interleaved traffic the most similar candidate is often a
+    near-duplicate of another document (same template, other facts) that
+    the fact gate rejects; the true donor sits lower in the ranking. The
+    probe must keep going instead of giving up on the first rejection
+    (observed under 4 concurrent streams: 21 rejections, 3 served of 48)."""
+    monkeypatch.setenv("SEMBLEND_PARAPHRASE_SERVE", "1")
+    pipeline = _pipeline(monkeypatch)
+    decoy = DONOR_TEXT.replace("new region", "old region").replace("stages", "one step")
+    pipeline.register_donor("decoy", list(range(2000, 2600)), prompt_text=decoy)
+    pipeline.register_donor("d1", DONOR_TOKENS, prompt_text=DONOR_TEXT)
+
+    result = pipeline.find_donor(TARGET_TOKENS, prompt_text=TARGET_TEXT, top_k=5)
+    assert result.found and result.confidence_tier == "paraphrase_verified"
+    assert result.donor_id == "d1"

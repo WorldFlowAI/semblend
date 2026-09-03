@@ -828,6 +828,11 @@ class SemBlendPipeline:
     # Donor registration
     # ------------------------------------------------------------------
 
+    # Each verdict costs a fact-gate pass over both texts; three covers the
+    # near-duplicate ranking noise seen under interleaved traffic without
+    # turning a miss into several gate passes.
+    _PARAPHRASE_PROBE_MAX_CANDIDATES = 3
+
     def _try_paraphrase_serve(
         self,
         token_ids: list[int],
@@ -866,35 +871,49 @@ class SemBlendPipeline:
             min_reuse_ratio=0.0,
             extra_key=extra_key,
         )
-        best = None
-        for cand in candidates:
-            if cand.similarity < self._paraphrase_min_similarity:
-                continue
-            if not cand.donor.prompt_text:
-                continue
-            if best is None or cand.similarity > best.similarity:
-                best = cand
-        if best is None:
+        eligible = sorted(
+            (
+                cand
+                for cand in candidates
+                if cand.similarity >= self._paraphrase_min_similarity and cand.donor.prompt_text
+            ),
+            key=lambda cand: cand.similarity,
+            reverse=True,
+        )
+        if not eligible:
             return None
 
         donor_offset = max(0, probe.donor_offset) if probe is not None else 0
         verdict_text = probe.text if probe is not None and probe.text else prompt_text
-        serve_len = min(
-            len(best.donor.token_ids) - donor_offset,
-            len(token_ids) - self._paraphrase_tail_reserve,
-        )
-        if serve_len < self._paraphrase_min_tokens:
-            return None
-
         if self._paraphrase_arbiter is None:
             self._paraphrase_arbiter = ParaphraseArbiter()
-        if not self._paraphrase_arbiter.verdict(best.donor.prompt_text, verdict_text):
-            logger.info(
-                "[SemBlend] paraphrase candidate rejected by fact gate "
-                "(similarity=%.3f, donor=%s)",
-                float(best.similarity),
-                best.donor.request_id,
+
+        # Similarity ranks near-duplicate documents (same template, other
+        # facts) above the true donor when traffic interleaves, so every
+        # eligible candidate gets its turn at the fact gate in rank order;
+        # verdicts are memoized by content, so repeats cost nothing.
+        best = None
+        serve_len = 0
+        rejected = 0
+        for cand in eligible[: self._PARAPHRASE_PROBE_MAX_CANDIDATES]:
+            cand_len = min(
+                len(cand.donor.token_ids) - donor_offset,
+                len(token_ids) - self._paraphrase_tail_reserve,
             )
+            if cand_len < self._paraphrase_min_tokens:
+                continue
+            if self._paraphrase_arbiter.verdict(cand.donor.prompt_text, verdict_text):
+                best, serve_len = cand, cand_len
+                break
+            rejected += 1
+        if best is None:
+            if rejected:
+                logger.info(
+                    "[SemBlend] paraphrase candidates rejected by fact gate "
+                    "(%d tried, best similarity=%.3f)",
+                    rejected,
+                    float(eligible[0].similarity),
+                )
             return None
 
         logger.info(
