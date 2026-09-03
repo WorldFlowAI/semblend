@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from semblend.integration.sglang.config import SemBlendProviderConfig
 from semblend.integration.sglang.provider import SemBlendProviderAdapter
 
@@ -410,7 +408,6 @@ def test_tail_reserve_and_position_aligned_gates():
 
 
 def test_single_boundary_anchored_run_routes_contiguous():
-    from semblend.integration.sglang.types import FuzzyMatchSegment
 
     adapter, pipeline = _make({"multi_segment_emission": True})
     _register(adapter, DONOR)

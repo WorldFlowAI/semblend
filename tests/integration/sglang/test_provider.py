@@ -975,12 +975,11 @@ class TestProbeContext:
 
 
 class TestParaphraseServeShape:
-    def test_pipeline_paraphrase_result_is_one_segment_after_the_prefix(self, adapter, pipeline):
-        """A verified paraphrase must reach the radix backend as a segment
-        whose donor span starts after the exact-matched prefix: the backend
-        realizes segments into fresh slots, while a segment-less result that
-        starts at the exact-matched length is dropped as content the exact
-        tree already owns (observed: 3 pipeline serves at 24K, 0 realized)."""
+    def test_pipeline_paraphrase_result_is_contiguous_after_the_prefix(self, adapter, pipeline):
+        """A verified paraphrase reaches the radix backend in the contiguous
+        shape with its donor span starting after the exact-matched prefix;
+        the backend copies it into fresh slots with a zero delta. (Emitting it
+        as a segment freed donor-owned slots and tripped the pool invariant.)"""
         adapter.register_donor(
             request_id="donor-A",
             token_ids=list(range(64)),
@@ -1007,15 +1006,14 @@ class TestParaphraseServeShape:
             prompt_text="suffix text",
         )
         assert result is not None
-        assert result.segments and len(result.segments) == 1
-        seg = result.segments[0]
-        assert seg.donor_positions[0] == 8
-        assert seg.target_positions[0] == 0
-        assert seg.length == result.cached_token_count
+        assert result.segments is None  # contiguous: zero-delta copy in the backend
+        assert result.cached_start_pos == 8
+        assert result.position_offset == 8
         assert result.quality_signals.confidence_tier == "paraphrase_verified"
         assert list(result.kv_cache_indices)[0] == 108
+        assert len(list(result.kv_cache_indices)) == result.cached_token_count
 
-    def test_adapter_paraphrase_branch_emits_a_segment_too(self, adapter, pipeline, monkeypatch):
+    def test_adapter_paraphrase_branch_is_contiguous_too(self, adapter, pipeline, monkeypatch):
         monkeypatch.setenv("SEMBLEND_CANONICAL_MATCH", "1")
         monkeypatch.setenv("SEMBLEND_PARAPHRASE_SERVE", "1")
         monkeypatch.setattr(
@@ -1044,5 +1042,5 @@ class TestParaphraseServeShape:
             prompt_text="query text",
         )
         assert result is not None
-        assert result.segments and result.segments[0].donor_positions[0] == 0
+        assert result.segments is None and result.cached_start_pos == 0
         assert result.quality_signals.confidence_tier == "paraphrase_verified"

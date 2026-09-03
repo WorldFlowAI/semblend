@@ -1092,19 +1092,10 @@ class SemBlendProviderAdapter:
         if serve_len < self._config.min_match_length:
             return None
         kv = _slice_indices(handle.kv_indices, offset=donor_offset, length=serve_len)
-        # Emitted as one verified segment: the radix backend realizes
-        # segments into fresh slots, while a segment-less result whose span
-        # starts at the exact-matched length is treated as content the
-        # exact tree already owns and dropped.
-        segment = FuzzyMatchSegment(
-            target_positions=list(range(serve_len)),
-            donor_positions=list(range(donor_offset, donor_offset + serve_len)),
-            donor_node_id=handle.last_node_id,
-            donor_offset=donor_offset,
-            length=serve_len,
-            donor_kv_indices=kv,
-            donor_req_id=donor_id,
-        )
+        # Contiguous shape: the backend copies the donor span into fresh
+        # request-owned slots with a zero positional delta. The
+        # paraphrase_verified tier tells it to do so even though the span
+        # is position-aligned with the exact prefix (PR #31057).
         return FuzzyMatchResult(
             cached_token_count=serve_len,
             cached_token_ids=list(remaining[:serve_len]),
@@ -1112,7 +1103,6 @@ class SemBlendProviderAdapter:
             kv_cache_indices=kv,
             position_offset=donor_offset,
             cached_start_pos=handle.start_pos + donor_offset,
-            segments=[segment],
             donor_last_node_id=handle.last_node_id,
             quality_signals=QualitySignals(
                 cosine_similarity=similarity,

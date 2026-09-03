@@ -8,7 +8,6 @@ consumed as boundary-anchored contiguous joins. Every position in
 """
 
 from semblend.integration.sglang.sparse_plan import (
-    SparsePlanSpan,
     build_sparse_plan,
 )
 from semblend.integration.sglang.types import FuzzyMatchSegment

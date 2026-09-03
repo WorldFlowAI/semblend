@@ -5,8 +5,6 @@ reject behavior."""
 
 from types import SimpleNamespace
 
-import pytest
-
 from semblend.integration.sglang.provider import SemBlendProviderAdapter
 
 
@@ -51,11 +49,7 @@ def test_accepted_paraphrase_builds_contiguous_result(monkeypatch):
     assert res.cached_start_pos == 0
     assert res.donor_last_node_id == 7
     assert res.quality_signals.confidence_tier == "paraphrase_verified"
-    # One verified segment: the radix backend realizes segments into fresh
-    # slots and drops a segment-less span that starts at the exact prefix.
-    assert res.segments is not None and len(res.segments) == 1
-    assert res.segments[0].length == res.cached_token_count
-    assert res.segments[0].donor_positions[0] == 0
+    assert res.segments is None  # contiguous contract; the backend copies with delta 0
 
 
 def test_short_window_returns_none(monkeypatch):
