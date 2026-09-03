@@ -972,3 +972,77 @@ class TestProbeContext:
         pipeline.next_result = _StubPipelineResult(found=False)
         adapter.match(prompt_token_ids=list(range(40)), already_matched_len=0, prompt_text="whole")
         assert "probe" not in pipeline.find_donor_calls[-1]
+
+
+class TestParaphraseServeShape:
+    def test_pipeline_paraphrase_result_is_one_segment_after_the_prefix(self, adapter, pipeline):
+        """A verified paraphrase must reach the radix backend as a segment
+        whose donor span starts after the exact-matched prefix: the backend
+        realizes segments into fresh slots, while a segment-less result that
+        starts at the exact-matched length is dropped as content the exact
+        tree already owns (observed: 3 pipeline serves at 24K, 0 realized)."""
+        adapter.register_donor(
+            request_id="donor-A",
+            token_ids=list(range(64)),
+            kv_cache=list(range(100, 164)),
+            cache_start_pos=0,
+            cache_end_pos=64,
+            prompt_text="registration",
+        )
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.95,
+            reuse_ratio=0.9,
+            donor_tokens=list(range(64)),
+            position_map=_StubPosMap(
+                donor_positions=list(range(8, 56)),
+                target_positions=list(range(48)),
+            ),
+            confidence_tier="paraphrase_verified",
+        )
+        result = adapter.match(
+            prompt_token_ids=list(range(200, 264)),
+            already_matched_len=8,
+            prompt_text="suffix text",
+        )
+        assert result is not None
+        assert result.segments and len(result.segments) == 1
+        seg = result.segments[0]
+        assert seg.donor_positions[0] == 8
+        assert seg.target_positions[0] == 0
+        assert seg.length == result.cached_token_count
+        assert result.quality_signals.confidence_tier == "paraphrase_verified"
+        assert list(result.kv_cache_indices)[0] == 108
+
+    def test_adapter_paraphrase_branch_emits_a_segment_too(self, adapter, pipeline, monkeypatch):
+        monkeypatch.setenv("SEMBLEND_CANONICAL_MATCH", "1")
+        monkeypatch.setenv("SEMBLEND_PARAPHRASE_SERVE", "1")
+        monkeypatch.setattr(
+            "semblend_core.fact_gate.spans_fact_consistent", lambda donor, target: True
+        )
+        adapter.register_donor(
+            request_id="donor-A",
+            token_ids=list(range(64)),
+            kv_cache=list(range(100, 164)),
+            cache_start_pos=0,
+            cache_end_pos=64,
+            prompt_text="registration text",
+        )
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.95,
+            reuse_ratio=0.0,
+            donor_tokens=list(range(64)),
+            position_map=_StubPosMap(donor_positions=[], target_positions=[]),
+            confidence_tier="fuzzy",
+        )
+        result = adapter.match(
+            prompt_token_ids=list(range(200, 264)),
+            already_matched_len=0,
+            prompt_text="query text",
+        )
+        assert result is not None
+        assert result.segments and result.segments[0].donor_positions[0] == 0
+        assert result.quality_signals.confidence_tier == "paraphrase_verified"

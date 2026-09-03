@@ -580,6 +580,37 @@ class SemBlendProviderAdapter:
             effective_reuse = contiguous_coverage(
                 result.position_map, len(remaining), self._segment_min_tokens()
             )
+        if result.confidence_tier == "paraphrase_verified":
+            # The core pipeline verified this donor whole (fact gate over the
+            # full texts); serve it as a segment anchored after the prefix.
+            para_donor_id = result.donor_id
+            with self._register_lock:
+                para_handle = self._donor_kv.get(para_donor_id)
+                if para_handle is not None:
+                    self._donor_kv.move_to_end(para_donor_id)
+            if para_handle is None or para_handle.extra_key != extra_key:
+                self._stats.match_rejected_no_kv += 1
+                return None
+            served = self._paraphrase_result(
+                donor_id=para_donor_id,
+                handle=para_handle,
+                remaining=remaining,
+                similarity=float(result.similarity),
+                donor_offset=already_matched_len,
+            )
+            if served is None:
+                self._stats.match_rejected_low_reuse += 1
+                return None
+            self._stats.match_hits += 1
+            logger.info(
+                "[FUZZY] adapter.match: pipeline paraphrase serve %d tokens "
+                "(similarity=%.3f, prefix=%d)",
+                served.cached_token_count,
+                float(result.similarity),
+                already_matched_len,
+            )
+            return served
+
         canonical_segments: List[FuzzyMatchSegment] = []
         if (
             _canonical_match_enabled()
@@ -1061,13 +1092,27 @@ class SemBlendProviderAdapter:
         if serve_len < self._config.min_match_length:
             return None
         kv = _slice_indices(handle.kv_indices, offset=donor_offset, length=serve_len)
+        # Emitted as one verified segment: the radix backend realizes
+        # segments into fresh slots, while a segment-less result whose span
+        # starts at the exact-matched length is treated as content the
+        # exact tree already owns and dropped.
+        segment = FuzzyMatchSegment(
+            target_positions=list(range(serve_len)),
+            donor_positions=list(range(donor_offset, donor_offset + serve_len)),
+            donor_node_id=handle.last_node_id,
+            donor_offset=donor_offset,
+            length=serve_len,
+            donor_kv_indices=kv,
+            donor_req_id=donor_id,
+        )
         return FuzzyMatchResult(
             cached_token_count=serve_len,
             cached_token_ids=list(remaining[:serve_len]),
             prompt_token_count=len(remaining),
             kv_cache_indices=kv,
-            position_offset=0,
+            position_offset=donor_offset,
             cached_start_pos=handle.start_pos + donor_offset,
+            segments=[segment],
             donor_last_node_id=handle.last_node_id,
             quality_signals=QualitySignals(
                 cosine_similarity=similarity,
