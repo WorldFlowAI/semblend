@@ -7,9 +7,13 @@ class TestSemblendPackageImports:
     """Verify the semblend top-level package imports."""
 
     def test_version(self):
+        import importlib.metadata
+
         import semblend
 
-        assert semblend.__version__ == "0.3.13"
+        # Never pin a literal here: that is how 0.3.17 shipped with a stale
+        # __version__ and tripped engine version gates.
+        assert semblend.__version__ == importlib.metadata.version("semblend")
 
     def test_pipeline_import(self):
         from semblend import SemBlendPipeline

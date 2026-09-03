@@ -31,7 +31,8 @@ Environment variables:
 
 from __future__ import annotations
 
-from importlib.metadata import PackageNotFoundError, version as _dist_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _dist_version
 
 try:
     # Single source of truth is the installed distribution; a hand-kept
