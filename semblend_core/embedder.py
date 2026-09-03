@@ -88,10 +88,17 @@ class MiniLMEmbedder:
             from sentence_transformers import SentenceTransformer
 
             t0 = time.monotonic()
+            forced = os.environ.get("SEMBLEND_EMBED_DEVICE", "").strip()
             try:
                 import torch
 
-                if torch.cuda.is_available():
+                if forced:
+                    # Operator override: MiniLM needs ~100 MB, so sharing the
+                    # engine's GPU is fine when the engine leaves headroom
+                    # (measured: lookup 188 ms on CPU vs single-digit ms on GPU
+                    # at 3.5K-token prompts).
+                    device = forced
+                elif torch.cuda.is_available():
                     gpu_count = torch.cuda.device_count()
                     # Multi-GPU: use last GPU to avoid contending with vLLM
                     # Single-GPU: use CPU so vLLM keeps full KV cache capacity
@@ -100,7 +107,7 @@ class MiniLMEmbedder:
                 else:
                     device = "cpu"
             except ImportError:
-                device = "cpu"
+                device = forced or "cpu"
             if device == "cpu" and os.environ.get("SEMBLEND_EMBED_SINGLE_THREAD"):
                 # In-scheduler CPU embedding: torch intra-op threads otherwise
                 # saturate the pod's whole vCPU allocation during donor

@@ -80,6 +80,30 @@ class PositionMapping:
         return any(d != t for d, t in zip(self.donor_positions, self.target_positions))
 
 
+def contiguous_coverage(pmap: PositionMapping, prompt_tokens: int, min_run: int) -> float:
+    """Fraction of the prompt covered by aligned runs of at least ``min_run``.
+
+    Token-level alignment can report high reuse on a reordered paraphrase
+    (most tokens appear on both sides) while nothing long enough to serve
+    exists; engines realize contiguous runs, so this is the reuse figure
+    that matters for serving.
+    """
+    donors, targets = pmap.donor_positions, pmap.target_positions
+    if not donors or prompt_tokens <= 0 or len(donors) != len(targets):
+        return 0.0
+    covered, run = 0, 1
+    for i in range(1, len(donors)):
+        if donors[i] - donors[i - 1] == 1 and targets[i] - targets[i - 1] == 1:
+            run += 1
+        else:
+            if run >= min_run:
+                covered += run
+            run = 1
+    if run >= min_run:
+        covered += run
+    return min(1.0, covered / prompt_tokens)
+
+
 @dataclass
 class PipelineResult:
     """Result of the SemBlend pipeline for a single request."""
@@ -141,6 +165,8 @@ class SemBlendPipeline:
         paraphrase_min_similarity: float = 0.80,
         paraphrase_tail_reserve: int = 8,
         paraphrase_min_tokens: int = 16,
+        min_run_tokens: int = 16,
+        chunk_fast_path_max_tokens: int | None = None,
     ) -> None:
         self._min_similarity = min_similarity
         self._min_reuse_ratio = min_reuse_ratio
@@ -148,6 +174,16 @@ class SemBlendPipeline:
         self._paraphrase_tail_reserve = paraphrase_tail_reserve
         self._paraphrase_min_tokens = paraphrase_min_tokens
         self._paraphrase_arbiter = None
+        # Reuse counts only in runs an engine can realize contiguously.
+        self._min_run_tokens = min_run_tokens
+        # The chunk fast path's fuzzy alignment is quadratic in prompt length
+        # (measured ~1.35 s per lookup at 3.5K tokens); above this it is
+        # skipped and the embedding path decides.
+        env_cap = os.environ.get("SEMBLEND_CHUNK_FAST_PATH_MAX_TOKENS")
+        self._chunk_fast_path_max_tokens = (
+            chunk_fast_path_max_tokens if chunk_fast_path_max_tokens is not None
+            else int(env_cap) if env_cap else 2048
+        )
         self._model_name = model_name
         self._backend = backend
         self._fuzzy_config = fuzzy_config
@@ -358,7 +394,11 @@ class SemBlendPipeline:
     ) -> PipelineResult:
         """Inner pipeline logic (may raise exceptions)."""
         # Stage 0: ChunkIndex fast path — skip embedding if >=N chunks match
-        if self._chunk_fast_path and hasattr(self._donor_store, "chunk_index"):
+        if (
+            self._chunk_fast_path
+            and hasattr(self._donor_store, "chunk_index")
+            and len(token_ids) <= self._chunk_fast_path_max_tokens
+        ):
             chunk_index = self._donor_store.chunk_index
             if chunk_index.num_donors > 0:
                 chunk_matches = chunk_index.find_matching_chunks(
@@ -381,7 +421,9 @@ class SemBlendPipeline:
                         t_start,
                     )
                     if fast_result is not None:
-                        return fast_result
+                        return self._gate_consumable(
+                            fast_result, token_ids, prompt_text, None, top_k, extra_key, timings, t_start
+                        )
                     # Attempted fast path but fell through to full pipeline
 
         # Stage 1: Embedding (order-invariant via sentence sorting)
@@ -410,7 +452,9 @@ class SemBlendPipeline:
                     extra_key=extra_key,
                 )
                 if multi_result is not None:
-                    return multi_result
+                    return self._gate_consumable(
+                        multi_result, token_ids, prompt_text, query_embedding, top_k, extra_key, timings, t_start
+                    )
             except Exception as e:
                 logger.warning("multi-donor path failed: %s", e, exc_info=True)
 
@@ -438,7 +482,9 @@ class SemBlendPipeline:
                     t_start,
                 )
                 if fuzzy_result is not None:
-                    return fuzzy_result
+                    return self._gate_consumable(
+                        fuzzy_result, token_ids, prompt_text, query_embedding, top_k, extra_key, timings, t_start
+                    )
 
             # Stage 2.75: Verified paraphrase serve — every candidate was
             # rejected on token alignment, the signature of a paraphrase
@@ -572,7 +618,7 @@ class SemBlendPipeline:
         except Exception:
             pass
 
-        return PipelineResult(
+        result = PipelineResult(
             found=True,
             donor_id=match.donor.request_id,
             similarity=match.similarity,
@@ -585,6 +631,57 @@ class SemBlendPipeline:
             fuzzy_confidence=mean_fuzzy_conf,
             force_verify_layers=force_verify,
             confidence_tier=confidence_tier,
+        )
+        return self._gate_consumable(
+            result, token_ids, prompt_text, query_embedding, top_k, extra_key, timings, t_start
+        )
+
+    def _gate_consumable(
+        self,
+        result: PipelineResult,
+        token_ids: list[int],
+        prompt_text: str,
+        query_embedding,
+        top_k: int,
+        extra_key: str | None,
+        timings: PipelineTimings,
+        t_start: float,
+    ) -> PipelineResult:
+        """Refuse alignment matches an engine cannot realize.
+
+        A match whose contiguous coverage is below the reuse threshold is
+        handed to the paraphrase tier (when enabled) and otherwise reported
+        as a miss, instead of being returned as reuse that serves nothing.
+        """
+        if not result.found or result.confidence_tier == "paraphrase_verified":
+            return result
+        coverage = contiguous_coverage(result.position_map, len(token_ids), self._min_run_tokens)
+        if coverage >= self._min_reuse_ratio:
+            return result
+        logger.info(
+            "[SemBlend] match rejected: consumable coverage %.2f < %.2f "
+            "(reported reuse %.2f, donor=%s)",
+            coverage,
+            self._min_reuse_ratio,
+            float(result.reuse_ratio),
+            result.donor_id,
+        )
+        paraphrase = self._try_paraphrase_serve(
+            token_ids=token_ids,
+            prompt_text=prompt_text,
+            query_embedding=query_embedding,
+            top_k=top_k,
+            extra_key=extra_key,
+            timings=timings,
+            t_start=t_start,
+        )
+        if paraphrase is not None:
+            return paraphrase
+        timings.total_ms = (time.monotonic() - t_start) * 1000
+        return PipelineResult(
+            found=False,
+            timings=timings,
+            rejection_reason="low_consumable_coverage",
         )
 
     def find_donor_candidates(
@@ -727,7 +824,12 @@ class SemBlendPipeline:
         if not paraphrase_serve_enabled() or not prompt_text:
             return None
         if query_embedding is None:
-            return None
+            # Callers that skipped the embedding stage (chunk fast path)
+            # still need one for the candidate search.
+            raw = self._embedder.embed(_order_invariant_text(prompt_text))
+            if raw is None:
+                return None
+            query_embedding = np.asarray(raw, dtype=np.float32)
         candidates = self._donor_store.find_donors(
             query_embedding=query_embedding,
             query_tokens=token_ids,
