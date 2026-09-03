@@ -183,6 +183,48 @@ class DonorStore:
             self._chunk_index.add_donor_chunks(node.request_id, node.token_ids)
             self._token_index.add_donor(node.request_id, node.token_ids)
 
+    # Donors sharing at least this many exact chunks with the query are
+    # proposed alongside the cosine top-k. Near-duplicate corpora (same
+    # template, different numbers) give MiniLM near-ties, so the donor that
+    # actually shares the tokens can sit outside the top-k.
+    _CHUNK_OVERLAP_MIN_CHUNKS = 4
+    _CHUNK_OVERLAP_MAX_PROPOSALS = 3
+
+    def _add_chunk_overlap_proposals(
+        self,
+        proposals: list[tuple[str, float]],
+        query_norm: np.ndarray,
+        query_tokens: list[int],
+        allowed: set[str] | None,
+    ) -> list[tuple[str, float]]:
+        chunk_index = getattr(self, "chunk_index", None)
+        if chunk_index is None or chunk_index.num_donors == 0:
+            return proposals
+        counts: dict[str, int] = {}
+        for locs in chunk_index.find_matching_chunks(query_tokens, min_matches=1).values():
+            for loc in locs:
+                counts[loc.donor_id] = counts.get(loc.donor_id, 0) + 1
+        ranked = [d for d, n in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+                  if n >= self._CHUNK_OVERLAP_MIN_CHUNKS]
+        proposed = {donor_id for donor_id, _ in proposals}
+        extra: list[tuple[str, float]] = []
+        for donor_id in ranked:
+            if len(extra) >= self._CHUNK_OVERLAP_MAX_PROPOSALS:
+                break
+            if donor_id in proposed:
+                continue
+            if allowed is not None and donor_id not in allowed:
+                continue
+            donor = self._entries.get(donor_id)
+            if donor is None or donor.embedding is None:
+                continue
+            sim = float(np.dot(query_norm, donor.embedding))
+            if sim < self._min_similarity:
+                continue
+            proposed.add(donor_id)
+            extra.append((donor_id, sim))
+        return proposals + extra
+
     def find_donor(
         self,
         query_embedding: np.ndarray | None,
@@ -229,6 +271,9 @@ class DonorStore:
             )
             if sim >= self._min_similarity
         ]
+        proposals = self._add_chunk_overlap_proposals(
+            proposals, query_norm, query_tokens, allowed
+        )
         if not proposals:
             logger.debug(
                 "DonorStore: no candidates above threshold %.2f",
