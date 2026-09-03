@@ -44,6 +44,7 @@ from semblend.integration.sglang.types import (
     FuzzyMatchSegment,
     QualitySignals,
 )
+from semblend_core.pipeline import ProbeContext
 
 logger = logging.getLogger(__name__)
 
@@ -498,6 +499,18 @@ class SemBlendProviderAdapter:
             return None
 
         t_match_start = time.monotonic()
+        # SGLang matched the shared prefix exactly, so the wrapper decoded
+        # only the suffix; donors were registered with their full text. The
+        # paraphrase verdict must compare full with full, and served donor
+        # positions start after that prefix.
+        probe = None
+        if already_matched_len > 0 and prompt_text and self._offsets_tok is not None:
+            try:
+                full_text = self._offsets_tok.decode(list(prompt_token_ids))
+            except Exception:
+                full_text = None
+            if full_text:
+                probe = ProbeContext(text=full_text, donor_offset=already_matched_len)
         try:
             with self._register_lock:
                 result = self._pipeline.find_donor(
@@ -505,6 +518,7 @@ class SemBlendProviderAdapter:
                     prompt_text=prompt_text or "",
                     top_k=self._config.top_k,
                     extra_key=extra_key,
+                    **({"probe": probe} if probe is not None else {}),
                 )
         except Exception as e:  # pragma: no cover
             logger.error("SemBlendPipeline.find_donor raised: %s", e, exc_info=True)
@@ -615,7 +629,8 @@ class SemBlendProviderAdapter:
                     from semblend_core.fact_gate import spans_fact_consistent
 
                     accepted = spans_fact_consistent(
-                        handle_for_canon.prompt_text, prompt_text
+                        handle_for_canon.prompt_text,
+                        probe.text if probe is not None else prompt_text,
                     )
                     if not accepted and _nli_appeal_enabled():
                         # Appeal tier: sentence-aligned meaning consistency
@@ -638,6 +653,7 @@ class SemBlendProviderAdapter:
                             handle=handle_for_canon,
                             remaining=remaining,
                             similarity=float(result.similarity),
+                            donor_offset=already_matched_len,
                         )
                     logger.info(
                         "[FUZZY] adapter.match: paraphrase candidate REJECTED "
@@ -1024,6 +1040,7 @@ class SemBlendProviderAdapter:
         handle: "_DonorKVHandle",
         remaining: List[int],
         similarity: float,
+        donor_offset: int = 0,
     ) -> Optional[FuzzyMatchResult]:
         """Contiguous result serving a fact-verified paraphrase span.
 
@@ -1032,7 +1049,8 @@ class SemBlendProviderAdapter:
         caps at the shorter of donor coverage and the remaining window,
         minus the tail reserve so the final tokens always compute.
         """
-        donor_len = handle.end_pos - handle.start_pos
+        donor_offset = min(max(0, donor_offset), handle.end_pos - handle.start_pos)
+        donor_len = handle.end_pos - handle.start_pos - donor_offset
         # _tail_reserve_tokens returns the last servable BOUNDARY position
         # (prompt_len minus the reserved tail), or 0 when the prompt is too
         # short for a reserve to apply.
@@ -1042,14 +1060,14 @@ class SemBlendProviderAdapter:
         serve_len = min(donor_len, serve_cap)
         if serve_len < self._config.min_match_length:
             return None
-        kv = _slice_indices(handle.kv_indices, offset=0, length=serve_len)
+        kv = _slice_indices(handle.kv_indices, offset=donor_offset, length=serve_len)
         return FuzzyMatchResult(
             cached_token_count=serve_len,
             cached_token_ids=list(remaining[:serve_len]),
             prompt_token_count=len(remaining),
             kv_cache_indices=kv,
             position_offset=0,
-            cached_start_pos=handle.start_pos,
+            cached_start_pos=handle.start_pos + donor_offset,
             donor_last_node_id=handle.last_node_id,
             quality_signals=QualitySignals(
                 cosine_similarity=similarity,

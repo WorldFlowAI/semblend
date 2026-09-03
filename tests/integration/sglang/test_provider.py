@@ -83,13 +83,14 @@ class _StubPipeline:
         self.next_result: _StubPipelineResult = _StubPipelineResult(found=False)
         self.find_donor_calls: list = []
 
-    def find_donor(self, token_ids, prompt_text="", top_k=5, extra_key=None):
+    def find_donor(self, token_ids, prompt_text="", top_k=5, extra_key=None, **kwargs):
         self.find_donor_calls.append(
             {
                 "token_ids": list(token_ids),
                 "prompt_text": prompt_text,
                 "top_k": top_k,
                 "extra_key": extra_key,
+                **kwargs,
             }
         )
         return self.next_result
@@ -947,3 +948,27 @@ class TestConsumableCoverageGate:
         )
         assert result is None
         assert adapter.stats()["match_rejected_low_reuse"] == 1
+
+
+class TestProbeContext:
+    def test_suffix_lookup_carries_full_text_and_prefix_offset(self, adapter, pipeline):
+        """After an exact prefix match the wrapper decodes only the suffix;
+        the pipeline's paraphrase verdict needs the full request text and the
+        served donor positions must start after the shared prefix."""
+
+        class _Tok:
+            def decode(self, ids):
+                return "full:" + ",".join(map(str, ids))
+
+        adapter._offsets_tok = _Tok()  # noqa: SLF001
+        pipeline.next_result = _StubPipelineResult(found=False)
+        adapter.match(prompt_token_ids=list(range(40)), already_matched_len=8, prompt_text="suffix")
+        call = pipeline.find_donor_calls[-1]
+        assert call["prompt_text"] == "suffix"
+        assert call["probe"].donor_offset == 8
+        assert call["probe"].text.startswith("full:0,1,2")
+
+    def test_prefixless_lookup_passes_no_probe(self, adapter, pipeline):
+        pipeline.next_result = _StubPipelineResult(found=False)
+        adapter.match(prompt_token_ids=list(range(40)), already_matched_len=0, prompt_text="whole")
+        assert "probe" not in pipeline.find_donor_calls[-1]

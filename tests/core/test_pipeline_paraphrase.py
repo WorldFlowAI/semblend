@@ -156,3 +156,29 @@ def test_namespace_isolation(monkeypatch) -> None:
     )
 
     assert result.found is False
+
+
+def test_probe_context_compares_full_text_and_offsets_donor(monkeypatch) -> None:
+    """SGLang hands the pipeline only the suffix after the radix cache's
+    exact prefix match; donors carry their full text. The verdict must see
+    the request's full text (a shared chat template adds entities the
+    suffix lacks) and served donor positions start after the prefix."""
+    from semblend_core.pipeline import ProbeContext
+
+    monkeypatch.setenv("SEMBLEND_PARAPHRASE_SERVE", "1")
+    pipeline = _pipeline(monkeypatch)
+    template = "You are Qwen, created by Alibaba Cloud. "
+    pipeline.register_donor("d1", DONOR_TOKENS, prompt_text=template + DONOR_TEXT)
+
+    suffix_only = pipeline.find_donor(TARGET_TOKENS, prompt_text=TARGET_TEXT)
+    assert not suffix_only.found
+
+    result = pipeline.find_donor(
+        TARGET_TOKENS,
+        prompt_text=TARGET_TEXT,
+        probe=ProbeContext(text=template + TARGET_TEXT, donor_offset=9),
+    )
+    assert result.found and result.confidence_tier == "paraphrase_verified"
+    assert result.position_map.target_positions[0] == 0
+    assert result.position_map.donor_positions[0] == 9
+    assert len(result.position_map.donor_positions) <= len(DONOR_TOKENS) - 9

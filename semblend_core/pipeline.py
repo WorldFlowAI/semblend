@@ -58,6 +58,17 @@ class PipelineTimings:
     total_ms: float = 0.0
 
 
+@dataclass(frozen=True)
+class ProbeContext:
+    """How the paraphrase probe should see a lookup whose engine already
+    matched a prefix exactly (SGLang radix cache): the verdict compares the
+    donor's full text with the request's full text, and served donor
+    positions start after the shared prefix."""
+
+    text: str
+    donor_offset: int = 0
+
+
 @dataclass
 class PositionMapping:
     """Maps donor positions to target positions for RoPE correction.
@@ -344,6 +355,7 @@ class SemBlendPipeline:
         prompt_text: str = "",
         top_k: int = 5,
         extra_key: str | None = None,
+        probe: ProbeContext | None = None,
     ) -> PipelineResult:
         """Run the full SemBlend donor discovery pipeline.
 
@@ -370,6 +382,7 @@ class SemBlendPipeline:
                 extra_key,
                 timings,
                 t_start,
+                probe=probe,
             )
         except Exception as e:
             logger.error(
@@ -398,6 +411,7 @@ class SemBlendPipeline:
         extra_key: str | None,
         timings: PipelineTimings,
         t_start: float,
+        probe: ProbeContext | None = None,
     ) -> PipelineResult:
         """Inner pipeline logic (may raise exceptions)."""
         # Stage 0: ChunkIndex fast path — skip embedding if >=N chunks match
@@ -429,7 +443,7 @@ class SemBlendPipeline:
                     )
                     if fast_result is not None:
                         return self._gate_consumable(
-                            fast_result, token_ids, prompt_text, None, top_k, extra_key, timings, t_start
+                            fast_result, token_ids, prompt_text, None, top_k, extra_key, timings, t_start, probe=probe
                         )
                     # Attempted fast path but fell through to full pipeline
 
@@ -460,7 +474,7 @@ class SemBlendPipeline:
                 )
                 if multi_result is not None:
                     return self._gate_consumable(
-                        multi_result, token_ids, prompt_text, query_embedding, top_k, extra_key, timings, t_start
+                        multi_result, token_ids, prompt_text, query_embedding, top_k, extra_key, timings, t_start, probe=probe
                     )
             except Exception as e:
                 logger.warning("multi-donor path failed: %s", e, exc_info=True)
@@ -494,7 +508,7 @@ class SemBlendPipeline:
                 )
                 if fuzzy_result is not None:
                     return self._gate_consumable(
-                        fuzzy_result, token_ids, prompt_text, query_embedding, top_k, extra_key, timings, t_start
+                        fuzzy_result, token_ids, prompt_text, query_embedding, top_k, extra_key, timings, t_start, probe=probe
                     )
 
             # Stage 2.75: Verified paraphrase serve — every candidate was
@@ -504,6 +518,7 @@ class SemBlendPipeline:
                 token_ids=token_ids,
                 prompt_text=prompt_text,
                 query_embedding=query_embedding,
+                probe=probe,
                 top_k=top_k,
                 extra_key=extra_key,
                 timings=timings,
@@ -644,7 +659,7 @@ class SemBlendPipeline:
             confidence_tier=confidence_tier,
         )
         return self._gate_consumable(
-            result, token_ids, prompt_text, query_embedding, top_k, extra_key, timings, t_start
+            result, token_ids, prompt_text, query_embedding, top_k, extra_key, timings, t_start, probe=probe
         )
 
     def _gate_consumable(
@@ -657,6 +672,7 @@ class SemBlendPipeline:
         extra_key: str | None,
         timings: PipelineTimings,
         t_start: float,
+        probe: ProbeContext | None = None,
     ) -> PipelineResult:
         """Refuse alignment matches an engine cannot realize.
 
@@ -685,6 +701,7 @@ class SemBlendPipeline:
             extra_key=extra_key,
             timings=timings,
             t_start=t_start,
+            probe=probe,
         )
         if paraphrase is not None:
             return paraphrase
@@ -820,6 +837,7 @@ class SemBlendPipeline:
         extra_key: str | None,
         timings: PipelineTimings,
         t_start: float,
+        probe: ProbeContext | None = None,
     ) -> PipelineResult | None:
         """Serve a fact-verified paraphrase donor whole, or None.
 
@@ -859,8 +877,10 @@ class SemBlendPipeline:
         if best is None:
             return None
 
+        donor_offset = max(0, probe.donor_offset) if probe is not None else 0
+        verdict_text = probe.text if probe is not None and probe.text else prompt_text
         serve_len = min(
-            len(best.donor.token_ids),
+            len(best.donor.token_ids) - donor_offset,
             len(token_ids) - self._paraphrase_tail_reserve,
         )
         if serve_len < self._paraphrase_min_tokens:
@@ -868,7 +888,7 @@ class SemBlendPipeline:
 
         if self._paraphrase_arbiter is None:
             self._paraphrase_arbiter = ParaphraseArbiter()
-        if not self._paraphrase_arbiter.verdict(best.donor.prompt_text, prompt_text):
+        if not self._paraphrase_arbiter.verdict(best.donor.prompt_text, verdict_text):
             logger.info(
                 "[SemBlend] paraphrase candidate rejected by fact gate "
                 "(similarity=%.3f, donor=%s)",
@@ -898,7 +918,7 @@ class SemBlendPipeline:
             reuse_ratio=serve_len / max(1, len(token_ids)),
             donor_tokens=list(best.donor.token_ids),
             position_map=PositionMapping(
-                donor_positions=positions,
+                donor_positions=[donor_offset + i for i in positions],
                 target_positions=list(positions),
             ),
             timings=timings,
