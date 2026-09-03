@@ -474,7 +474,11 @@ class SemBlendPipeline:
             # scan donors for high token overlap via fuzzy chunk alignment.
             # This catches shifted-prefix where instruction differs enough
             # to drop cosine below 0.60 but article content is 95%+ identical.
-            if self._chunk_fast_path and hasattr(self._donor_store, "chunk_index"):
+            if (
+                self._chunk_fast_path
+                and hasattr(self._donor_store, "chunk_index")
+                and len(token_ids) <= self._chunk_fast_path_max_tokens
+            ):
                 fuzzy_result = self._try_fuzzy_overlap_fallback(
                     token_ids,
                     extra_key,

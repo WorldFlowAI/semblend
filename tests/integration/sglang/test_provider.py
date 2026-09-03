@@ -457,7 +457,9 @@ class TestMatchMisses:
             donor_id="donor-phantom",
             similarity=0.85,
             reuse_ratio=0.8,
-            position_map=_StubPosMap(donor_positions=[0, 1], target_positions=[0, 1]),
+            position_map=_StubPosMap(
+                donor_positions=list(range(16)), target_positions=list(range(16))
+            ),
         )
         result = adapter.match(
             prompt_token_ids=list(range(32)),
@@ -645,7 +647,7 @@ class TestMatchHits:
         still surfaces the donor's ``donor_last_node_id`` so RadixCache can
         inc_lock_ref the donor node.
         """
-        self._register_donor(adapter, nt=16)
+        self._register_donor(adapter, nt=32)
         adapter.on_donor_inserted(request_id="donor-A", donor_last_node_id=4242)
 
         pipeline.next_result = _StubPipelineResult(
@@ -653,10 +655,10 @@ class TestMatchHits:
             donor_id="donor-A",
             similarity=0.80,
             reuse_ratio=0.7,
-            donor_tokens=list(range(16)),
+            donor_tokens=list(range(32)),
             position_map=_StubPosMap(
-                donor_positions=[4, 5, 6, 7, 0, 1, 2, 3],
-                target_positions=[0, 1, 2, 3, 4, 5, 6, 7],
+                donor_positions=list(range(16, 32)) + list(range(16)),
+                target_positions=list(range(32)),
             ),
             layer_deviations=[],
             confidence_tier="fuzzy",
@@ -907,3 +909,41 @@ def test_disable_registration_env_gate(monkeypatch, adapter):
     )
     assert ok is False
     assert adapter._stats.register_rejected == 1
+
+
+class TestConsumableCoverageGate:
+    def test_scattered_token_reuse_is_not_a_hit(self, adapter, pipeline, monkeypatch):
+        """At page-size alignment a reordered paraphrase reports high token
+        reuse with no run the engine can realize; the adapter must not hand
+        that map to the radix cache as reuse."""
+        monkeypatch.setenv("SEMBLEND_CANONICAL_MATCH", "1")
+        adapter.register_donor(
+            request_id="donor-A",
+            token_ids=list(range(64)),
+            kv_cache=list(range(100, 164)),
+            cache_start_pos=0,
+            cache_end_pos=64,
+            prompt_text="registration",
+        )
+        scattered_targets = list(range(0, 64, 2))
+        scattered_donors = [(t * 7) % 64 for t in scattered_targets]
+        pipeline.next_result = _StubPipelineResult(
+            found=True,
+            donor_id="donor-A",
+            similarity=0.95,
+            reuse_ratio=0.85,
+            donor_tokens=list(range(64)),
+            position_map=_StubPosMap(
+                donor_positions=scattered_donors,
+                target_positions=scattered_targets,
+            ),
+            layer_deviations=[],
+            confidence_tier="fuzzy",
+        )
+        result = adapter.match(
+            prompt_token_ids=list(range(64)),
+            already_matched_len=0,
+            prompt_text="query",
+        )
+        assert result is None
+        assert adapter.stats()["match_rejected_low_reuse"] == 1

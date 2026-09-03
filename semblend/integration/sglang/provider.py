@@ -546,11 +546,27 @@ class SemBlendProviderAdapter:
             self._stats.match_misses += 1
             return None
 
+        # Page-size alignment reports scattered single-token matches as
+        # reuse; only runs the engine can realize count toward the gate.
+        position_map = getattr(result, "position_map", None)
+        if (
+            result.confidence_tier == "paraphrase_verified"
+            or self._config.multi_segment_emission  # emission filters runs itself
+            or position_map is None
+            or not position_map.donor_positions
+        ):
+            effective_reuse = float(result.reuse_ratio)
+        else:
+            from semblend_core.pipeline import contiguous_coverage
+
+            effective_reuse = contiguous_coverage(
+                result.position_map, len(remaining), self._segment_min_tokens()
+            )
         canonical_segments: List[FuzzyMatchSegment] = []
         if (
             _canonical_match_enabled()
             and not getattr(result, "segments", None)
-            and result.reuse_ratio >= self._config.min_reuse_ratio
+            and effective_reuse >= self._config.min_reuse_ratio
         ):
             pre_donor_id, handle_pre = self._resolve_canon_handle(result)
             if handle_pre is not None:
@@ -561,7 +577,7 @@ class SemBlendProviderAdapter:
                     handle=handle_pre,
                     donor_tokens=list(handle_pre.token_ids),
                 )
-        if result.reuse_ratio < self._config.min_reuse_ratio:
+        if effective_reuse < self._config.min_reuse_ratio:
             # Token-level reuse starving under HIGH similarity is the
             # signature of the reformat class — canonical matching runs
             # BEFORE rejection (a canonical-covered window passes on its

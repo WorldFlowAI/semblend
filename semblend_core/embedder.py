@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -69,6 +70,12 @@ class MiniLMEmbedder:
         self._available = True  # optimistic; _ensure_loaded sets False on failure
         self._load_time_ms = 0.0
         self._initialized = False
+        # Donor registration embeds on a background thread while lookups
+        # embed on the caller's thread; the first calls can coincide.
+        self._init_lock = threading.Lock()
+        # SentenceTransformer.encode reconfigures its Rust tokenizer per call;
+        # two threads encoding at once raise "Already borrowed".
+        self._encode_lock = threading.Lock()
 
     def _ensure_loaded(self) -> None:
         """Lazy-load model on first embed() call.
@@ -80,8 +87,13 @@ class MiniLMEmbedder:
         """
         if self._initialized:
             return
-        self._initialized = True
-        self._init()
+        with self._init_lock:
+            if self._initialized:
+                return
+            try:
+                self._init()
+            finally:
+                self._initialized = True
 
     def _init(self) -> None:
         try:
@@ -165,17 +177,18 @@ class MiniLMEmbedder:
 
         # Estimate token count (~4 chars/token) to decide segmentation
         est_tokens = len(text) // 4
-        if est_tokens <= self.MAX_TOKENS:
-            # Short text: single pass
-            embedding = self._model.encode(
-                text,
-                convert_to_numpy=True,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            )
-        else:
-            # Long text: segment and batch embed
-            embedding = self._embed_segmented(text)
+        with self._encode_lock:
+            if est_tokens <= self.MAX_TOKENS:
+                # Short text: single pass
+                embedding = self._model.encode(
+                    text,
+                    convert_to_numpy=True,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                )
+            else:
+                # Long text: segment and batch embed
+                embedding = self._embed_segmented(text)
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if elapsed_ms > 10:
@@ -247,7 +260,10 @@ class MiniLMEmbedder:
         if not self._available or not text.strip():
             return None
         text = _bound_embed_text(text)
+        with self._encode_lock:
+            return self._embed_with_segments_locked(text, chunk_size)
 
+    def _embed_with_segments_locked(self, text: str, chunk_size: int) -> "EmbedResult":
         # Lazy import to avoid circular dependency
         from semblend_core.segment_embeddings import EmbedResult, SegmentEmbeddings
 
