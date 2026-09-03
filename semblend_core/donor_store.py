@@ -189,6 +189,10 @@ class DonorStore:
     # actually shares the tokens can sit outside the top-k.
     _CHUNK_OVERLAP_MIN_CHUNKS = 4
     _CHUNK_OVERLAP_MAX_PROPOSALS = 3
+    # Candidates that get a full alignment, in fast-score order; a leading
+    # alignment this complete ends the scan early.
+    _ALIGN_CANDIDATES = 3
+    _ALIGN_EARLY_EXIT_REUSE = 0.95
 
     def _add_chunk_overlap_proposals(
         self,
@@ -286,8 +290,7 @@ class DonorStore:
         query_set = set(query_tokens)
 
         # Phase 1: Fast scoring with estimate_reuse_ratio (no SlotActions)
-        best_candidate: tuple[float, float, DonorNode] | None = None
-        best_score = 0.0
+        scored: list[tuple[float, float, DonorNode]] = []
 
         for donor_id, sim in proposals:
             donor = self._entries.get(donor_id)
@@ -311,26 +314,26 @@ class DonorStore:
             if reuse < min_reuse_ratio:
                 continue
 
-            score = float(sim) * reuse
-            if score > best_score:
-                best_score = score
-                best_candidate = (score, float(sim), donor)
+            scored.append((float(sim) * reuse, float(sim), donor))
 
-        # Phase 2: Full alignment only for the winner
+        # Phase 2: Full alignment for the leading candidates. The fast
+        # estimate is grid-dependent, so among near-duplicate donors it can
+        # rank one that shares grid-aligned chunks above the one that shares
+        # the text; the alignment itself decides between them.
+        scored.sort(key=lambda entry: entry[0], reverse=True)
         best_match: DonorMatch | None = None
-        if best_candidate is not None:
-            _, sim, donor = best_candidate
+        for _, sim, donor in scored[: self._ALIGN_CANDIDATES]:
             alignment = compute_alignment(
                 donor.token_ids,
                 query_tokens,
                 chunk_size=self._chunk_size,
             )
-            if alignment.reuse_ratio >= min_reuse_ratio:
-                best_match = DonorMatch(
-                    donor=donor,
-                    similarity=sim,
-                    alignment=alignment,
-                )
+            if alignment.reuse_ratio < min_reuse_ratio:
+                continue
+            if best_match is None or alignment.reuse_ratio > best_match.alignment.reuse_ratio:
+                best_match = DonorMatch(donor=donor, similarity=sim, alignment=alignment)
+            if best_match.alignment.reuse_ratio >= self._ALIGN_EARLY_EXIT_REUSE:
+                break
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         if elapsed_ms > 5:
