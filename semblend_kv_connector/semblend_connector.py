@@ -31,6 +31,7 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import logging
@@ -83,6 +84,45 @@ class KVFingerprint:
     """Mean K vector per layer (head_dim floats) — captures direction."""
 
 
+# Isolation namespace for requests that carry no cache_salt.
+#
+# Donors and lookups always carry a non-empty namespace string so the
+# isolation check is a plain equality compare with no "None means every
+# donor is visible" escape hatch. Two requests that both lack a cache_salt
+# share this sentinel and MAY reuse each other's KV — single-tenant
+# deployments keep working unchanged. A request that carries a cache_salt
+# never matches this sentinel, so a salted request can never consume an
+# unsalted donor, and an unsalted request can never consume a salted one.
+NO_CACHE_SALT_NAMESPACE = "semblend:ns:no-cache-salt"
+
+_CACHE_SALT_NAMESPACE_PREFIX = "semblend:ns:salt:"
+
+
+def _request_namespace(request: Any) -> str:
+    """Isolation namespace for a request, derived from vLLM's cache_salt.
+
+    vLLM mixes ``cache_salt`` into its own prefix-cache block hashes, so it
+    is the per-request isolation key an operator already sets per tenant.
+    SemBlend binds the same value to every donor at registration and
+    requires exact equality at lookup.
+
+    The salt is hashed rather than stored verbatim: it is tenant-identifying
+    and the namespace reaches logs and donor records.
+    """
+    salt = getattr(request, "cache_salt", None)
+    if salt is None:
+        return NO_CACHE_SALT_NAMESPACE
+    if not isinstance(salt, str):
+        salt = str(salt)
+    salt = salt.strip()
+    if not salt:
+        # An empty salt carries no isolation intent — treat it as absent so
+        # it lands in the sentinel namespace rather than in one of its own.
+        return NO_CACHE_SALT_NAMESPACE
+    digest = hashlib.sha256(salt.encode("utf-8")).hexdigest()[:32]
+    return _CACHE_SALT_NAMESPACE_PREFIX + digest
+
+
 @dataclass
 class DonorEntry:
     """Cached donor prompt for semantic matching."""
@@ -94,6 +134,8 @@ class DonorEntry:
     timestamp: float
     num_tokens: int
     kv_fingerprint: KVFingerprint | None = None
+    namespace: str = NO_CACHE_SALT_NAMESPACE
+    """Isolation namespace of the request that produced this KV."""
 
 
 @dataclass
@@ -128,10 +170,20 @@ class SemBlendDonorStore:
         self._entries: OrderedDict[str, DonorEntry] = OrderedDict()
         self._max_entries = max_entries
         self._min_similarity = min_similarity
+        self._namespace_rejections = 0
 
     @property
     def size(self) -> int:
         return len(self._entries)
+
+    @property
+    def namespace_rejections(self) -> int:
+        """Donor candidates skipped because their namespace did not match.
+
+        Monotonic across the store's lifetime; the connector reports the
+        per-lookup delta through get_stats().
+        """
+        return self._namespace_rejections
 
     def add_donor(
         self,
@@ -140,6 +192,8 @@ class SemBlendDonorStore:
         prompt_text: str,
         embedding: list[float] | None = None,
         kv_fingerprint: KVFingerprint | None = None,
+        *,
+        namespace: str = NO_CACHE_SALT_NAMESPACE,
     ) -> None:
         if request_id in self._entries:
             self._entries.move_to_end(request_id)
@@ -152,6 +206,7 @@ class SemBlendDonorStore:
             timestamp=time.monotonic(),
             num_tokens=len(token_ids),
             kv_fingerprint=kv_fingerprint,
+            namespace=namespace,
         )
         while len(self._entries) > self._max_entries:
             self._entries.popitem(last=False)
@@ -160,7 +215,16 @@ class SemBlendDonorStore:
         self,
         query_token_ids: list[int],
         query_embedding: list[float] | None = None,
+        *,
+        namespace: str = NO_CACHE_SALT_NAMESPACE,
     ) -> SemanticMatch | None:
+        """Best donor within `namespace`.
+
+        Isolation is a hard filter applied before scoring, not a penalty:
+        a donor whose namespace differs is never a candidate, whatever its
+        similarity. The default is the no-cache-salt sentinel, so a caller
+        that supplies nothing can only ever see unsalted donors.
+        """
         if not self._entries:
             return None
 
@@ -170,6 +234,11 @@ class SemBlendDonorStore:
         method_used = "none"
 
         for entry in self._entries.values():
+            # Isolation gate first — a cross-namespace donor is not a
+            # candidate regardless of how similar it is.
+            if entry.namespace != namespace:
+                self._namespace_rejections += 1
+                continue
             if entry.token_ids == query_token_ids:
                 continue
 
@@ -378,6 +447,10 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
             "total_lookups": 0,
             "total_saves": 0,
             "partial_attn_applied": 0,
+            # Donor entries withheld from a lookup because their cache_salt
+            # namespace differed from the requesting tenant's. Non-zero here
+            # is isolation doing its job, not an error.
+            "cross_namespace_rejected": 0,
         }
 
         msg = (
@@ -794,6 +867,70 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
     # SemBlend: semantic donor discovery
     # ==============================
 
+    def _donor_namespace(self, donor_id: str) -> str | None:
+        """Namespace recorded for a pipeline donor, None when unresolvable."""
+        if self._pipeline is None or not donor_id:
+            return None
+        try:
+            store = self._pipeline._donor_store  # noqa: SLF001
+            node = store.get_donor(donor_id)
+        except Exception:
+            return None
+        if node is None:
+            return None
+        return getattr(node, "extra_key", None)
+
+    def _namespace_allows(self, donor_id: str, namespace: str) -> bool:
+        """Defense in depth over the pipeline's own extra_key filter.
+
+        Fails closed: a donor whose namespace cannot be resolved is
+        rejected. The pipeline already filters on extra_key, so this only
+        fires when the store and the request disagree — which is exactly
+        the case that must never be served.
+        """
+        donor_ns = self._donor_namespace(donor_id)
+        if donor_ns == namespace:
+            return True
+        self._stats["cross_namespace_rejected"] += 1
+        print(
+            f"[SemBlend] namespace reject: donor={donor_id} "
+            f"donor_ns={donor_ns} request_ns={namespace}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+
+    def _withheld_donor_count(self, namespace: str) -> int:
+        """Donors in the pipeline store this namespace is not allowed to see.
+
+        semblend_core filters on extra_key before it proposes candidates, so
+        a cross-tenant donor never reaches _namespace_allows on the default
+        path and the operator-visible counter would read zero while
+        isolation was in fact doing its job. Called only on a semantic miss,
+        after a lookup that already paid for an embedding.
+        """
+        if self._pipeline is None:
+            return 0
+        try:
+            entries = self._pipeline._donor_store._entries  # noqa: SLF001
+            return sum(
+                1 for node in entries.values() if getattr(node, "extra_key", None) != namespace
+            )
+        except Exception:
+            return 0
+
+    def _filter_candidates_by_namespace(
+        self,
+        candidates: list[Any],
+        namespace: str,
+    ) -> list[Any]:
+        """Drop donor candidates that do not belong to `namespace`."""
+        return [
+            candidate
+            for candidate in candidates
+            if not candidate.found or self._namespace_allows(candidate.donor_id, namespace)
+        ]
+
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -850,6 +987,11 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         # Get prompt text for embedding
         prompt = self._get_prompt_text(request)
 
+        # Isolation namespace for this request. Every donor lookup below
+        # carries it, and every donor was registered under the namespace of
+        # the request that produced its KV.
+        namespace = _request_namespace(request)
+
         # --- Multi-donor composite path (Phase 3) ---
         # When SEMBLEND_MULTI_DONOR=1 and the pipeline finds chunks from
         # multiple donors, build a CompositeChunkSource list for LMCache's
@@ -858,6 +1000,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
             multi_result = self._pipeline.find_donor(
                 token_ids=token_ids,
                 prompt_text=prompt,
+                extra_key=namespace,
             )
             if (
                 multi_result is not None
@@ -872,6 +1015,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
                     prompt_len,
                     num_computed_tokens,
                     num_matched,
+                    namespace,
                 )
 
         # --- New pipeline path (Phase 2) ---
@@ -882,11 +1026,15 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
             candidates = self._pipeline.find_donor_candidates(
                 token_ids=token_ids,
                 prompt_text=prompt,
+                extra_key=namespace,
             )
+            candidates = self._filter_candidates_by_namespace(candidates, namespace)
 
             # Check if any candidates were found
             if not candidates or not candidates[0].found:
                 self._stats["semblend_misses"] += 1
+                withheld = self._withheld_donor_count(namespace)
+                self._stats["cross_namespace_rejected"] += withheld
                 timings_str = ""
                 reason = "no_donor_match"
                 if candidates:
@@ -895,6 +1043,7 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
                 print(
                     f"[SemBlend] MISS req={request.request_id}, "
                     f"store_size={self._pipeline.donor_count}, "
+                    f"out_of_namespace={withheld}, "
                     f"prompt_len={prompt_len}, reason={reason}{timings_str}",
                     file=sys.stderr,
                     flush=True,
@@ -1092,7 +1241,11 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
                     flush=True,
                 )
 
-            match = self._donor_store.find_donor(token_ids, embedding)
+            rejected_before = self._donor_store.namespace_rejections
+            match = self._donor_store.find_donor(token_ids, embedding, namespace=namespace)
+            self._stats["cross_namespace_rejected"] += (
+                self._donor_store.namespace_rejections - rejected_before
+            )
             if match is None:
                 self._stats["semblend_misses"] += 1
                 print(
@@ -1501,15 +1654,34 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         prompt_len: int,
         num_computed_tokens: int,
         num_matched: int | None,
+        namespace: str = NO_CACHE_SALT_NAMESPACE,
     ) -> tuple[int | None, bool]:
         """Inject KV from multiple donors via LMCache composite retrieval.
 
         Builds CompositeChunkSource entries from the pipeline's CompositeKVPlan
         and registers them with LMCache's SemanticLookupProvider for composite
         retrieval during start_load_kv.
+
+        A composite plan mixes KV from several donors, so every one of them
+        must belong to `namespace`. One foreign donor poisons the whole plan,
+        so the plan is dropped rather than trimmed.
         """
         composite = pipeline_result.composite_plan
         donor_ids = list(pipeline_result.donor_ids)
+
+        # Evaluated eagerly, not short-circuited: every foreign donor is
+        # counted so the rejection stat reflects the real blast radius.
+        foreign = [did for did in donor_ids if not self._namespace_allows(did, namespace)]
+        if foreign:
+            print(
+                f"[SemBlend] COMPOSITE rejected on namespace: "
+                f"{len(foreign)}/{len(donor_ids)} foreign donors, "
+                f"req={request.request_id}",
+                file=sys.stderr,
+                flush=True,
+            )
+            self._stats["semblend_misses"] += 1
+            return (num_matched or 0, False)
 
         print(
             f"[SemBlend] COMPOSITE HIT req={request.request_id} → "
@@ -1967,16 +2139,23 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
         if not prompt:
             prompt = self._get_prompt_text(request)
 
+        # The donor inherits the isolation namespace of the request whose KV
+        # it is. Lookups compare against this value, so it must be derived
+        # the same way on both sides.
+        namespace = _request_namespace(request)
+
         # New pipeline path
         if self._pipeline is not None:
             self._pipeline.register_donor(
                 request_id=request.request_id,
                 token_ids=token_ids,
                 prompt_text=prompt,
+                extra_key=namespace,
             )
             print(
                 f"[SemBlend] donor reg (pipeline): req={request.request_id}, "
                 f"tok={len(token_ids)}/{len(all_ids)}, "
+                f"ns={namespace}, "
                 f"num_prompt={num_prompt}, prompt={len(prompt)}ch",
                 file=sys.stderr,
                 flush=True,
@@ -2002,12 +2181,14 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
             prompt_text=prompt,
             embedding=embedding,
             kv_fingerprint=kv_fp,
+            namespace=namespace,
         )
 
         print(
             f"[SemBlend] donor reg: req={request.request_id}, "
             f"tok={len(token_ids)}, emb={'yes' if embedding else 'no'}, "
             f"kv_fp={'yes' if kv_fp else 'no'}, "
+            f"ns={namespace}, "
             f"prompt={len(prompt)}ch",
             file=sys.stderr,
             flush=True,
