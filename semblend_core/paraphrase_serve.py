@@ -56,9 +56,7 @@ class ParaphraseArbiter:
         memo_capacity: int = _DEFAULT_MEMO_CAPACITY,
     ) -> None:
         self._nli_gate = nli_gate
-        self._nli_enabled = (
-            nli_appeal_enabled() if nli_enabled is None else bool(nli_enabled)
-        )
+        self._nli_enabled = nli_appeal_enabled() if nli_enabled is None else bool(nli_enabled)
         self._nli_gate_failed = False
         self._memo: dict[tuple[bytes, bytes, bool], bool] = {}
         self._memo_capacity = max(1, int(memo_capacity))

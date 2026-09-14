@@ -61,9 +61,7 @@ class TestBuildSparsePlan:
         assert plan[3].target_start == 300 and plan[3].segment_index == 0
 
     def test_short_donor_span_folds_into_novel(self):
-        plan = build_sparse_plan(
-            [_seg(100, 8, 700)], remaining_len=200, min_donor_span=16
-        )
+        plan = build_sparse_plan([_seg(100, 8, 700)], remaining_len=200, min_donor_span=16)
         assert plan is None  # sole donor folded away -> no plan
 
     def test_overlapping_later_segment_dropped(self):
@@ -83,9 +81,7 @@ class TestBuildSparsePlan:
         assert _covers(plan, 100)
 
     def test_edge_shave_moves_span_edges_into_novel(self):
-        plan = build_sparse_plan(
-            [_seg(100, 1000, 700)], remaining_len=1200, edge_shave=32
-        )
+        plan = build_sparse_plan([_seg(100, 1000, 700)], remaining_len=1200, edge_shave=32)
         donor = [s for s in plan if s.kind == "donor"][0]
         assert (donor.target_start, donor.target_end) == (132, 1068)
         assert donor.donor_start == 732  # advanced with the start shave
@@ -164,9 +160,7 @@ class TestCanonicalAugmentation:
 
         base = [f"tok{i}" for i in range(40)]
         donor_text = " ".join(base)
-        target_text = "\n".join(
-            " ".join(base[k : k + 10]) for k in range(0, 40, 10)
-        )
+        target_text = "\n".join(" ".join(base[k : k + 10]) for k in range(0, 40, 10))
         d_ids = tok(donor_text)["input_ids"]
         t_ids = tok(target_text)["input_ids"]
 
@@ -187,8 +181,10 @@ class TestCanonicalAugmentation:
         assert covered >= 25  # most of 40 words minus rewrap bubbles
         for s in segs:
             # engine-tokenization identity was re-verified inside
-            assert t_ids[s.target_positions[0] : s.target_positions[0] + s.length] == \
-                d_ids[s.donor_positions[0] : s.donor_positions[0] + s.length]
+            assert (
+                t_ids[s.target_positions[0] : s.target_positions[0] + s.length]
+                == d_ids[s.donor_positions[0] : s.donor_positions[0] + s.length]
+            )
 
     def test_engine_window_convention(self, monkeypatch):
         """Live-flow contract: the engine decodes the POST-HEAD window and
@@ -218,9 +214,7 @@ class TestCanonicalAugmentation:
         donor_text = " ".join(base)
         # engine already served the 12-token head; the adapter receives
         # ONLY the window's text and ids
-        window_text = "\n".join(
-            " ".join(base[k : k + 10]) for k in range(12, 40, 10)
-        )
+        window_text = "\n".join(" ".join(base[k : k + 10]) for k in range(12, 40, 10))
         d_ids = tok(donor_text)["input_ids"]
         window_ids = tok(window_text)["input_ids"]
 
@@ -240,8 +234,10 @@ class TestCanonicalAugmentation:
         covered = sum(s.length for s in segs)
         assert covered >= 18
         for s in segs:
-            assert window_ids[s.target_positions[0] : s.target_positions[0] + s.length] == \
-                d_ids[s.donor_positions[0] : s.donor_positions[0] + s.length]
+            assert (
+                window_ids[s.target_positions[0] : s.target_positions[0] + s.length]
+                == d_ids[s.donor_positions[0] : s.donor_positions[0] + s.length]
+            )
 
     def test_rescue_resolves_unregistered_composite_donor(self, monkeypatch):
         """Composite (multi-donor) results can carry a donor_id that is not
@@ -252,27 +248,34 @@ class TestCanonicalAugmentation:
         from collections import OrderedDict
         from types import SimpleNamespace
 
-        from semblend.integration.sglang.provider import SemBlendProviderAdapter
+        from semblend.integration.sglang.provider import (
+            NO_EXTRA_KEY_NAMESPACE,
+            SemBlendProviderAdapter,
+        )
 
         adapter = SemBlendProviderAdapter.__new__(SemBlendProviderAdapter)
-        sole = SimpleNamespace(token_ids=[1, 2, 3], prompt_text="a b c")
+        # Handles carry the isolation namespace of the request that produced
+        # them; the rescue only resolves donors in the requester's namespace.
+        sole = SimpleNamespace(
+            token_ids=[1, 2, 3], prompt_text="a b c", namespace=NO_EXTRA_KEY_NAMESPACE
+        )
         adapter._donor_kv = OrderedDict([("real-donor", sole)])
 
         result = SimpleNamespace(donor_id="composite-xyz", donor_ids=None)
-        donor_id, handle = adapter._resolve_canon_handle(result)
+        donor_id, handle = adapter._resolve_canon_handle(result, NO_EXTRA_KEY_NAMESPACE)
         assert donor_id == "real-donor"
         assert handle is sole
 
         # composite donor ids take precedence over the sole fallback
-        other = SimpleNamespace(token_ids=[9], prompt_text="z")
+        other = SimpleNamespace(token_ids=[9], prompt_text="z", namespace=NO_EXTRA_KEY_NAMESPACE)
         adapter._donor_kv["other"] = other
         result2 = SimpleNamespace(donor_id="composite-xyz", donor_ids=["other"])
-        donor_id2, handle2 = adapter._resolve_canon_handle(result2)
+        donor_id2, handle2 = adapter._resolve_canon_handle(result2, NO_EXTRA_KEY_NAMESPACE)
         assert (donor_id2, handle2) == ("other", other)
 
         # unresolvable: multiple donors, none referenced
         result3 = SimpleNamespace(donor_id="composite-xyz", donor_ids=None)
-        _did, handle3 = adapter._resolve_canon_handle(result3)
+        _did, handle3 = adapter._resolve_canon_handle(result3, NO_EXTRA_KEY_NAMESPACE)
         assert handle3 is None
 
     def test_disabled_without_env(self):
@@ -283,10 +286,13 @@ class TestCanonicalAugmentation:
         adapter = SemBlendProviderAdapter.__new__(SemBlendProviderAdapter)
         adapter._config = SimpleNamespace(segment_min_tokens=4, model_arch="x")
         adapter._offsets_tok = None
-        assert adapter._canonical_augment_segments(
-            remaining=[1, 2],
-            remaining_text="a b",
-            donor_id="d",
-            handle=SimpleNamespace(prompt_text="a b", kv_indices=[], last_node_id=None),
-            donor_tokens=[1, 2],
-        ) == []
+        assert (
+            adapter._canonical_augment_segments(
+                remaining=[1, 2],
+                remaining_text="a b",
+                donor_id="d",
+                handle=SimpleNamespace(prompt_text="a b", kv_indices=[], last_node_id=None),
+                donor_tokens=[1, 2],
+            )
+            == []
+        )

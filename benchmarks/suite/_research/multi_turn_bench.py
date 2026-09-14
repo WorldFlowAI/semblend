@@ -178,6 +178,11 @@ def _run_conversation(
 
     Each turn is first registered as a donor (simulating completion),
     then the next turn is looked up (simulating the new request).
+
+    Neither call passes an extra_key, which is the single-tenant contract:
+    every turn of every conversation shares one namespace and any lookup may
+    reuse any donor. A per-tenant run would pass each tenant's extra_key on
+    both the register_donor and the find_donor call.
     """
     result = ConversationResult(
         conversation_id=conversation_id,

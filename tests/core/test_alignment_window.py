@@ -44,4 +44,6 @@ def test_window_bounds_the_scan(monkeypatch):
     donor = _tokens(320, 4)
     target = _tokens(320, 5)
     al.compute_fuzzy_chunk_alignment(donor_tokens=donor, target_tokens=target, chunk_size=16)
-    assert calls and all(r is not None and r[1] - r[0] <= 2 * al._FUZZY_CHUNK_WINDOW + 1 for r in calls)
+    assert calls and all(
+        r is not None and r[1] - r[0] <= 2 * al._FUZZY_CHUNK_WINDOW + 1 for r in calls
+    )

@@ -15,9 +15,13 @@ import os
 import threading
 from typing import Any, Optional
 
+from semblend.integration.dynamo.semantic_events import SEMANTIC_KV_EVENT_SUBJECT
+
 logger = logging.getLogger("semblend.dynamo.nats")
 
-DEFAULT_SUBJECT = "synapse.semblend.events"
+# Taken from the contract, not restated: a publisher default that drifts from
+# the consumer's is a silent no-op — NATS delivers nothing and nobody errors.
+DEFAULT_SUBJECT = SEMANTIC_KV_EVENT_SUBJECT
 
 
 class ThreadedNatsPublisher:
@@ -62,9 +66,7 @@ class ThreadedNatsPublisher:
             return
         try:
             payload = json.dumps(event).encode("utf-8")
-            asyncio.run_coroutine_threadsafe(
-                self._nc.publish(self._subject, payload), self._loop
-            )
+            asyncio.run_coroutine_threadsafe(self._nc.publish(self._subject, payload), self._loop)
         except Exception:
             logger.debug("NATS publish enqueue failed", exc_info=True)
 

@@ -83,12 +83,10 @@ class TestVllmImportPaths:
         canonical package (no duplicate instances)."""
         import warnings
 
-        with warnings.catch_warnings(record=True) as w:
+        with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             mod = importlib.import_module("synapse_kv_connector.semblend_connector")
-        canonical = importlib.import_module(
-            "semblend_kv_connector.semblend_connector"
-        )
+        canonical = importlib.import_module("semblend_kv_connector.semblend_connector")
         assert mod is canonical
         assert hasattr(mod, "SemBlendConnectorV1")
 

@@ -25,11 +25,19 @@ from __future__ import annotations
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any
 
-from semblend.integration.trtllm.namespace import namespace_key
+from semblend.integration.trtllm.namespace import (
+    CACHE_SALT_EXTRA_FIELD,
+    NO_CACHE_SALT_NAMESPACE,
+    bind_cache_salt,
+    build_cache_namespace,
+    cache_salt_namespace,
+    namespace_key,
+)
+from semblend.integration.trtllm.pytorch_backend import SaltIsolationWatch
 from semblend.integration.trtllm.upstream_interface import (
     CacheNamespace,
     DonorEvicted,
@@ -105,10 +113,29 @@ class SemBlendTensorRTProvider(SemanticKvProvider):
             "evictions": 0,
             "materializations": 0,
             "rope_corrections": 0,
+            # Donors withheld from a lookup because their cache_salt
+            # namespace differed from the requesting tenant's. Non-zero
+            # here is isolation doing its job, not an error.
+            "cross_namespace_rejected": 0,
         }
+        # The salt reaches this provider from the connector, which reads it
+        # off request objects this repo does not own. A deployment whose
+        # requests never carry one gets a single shared namespace, so say so
+        # rather than leave it to be discovered as a leak.
+        self._salt_watch = SaltIsolationWatch(
+            "SemBlendTensorRTProvider (TensorRT-LLM KV connector)",
+            "cache_salt on each request, via "
+            "kv_connector_config connector_module=semblend.integration.trtllm.connector",
+            log=logger,
+        )
 
     def lookup(self, request: SemanticKvLookupRequest) -> SemanticKvLookupResult:
         self._stats["queries"] += 1
+        # Bind the request's cache_salt into its namespace before anything
+        # reads it: the token fast paths compare donor handles against it
+        # and the pipeline filters on its key, so a salted request can only
+        # ever see donors registered under the same salt.
+        request = _bind_lookup_request(request)
 
         if len(request.token_ids) < self._min_match_length:
             self._stats["misses"] += 1
@@ -120,6 +147,9 @@ class SemBlendTensorRTProvider(SemanticKvProvider):
         if fallback is None and _token_prefix_fast_path_enabled():
             fallback = self._find_token_prefix_run_donor(request)
         if fallback is not None:
+            rejected = self._cross_namespace_miss(request, fallback)
+            if rejected is not None:
+                return rejected
             plan = self._build_plan(request, fallback)
             if plan is not None:
                 self._stats["hits"] += 1
@@ -141,16 +171,20 @@ class SemBlendTensorRTProvider(SemanticKvProvider):
             return SemanticKvLookupResult(found=False, rejection_reason="provider_disabled")
 
         prompt_text = request.prompt_text or self._tokens_to_text(list(request.token_ids)) or ""
+        extra_key = namespace_key(request.namespace)
         result = pipeline.find_donor(
             token_ids=list(request.token_ids),
             prompt_text=prompt_text,
-            extra_key=namespace_key(request.namespace),
+            extra_key=extra_key,
         )
 
         if not getattr(result, "found", False):
             fallback = self._find_exact_prefix_donor(request)
             if fallback is None:
                 self._stats["misses"] += 1
+                self._stats["cross_namespace_rejected"] += _withheld_donor_count(
+                    pipeline, extra_key
+                )
                 return SemanticKvLookupResult(
                     found=False,
                     rejection_reason=getattr(result, "rejection_reason", "no_donor_match") or "",
@@ -164,6 +198,10 @@ class SemBlendTensorRTProvider(SemanticKvProvider):
         if result.reuse_ratio < self._min_reuse_ratio:
             self._stats["misses"] += 1
             return SemanticKvLookupResult(found=False, rejection_reason="low_reuse")
+
+        rejected = self._cross_namespace_miss(request, result)
+        if rejected is not None:
+            return rejected
 
         plan = self._build_plan(request, result)
         if plan is None:
@@ -219,6 +257,7 @@ class SemBlendTensorRTProvider(SemanticKvProvider):
         block_ids: list[int],
         block_hashes: list[int] | None = None,
         location: DonorLocation | None = None,
+        cache_salt: Any = None,
     ) -> DonorRegistered | None:
         if len(token_ids) < self._min_match_length:
             return None
@@ -226,6 +265,19 @@ class SemBlendTensorRTProvider(SemanticKvProvider):
         pipeline = self._get_pipeline()
         if pipeline is None:
             return None
+
+        # The donor is recorded under the namespace of the request that
+        # produced its KV, salt included. Lookups bind the same way, so the
+        # donor is only reachable from requests carrying the same salt — or,
+        # for an unsalted donor, from unsalted requests.
+        namespace = bind_cache_salt(namespace, cache_salt)
+        # Read back off the bound namespace, not off `cache_salt`: the
+        # connector may have bound the salt on an earlier hop, and what
+        # decides isolation is the namespace the donor is keyed under.
+        self._salt_watch.record(
+            namespace.extra.get(CACHE_SALT_EXTRA_FIELD, NO_CACHE_SALT_NAMESPACE)
+            != NO_CACHE_SALT_NAMESPACE
+        )
 
         pipeline.register_donor(
             request_id=request_id,
@@ -326,7 +378,67 @@ class SemBlendTensorRTProvider(SemanticKvProvider):
         pipeline = self._pipeline
         if pipeline is not None:
             donor_count = max(donor_count, getattr(pipeline, "donor_count", donor_count))
-        return {**self._stats, "donor_store_size": donor_count}
+        return {**self._stats, **self._salt_watch.stats(), "donor_store_size": donor_count}
+
+    def _namespace_allows(self, donor_id: str, namespace: CacheNamespace) -> bool:
+        """Defense in depth over the pipeline's own extra_key filter.
+
+        Fails closed: a donor whose namespace cannot be resolved from either
+        the handle table or the pipeline store is rejected. The store already
+        filters on the namespace key, so a disagreement here is exactly the
+        donor that must never be served.
+        """
+        handle = self._donors.get(donor_id) if donor_id else None
+        if handle is not None:
+            allowed = handle.namespace == namespace
+        else:
+            # Donor dropped from the handle table but still in the store:
+            # compare against the key the store recorded at registration.
+            allowed = _pipeline_donor_namespace(self._pipeline, donor_id) == namespace_key(
+                namespace
+            )
+        if allowed:
+            return True
+        self._stats["cross_namespace_rejected"] += 1
+        logger.warning(
+            "namespace reject: donor=%s request_ns=%s",
+            donor_id,
+            namespace_key(namespace),
+        )
+        return False
+
+    def _cross_namespace_miss(
+        self,
+        request: SemanticKvLookupRequest,
+        result: Any,
+    ) -> SemanticKvLookupResult | None:
+        """Miss when any donor in `result` is outside the request namespace.
+
+        A plan can draw KV from several donors at once, so one foreign donor
+        poisons all of it: the whole result is dropped rather than trimmed
+        donor by donor, which would either leave the plan mixing two tenants
+        or silently shrink it to a subset the caller never asked for.
+
+        Returns None when every donor is in-namespace.
+        """
+        donor_ids = _result_donor_ids(result)
+        # Evaluated eagerly, not short-circuited: every foreign donor is
+        # counted so the rejection stat reflects the real blast radius.
+        foreign = [
+            donor_id
+            for donor_id in donor_ids
+            if not self._namespace_allows(donor_id, request.namespace)
+        ]
+        if not foreign:
+            return None
+        logger.warning(
+            "plan rejected on namespace: %d/%d foreign donors, request=%s",
+            len(foreign),
+            len(donor_ids),
+            request.request_id,
+        )
+        self._stats["misses"] += 1
+        return SemanticKvLookupResult(found=False, rejection_reason="cross_namespace")
 
     def _find_exact_prefix_donor(self, request: SemanticKvLookupRequest) -> Any | None:
         best_donor = None
@@ -527,6 +639,10 @@ class SemBlendTensorRTProvider(SemanticKvProvider):
         if handle is None or not handle.block_ids:
             return []
         if handle.namespace != namespace:
+            # Fail closed. The pipeline already filtered on the namespace
+            # key, so a handle that disagrees with the request here is
+            # exactly the donor that must never be served.
+            self._stats["cross_namespace_rejected"] += 1
             return []
 
         pairs = sorted(
@@ -1090,12 +1206,117 @@ def _rope_style() -> str:
     return "half"
 
 
+def _bind_lookup_request(request: SemanticKvLookupRequest) -> SemanticKvLookupRequest:
+    """Lookup request with its cache_salt bound into its namespace.
+
+    Every read of ``request.namespace`` downstream — the token fast paths,
+    the pipeline key, the plan's handle gate — then sees the salted
+    namespace, so isolation does not depend on each of them remembering to
+    consult the salt separately.
+    """
+    bound = bind_cache_salt(request.namespace, getattr(request, "cache_salt", None))
+    if bound is request.namespace:
+        return request
+    return replace(request, namespace=bound)
+
+
+def _copy_action_donor_id(action: Any) -> Any:
+    """Donor a slot action copies from, None when it copies no donor KV.
+
+    Slot actions arrive either as the pipeline's wire dicts or as the
+    multi-donor dataclass, so both shapes are read here.
+    """
+    if isinstance(action, dict):
+        if action.get("action") != "copy_from_donor":
+            return None
+        return action.get("donorId") or action.get("donor_id")
+    if getattr(action, "action", None) != "copy_from_donor":
+        return None
+    return getattr(action, "donor_id", None)
+
+
+def _result_donor_ids(result: Any) -> tuple[str, ...]:
+    """Every donor whose KV `result` would draw on, composite plan included.
+
+    A result names its donors in several places — the primary ``donor_id``,
+    the multi-donor ``donor_ids`` list, per-slot donor fields and a composite
+    plan's own donor set — and the isolation gate has to see all of them, not
+    just the primary one. Slots and chunks marked for recompute are skipped:
+    no donor KV moves for those, so they carry no foreign tokens.
+    """
+    donor_ids: list[str] = []
+
+    def add(value: Any) -> None:
+        donor_id = str(value or "").strip()
+        if donor_id and donor_id not in donor_ids:
+            donor_ids.append(donor_id)
+
+    add(getattr(result, "donor_id", None))
+    for donor_id in getattr(result, "donor_ids", ()) or ():
+        add(donor_id)
+    for action in getattr(result, "slot_actions", ()) or ():
+        add(_copy_action_donor_id(action))
+
+    composite = getattr(result, "composite_plan", None)
+    if composite is not None:
+        for donor_id in getattr(composite, "donor_ids", ()) or ():
+            add(donor_id)
+        for action in getattr(composite, "slot_actions", ()) or ():
+            add(_copy_action_donor_id(action))
+        for assignment in getattr(composite, "chunk_assignments", ()) or ():
+            match_type = getattr(assignment, "match_type", None)
+            match_value = str(getattr(match_type, "value", match_type) or "").lower()
+            if match_value == "recompute":
+                continue
+            add(getattr(assignment, "donor_id", None))
+
+    return tuple(donor_ids)
+
+
+def _pipeline_donor_namespace(pipeline: Any, donor_id: str) -> str | None:
+    """Namespace key a pipeline donor was registered under, None if unknown."""
+    if pipeline is None or not donor_id:
+        return None
+    try:
+        node = pipeline._donor_store.get_donor(donor_id)
+    except Exception:
+        return None
+    if node is None:
+        return None
+    return getattr(node, "extra_key", None)
+
+
+def _withheld_donor_count(pipeline: Any, extra_key: str) -> int:
+    """Donors in the pipeline store this namespace is not allowed to see.
+
+    semblend_core filters on extra_key before it proposes candidates, so a
+    cross-tenant donor never surfaces as a rejected candidate and the
+    operator-visible counter would read zero while isolation was in fact
+    doing its job. Called only on a miss, after a lookup that already paid
+    for an embedding.
+    """
+    if pipeline is None:
+        return 0
+    try:
+        entries = pipeline._donor_store._entries
+        return sum(1 for node in entries.values() if getattr(node, "extra_key", None) != extra_key)
+    except Exception:
+        return 0
+
+
 class SemBlendProvider(SemanticCacheLookupProvider):
     """SemBlend implementation of TRT-LLM's SemanticCacheLookupProvider.
 
     Provides semantic donor discovery for TRT-LLM's KV cache system.
     When the radix tree exact-prefix match fails, this provider searches
     for semantically similar cached prompts using MiniLM embeddings.
+
+    Every donor is bound to an isolation namespace derived from the
+    request's ``cache_salt`` and every lookup requires exact equality, so a
+    donor registered by one tenant is never served to another. The upstream
+    lookup contract carries no salt, so callers pass it as the
+    ``cache_salt`` keyword; requests without one share the no-cache-salt
+    namespace, which keeps single-tenant deployments reusing as before.
 
     Args:
         model_name: Model name for tokenizer and bathtub preset lookup.
@@ -1104,6 +1325,8 @@ class SemBlendProvider(SemanticCacheLookupProvider):
         max_donors: Maximum entries in the donor store.
         embedder_type: Embedder type ("minilm", "onnx-gpu", "jaccard").
         chunk_size: KV block size for alignment (default 128 for TRT-LLM).
+        namespace: Cache namespace donors are keyed under; built from
+            ``model_name`` and ``chunk_size`` when not supplied.
     """
 
     def __init__(
@@ -1114,6 +1337,7 @@ class SemBlendProvider(SemanticCacheLookupProvider):
         max_donors: int = 10_000,
         embedder_type: str = "minilm",
         chunk_size: int = 128,
+        namespace: CacheNamespace | None = None,
     ) -> None:
         self._model_name = model_name or os.environ.get("SEMBLEND_MODEL_NAME", "")
         self._min_similarity = min_similarity
@@ -1121,6 +1345,10 @@ class SemBlendProvider(SemanticCacheLookupProvider):
         self._max_donors = max_donors
         self._embedder_type = embedder_type
         self._chunk_size = chunk_size
+        self._namespace = namespace or build_cache_namespace(
+            model=self._model_name,
+            block_size=self._chunk_size,
+        )
 
         self._pipeline = None
         self._tokenizer = None
@@ -1133,7 +1361,19 @@ class SemBlendProvider(SemanticCacheLookupProvider):
             "registrations": 0,
             "evictions": 0,
             "avg_query_ms": 0.0,
+            # Donors withheld from a lookup because their cache_salt
+            # namespace differed from the requesting tenant's. Non-zero
+            # here is isolation doing its job, not an error.
+            "cross_namespace_rejected": 0,
         }
+        # Same signal as the connector provider: the upstream lookup contract
+        # carries no salt, so an out-of-repo caller that never passes one
+        # leaves this process with a single shared reuse namespace.
+        self._salt_watch = SaltIsolationWatch(
+            "SemBlendProvider (TensorRT-LLM SemanticCacheLookupProvider)",
+            "the cache_salt keyword on find_semantic_match() and register_completed()",
+            log=logger,
+        )
 
         logger.info(
             "SemBlendProvider initialized: model=%s, min_sim=%.2f, chunk_size=%d, max_donors=%d",
@@ -1147,6 +1387,8 @@ class SemBlendProvider(SemanticCacheLookupProvider):
         self,
         token_ids: list[int],
         prompt_text: str,
+        *,
+        cache_salt: Any = None,
     ) -> SemanticMatchResult | None:
         """Find a semantically similar cached prompt.
 
@@ -1156,6 +1398,8 @@ class SemBlendProvider(SemanticCacheLookupProvider):
         Args:
             token_ids: Token IDs of the incoming request.
             prompt_text: Decoded prompt text for embedding.
+            cache_salt: The request's isolation salt. Only donors registered
+                under the same salt are candidates.
 
         Returns:
             SemanticMatchResult on hit, None on miss.
@@ -1175,15 +1419,40 @@ class SemBlendProvider(SemanticCacheLookupProvider):
             self._stats["misses"] += 1
             return None
 
+        # Every donor lookup carries the namespace, and every donor was
+        # registered under the namespace of the request that produced it.
+        extra_key = self._request_namespace(cache_salt)
         result = pipeline.find_donor(
             token_ids=token_ids,
             prompt_text=prompt_text,
+            extra_key=extra_key,
         )
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         self._update_avg_ms(elapsed_ms)
 
         if not result.found:
+            self._stats["misses"] += 1
+            self._stats["cross_namespace_rejected"] += _withheld_donor_count(pipeline, extra_key)
+            return None
+
+        # A composite result assembles KV from several donors, so all of
+        # them are checked, not only the primary: one foreign donor drops
+        # the whole match instead of trimming it to the native donors.
+        # A found result that names no donor at all cannot be attributed to
+        # a namespace, so the empty id is checked and fails closed.
+        donor_ids = _result_donor_ids(result) or ("",)
+        # Evaluated eagerly, not short-circuited: every foreign donor is
+        # counted so the rejection stat reflects the real blast radius.
+        foreign = [
+            donor_id for donor_id in donor_ids if not self._namespace_allows(donor_id, extra_key)
+        ]
+        if foreign:
+            logger.warning(
+                "match rejected on namespace: %d/%d foreign donors",
+                len(foreign),
+                len(donor_ids),
+            )
             self._stats["misses"] += 1
             return None
 
@@ -1228,8 +1497,14 @@ class SemBlendProvider(SemanticCacheLookupProvider):
         request_id: str,
         token_ids: list[int],
         prompt_text: str,
+        *,
+        cache_salt: Any = None,
     ) -> None:
-        """Register a completed request as a potential donor."""
+        """Register a completed request as a potential donor.
+
+        ``cache_salt`` is the salt the completed request carried; the donor
+        is only reachable from lookups that carry the same one.
+        """
         pipeline = self._get_pipeline()
         if pipeline is None:
             return
@@ -1243,8 +1518,10 @@ class SemBlendProvider(SemanticCacheLookupProvider):
             request_id=request_id,
             token_ids=token_ids,
             prompt_text=prompt_text,
+            extra_key=self._request_namespace(cache_salt),
         )
         self._stats["registrations"] += 1
+        self._salt_watch.record(cache_salt_namespace(cache_salt) != NO_CACHE_SALT_NAMESPACE)
 
     def on_eviction(self, request_id: str) -> None:
         """Handle donor eviction (no-op for in-memory store)."""
@@ -1255,12 +1532,37 @@ class SemBlendProvider(SemanticCacheLookupProvider):
         donor_count = pipeline.donor_count if pipeline is not None else 0
         return {
             **self._stats,
+            **self._salt_watch.stats(),
             "donor_store_size": donor_count,
         }
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _request_namespace(self, cache_salt: Any) -> str:
+        """Isolation key for a request: the provider namespace plus its salt."""
+        return namespace_key(bind_cache_salt(self._namespace, cache_salt))
+
+    def _namespace_allows(self, donor_id: str, extra_key: str) -> bool:
+        """Defense in depth over the pipeline's own extra_key filter.
+
+        Fails closed: a donor whose namespace cannot be resolved is
+        rejected. The pipeline already filters on extra_key, so this only
+        fires when the store and the request disagree — which is exactly
+        the case that must never be served.
+        """
+        donor_ns = _pipeline_donor_namespace(self._pipeline, donor_id)
+        if donor_ns == extra_key:
+            return True
+        self._stats["cross_namespace_rejected"] += 1
+        logger.warning(
+            "namespace reject: donor=%s donor_ns=%s request_ns=%s",
+            donor_id,
+            donor_ns,
+            extra_key,
+        )
+        return False
 
     def _get_pipeline(self):
         if self._pipeline is not None:

@@ -134,14 +134,10 @@ def build_sparse_plan(
     for donor in donor_spans:
         if donor.target_start > pos:
             plan.append(
-                SparsePlanSpan(
-                    kind="novel", target_start=pos, target_end=donor.target_start
-                )
+                SparsePlanSpan(kind="novel", target_start=pos, target_end=donor.target_start)
             )
         plan.append(donor)
         pos = donor.target_end
     if pos < remaining_len:
-        plan.append(
-            SparsePlanSpan(kind="novel", target_start=pos, target_end=remaining_len)
-        )
+        plan.append(SparsePlanSpan(kind="novel", target_start=pos, target_end=remaining_len))
     return plan

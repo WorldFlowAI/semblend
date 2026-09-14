@@ -28,10 +28,24 @@ def test_exact_overlap_donor_is_proposed_outside_cosine_top_k():
     # Twenty decoys: embeddings very close to the query, tokens unrelated.
     for i in range(20):
         toks = [rng.randint(5, 30000) for _ in range(640)]
-        store.add_donor(DonorNode(request_id=f"decoy-{i}", token_ids=toks, embedding=_unit(i + 1, base, 0.01), timestamp=time.time()))
+        store.add_donor(
+            DonorNode(
+                request_id=f"decoy-{i}",
+                token_ids=toks,
+                embedding=_unit(i + 1, base, 0.01),
+                timestamp=time.time(),
+            )
+        )
     # The real donor: identical evidence block, embedding slightly further away.
     evidence = [rng.randint(5, 30000) for _ in range(640)]
-    store.add_donor(DonorNode(request_id="real", token_ids=list(range(100, 116)) + evidence, embedding=_unit(99, base, 0.03), timestamp=time.time()))
+    store.add_donor(
+        DonorNode(
+            request_id="real",
+            token_ids=list(range(100, 116)) + evidence,
+            embedding=_unit(99, base, 0.03),
+            timestamp=time.time(),
+        )
+    )
 
     query = list(range(200, 232)) + evidence  # wrapper differs by one whole chunk
     match = store.find_donor(query_embedding=base, query_tokens=query, top_k=5, min_reuse_ratio=0.5)
@@ -55,10 +69,26 @@ def test_best_alignment_wins_when_fast_estimate_ranks_a_near_duplicate_first(mon
     evidence = [rng.randint(5, 30000) for _ in range(640)]
     query = list(range(200, 232)) + evidence
     decoy = query[:256] + [rng.randint(5, 30000) for _ in range(len(query) - 256)]
-    store.add_donor(DonorNode(request_id="decoy", token_ids=decoy, embedding=_unit(1, base, 0.01), timestamp=time.time()))
-    store.add_donor(DonorNode(request_id="real", token_ids=list(range(100, 115)) + evidence, embedding=_unit(2, base, 0.01), timestamp=time.time()))
+    store.add_donor(
+        DonorNode(
+            request_id="decoy",
+            token_ids=decoy,
+            embedding=_unit(1, base, 0.01),
+            timestamp=time.time(),
+        )
+    )
+    store.add_donor(
+        DonorNode(
+            request_id="real",
+            token_ids=list(range(100, 115)) + evidence,
+            embedding=_unit(2, base, 0.01),
+            timestamp=time.time(),
+        )
+    )
 
-    monkeypatch.setattr(ds, "estimate_reuse_ratio", lambda d, t, chunk_size=16: 0.4 if d == decoy else 0.1)
+    monkeypatch.setattr(
+        ds, "estimate_reuse_ratio", lambda d, t, chunk_size=16: 0.4 if d == decoy else 0.1
+    )
     match = store.find_donor(query_embedding=base, query_tokens=query, top_k=5, min_reuse_ratio=0.0)
     assert match is not None
     assert match.donor.request_id == "real"

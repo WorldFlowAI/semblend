@@ -15,13 +15,31 @@ from __future__ import annotations
 import hashlib
 import json
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional, Sequence
 
 import numpy as np
 
 SEMANTIC_KV_EVENT_SUBJECT = "semantic-kv-events"
 SEMANTIC_KV_EVENT_SCHEMA_VERSION = 1
+
+# Where a donor's isolation key rides on the wire.
+#
+# The fleet consumer compares whole namespaces (model/tokenizer/kv_layout/
+# block_size/extra) to decide whether a donor may serve a request, so a key
+# that is not inside the namespace does not isolate anything: the catalog
+# sees every engine's donors as interchangeable and can place a tenant-B
+# request on a tenant-A donor. ``extra`` is the contract's open routing map
+# and is part of that compare, so the key goes there.
+ISOLATION_EXTRA_FIELD = "cache_salt"
+
+# Same sentinel and digest scheme as the vLLM connector, the SGLang radix
+# backend and the TRT-LLM namespace module, so one salt maps to one
+# namespace string on every engine and a donor stays isolated across the
+# fleet exactly as it is inside the engine that registered it.
+NO_ISOLATION_NAMESPACE = "semblend:ns:no-cache-salt"
+
+_ISOLATION_NAMESPACE_PREFIX = "semblend:ns:salt:"
 
 
 def encode_embedding(embedding: Sequence[float]) -> list[int]:
@@ -69,6 +87,48 @@ class CacheNamespace:
         if self.extra:
             d["extra"] = dict(self.extra)
         return d
+
+
+def isolation_namespace(extra_key: Any = None) -> str:
+    """Namespace string for a donor's isolation key.
+
+    An absent or blank key carries no isolation intent and maps to the
+    sentinel, so two unkeyed donors stay mutually reusable (single-tenant
+    deployments are unchanged) while a keyed donor can never land there.
+
+    A key already in the ``semblend:ns:`` form is passed through unchanged:
+    the engine connectors hash the raw salt before it reaches the pipeline,
+    and hashing it a second time would give the same tenant a different
+    namespace on the event plane than in the engine-local donor store.
+    Anything else is hashed, because a raw key is tenant-identifying and
+    this value reaches the wire and the consumer's logs.
+    """
+    if extra_key is None:
+        return NO_ISOLATION_NAMESPACE
+    key = extra_key if isinstance(extra_key, str) else str(extra_key)
+    key = key.strip()
+    if not key:
+        return NO_ISOLATION_NAMESPACE
+    if key.startswith("semblend:ns:"):
+        return key
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+    return _ISOLATION_NAMESPACE_PREFIX + digest
+
+
+def bind_isolation_key(namespace: CacheNamespace, extra_key: Any = None) -> CacheNamespace:
+    """Namespace with the donor's isolation key bound into ``extra``.
+
+    The field is always stamped — an absent key becomes the sentinel rather
+    than being omitted — so an unkeyed donor is explicitly unkeyed on the
+    wire instead of merely silent about it. A consumer therefore never has
+    to guess whether a namespace predates isolation, and absent-vs-keyed is
+    a plain inequality rather than a missing-field special case.
+    """
+    value = isolation_namespace(extra_key)
+    extra = dict(namespace.extra or {})
+    if extra.get(ISOLATION_EXTRA_FIELD) == value:
+        return namespace
+    return replace(namespace, extra={**extra, ISOLATION_EXTRA_FIELD: value})
 
 
 def worker_location(worker_id: int, dp_rank: int = 0, tier: str = "device") -> dict[str, Any]:
@@ -201,10 +261,21 @@ class SemBlendEventEmitter:
         )
 
     def donor_registered(
-        self, donor_id: str, token_ids: Sequence[int], prompt_text: str
+        self,
+        donor_id: str,
+        token_ids: Sequence[int],
+        prompt_text: str,
+        *,
+        extra_key: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """Build a DonorRegistered event with the donor's embedding, or None if
-        the embedder is unavailable (fail closed: no embedding, no event)."""
+        the embedder is unavailable (fail closed: no embedding, no event).
+
+        ``extra_key`` is the isolation key the donor's KV was registered under
+        engine-side. It is bound into the namespace the event carries so the
+        fleet catalog isolates this donor exactly as the local store does;
+        omitting it would publish the donor as tenant-less.
+        """
         raw = self._embedder.embed(prompt_text)
         if raw is None:
             return None
@@ -213,7 +284,7 @@ class SemBlendEventEmitter:
             event_id=self._next_id(),
             worker_id=self._worker_id,
             donor_id=donor_id,
-            namespace=self._namespace,
+            namespace=bind_isolation_key(self._namespace, extra_key),
             token_ids=token_ids,
             embedding=embedding,
             dp_rank=self._dp_rank,
@@ -236,6 +307,4 @@ class SemBlendEventEmitter:
 async def publish(nats_client: Any, event: dict[str, Any]) -> None:
     """Publish one contract event on the semantic-kv-events subject. nats-py is
     imported lazily by the caller; this just serializes and sends."""
-    await nats_client.publish(
-        SEMANTIC_KV_EVENT_SUBJECT, json.dumps(event).encode("utf-8")
-    )
+    await nats_client.publish(SEMANTIC_KV_EVENT_SUBJECT, json.dumps(event).encode("utf-8"))

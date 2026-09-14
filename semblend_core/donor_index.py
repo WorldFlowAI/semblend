@@ -64,9 +64,7 @@ class BruteForceIndex:
             return []
         sims = self._matrix @ _unit(query)
         if allowed is not None:
-            mask = np.fromiter(
-                (d in allowed for d in self._ids), dtype=bool, count=len(self._ids)
-            )
+            mask = np.fromiter((d in allowed for d in self._ids), dtype=bool, count=len(self._ids))
             if not mask.any():
                 return []
             idxs = np.where(mask)[0]
@@ -152,10 +150,7 @@ class DeltaGraphIndex:
             merged[donor_id] = max(score, merged.get(donor_id, -2.0))
         ranked = sorted(merged.items(), key=lambda kv: -kv[1])[:top_k]
         self._search_count += 1
-        if (
-            self._recall_sample_every
-            and self._search_count % self._recall_sample_every == 0
-        ):
+        if self._recall_sample_every and self._search_count % self._recall_sample_every == 0:
             self._audit_recall(query, top_k, allowed, ranked)
         return ranked
 
@@ -184,9 +179,7 @@ class DeltaGraphIndex:
         return self.recall_sum / self.recall_samples if self.recall_samples else None
 
     def size(self) -> int:
-        live_built = len(self._built_ids) - len(
-            self._tombstones & set(self._built_ids)
-        )
+        live_built = len(self._built_ids) - len(self._tombstones & set(self._built_ids))
         return live_built + self._delta.size()
 
     def clear(self) -> None:
@@ -212,9 +205,7 @@ class DeltaGraphIndex:
         )
         self._built_vec = keep
         self._graph_search = (
-            self._graph_factory(self._built_ids, self._built_matrix)
-            if self._built_ids
-            else None
+            self._graph_factory(self._built_ids, self._built_matrix) if self._built_ids else None
         )
         self._delta.clear()
         self._tombstones = set()

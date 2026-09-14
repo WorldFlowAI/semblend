@@ -35,6 +35,10 @@ from typing import Any, List, Optional
 import numpy as np
 
 from semblend.integration.sglang.config import SemBlendProviderConfig
+from semblend.integration.sglang.namespace import (
+    NO_EXTRA_KEY_NAMESPACE,
+    isolation_namespace,
+)
 from semblend.integration.sglang.sparse_plan import (
     build_sparse_plan,
     sparse_plan_enabled,
@@ -47,6 +51,10 @@ from semblend.integration.sglang.types import (
 from semblend_core.pipeline import ProbeContext
 
 logger = logging.getLogger(__name__)
+
+# Back-compat alias: this adapter used to import the helper under its old
+# private name, and released integrations still read it from here.
+_isolation_namespace = isolation_namespace
 
 
 @dataclass
@@ -68,7 +76,9 @@ class _DonorKVHandle:
     kv_indices: Any
     start_pos: int
     end_pos: int
-    extra_key: Optional[str] = None
+    # Isolation namespace of the request that produced this KV, derived from
+    # its extra_key. The raw key is tenant-identifying and never stored.
+    namespace: str = NO_EXTRA_KEY_NAMESPACE
     last_node_id: Optional[int] = None
     # Canonical matching: donor prompt text + engine token ids for
     # tokenization-invariant alignment; retained only when
@@ -161,9 +171,7 @@ class SemBlendProviderAdapter:
         self._generation = 0
 
         self._offsets_tok = (
-            _offsets_tokenizer(config.model_arch)
-            if _canonical_match_enabled()
-            else None
+            _offsets_tokenizer(config.model_arch) if _canonical_match_enabled() else None
         )
         self._stats = _Stats()
         logger.info(
@@ -194,9 +202,7 @@ class SemBlendProviderAdapter:
             # class before the adapter's canonical rescue can run; the
             # adapter enforces the same floor (with canonical coverage as an
             # alternative pass), so behavior is preserved for all matches.
-            min_reuse_ratio=(
-                0.0 if _canonical_match_enabled() else config.min_reuse_ratio
-            ),
+            min_reuse_ratio=(0.0 if _canonical_match_enabled() else config.min_reuse_ratio),
             # The consumable gate keeps the adapter's floor either way, so a
             # scattered page-level match reaches the pipeline's top-k
             # paraphrase probe instead of the adapter's single-candidate check.
@@ -234,7 +240,10 @@ class SemBlendProviderAdapter:
             cache_end_pos: Source-position end (exclusive).
             prompt_text: Optional pre-decoded prompt text. Required for
                 embedding; the SGLang wrapper supplies this via its tokenizer.
-            extra_key: Optional namespace tag (e.g., LoRA adapter ID).
+            extra_key: Optional isolation value (SGLang's own radix-tree
+                key, built from cache_salt / lora_id). Hashed into the
+                namespace the donor is bound to; a lookup must present the
+                same one.
             radix_tree: Reserved for the future NodeRef resolution path.
 
         Returns:
@@ -260,6 +269,13 @@ class SemBlendProviderAdapter:
             self._stats.register_rejected += 1
             return False
 
+        # SGLang's extra_key is the per-request isolation value its own radix
+        # tree is keyed on, so the donor inherits it. Hashed into a namespace
+        # here, before it can reach a handle, the pipeline donor store or a
+        # log line; an absent key maps to the sentinel, which is what stops
+        # "no key" from matching "some key".
+        namespace = isolation_namespace(extra_key)
+
         # Stash the KV handle synchronously so on_donor_inserted can find
         # it and so SGLang's scheduler sees a successful registration
         # immediately. The expensive embed + donor_store.add_donor are
@@ -271,7 +287,7 @@ class SemBlendProviderAdapter:
                 kv_indices=_snapshot_kv_indices(kv_cache),
                 start_pos=cache_start_pos,
                 end_pos=cache_end_pos,
-                extra_key=extra_key,
+                namespace=namespace,
                 prompt_text=(prompt_text if _canonical_match_enabled() else None),
                 token_ids=(list(token_ids) if _canonical_match_enabled() else None),
             )
@@ -283,7 +299,7 @@ class SemBlendProviderAdapter:
                     segment_tokens,
                     prompt_text or "",
                     generation,
-                    extra_key,
+                    namespace,
                 )
             except Exception:
                 self._donor_kv.pop(request_id, None)
@@ -309,7 +325,7 @@ class SemBlendProviderAdapter:
         segment_tokens: List[int],
         prompt_text: str,
         generation: int,
-        extra_key: Optional[str],
+        namespace: str,
     ) -> None:
         """Run the embed + donor-store insert off the scheduler thread.
 
@@ -341,13 +357,15 @@ class SemBlendProviderAdapter:
 
             from semblend_core.donor_store import DonorNode
 
+            # The core donor store treats extra_key=None as "visible to
+            # every lookup", so the namespace — never None — goes in that slot.
             node = DonorNode(
                 request_id=request_id,
                 token_ids=segment_tokens,
                 embedding=embedding,
                 timestamp=time.monotonic(),
                 prompt_text=prompt_text,
-                extra_key=extra_key,
+                extra_key=namespace,
             )
             t_store_start = time.monotonic()
             with self._register_lock:
@@ -489,6 +507,10 @@ class SemBlendProviderAdapter:
         """
         self._stats.match_calls += 1
 
+        # Derived the same way as at registration, so a request only reaches
+        # donors produced under its own extra_key.
+        namespace = isolation_namespace(extra_key)
+
         remaining = list(prompt_token_ids[already_matched_len:])
         if len(remaining) < self._config.min_match_length:
             logger.debug(
@@ -517,7 +539,7 @@ class SemBlendProviderAdapter:
                     token_ids=remaining,
                     prompt_text=prompt_text or "",
                     top_k=self._config.top_k,
-                    extra_key=extra_key,
+                    extra_key=namespace,
                     **({"probe": probe} if probe is not None else {}),
                 )
         except Exception as e:  # pragma: no cover
@@ -588,7 +610,7 @@ class SemBlendProviderAdapter:
                 para_handle = self._donor_kv.get(para_donor_id)
                 if para_handle is not None:
                     self._donor_kv.move_to_end(para_donor_id)
-            if para_handle is None or para_handle.extra_key != extra_key:
+            if not self._handle_allows(para_donor_id, para_handle, namespace):
                 self._stats.match_rejected_no_kv += 1
                 return None
             served = self._paraphrase_result(
@@ -617,7 +639,7 @@ class SemBlendProviderAdapter:
             and not getattr(result, "segments", None)
             and effective_reuse >= self._config.min_reuse_ratio
         ):
-            pre_donor_id, handle_pre = self._resolve_canon_handle(result)
+            pre_donor_id, handle_pre = self._resolve_canon_handle(result, namespace)
             if handle_pre is not None:
                 canonical_segments = self._canonical_augment_segments(
                     remaining=list(remaining),
@@ -631,7 +653,7 @@ class SemBlendProviderAdapter:
             # signature of the reformat class — canonical matching runs
             # BEFORE rejection (a canonical-covered window passes on its
             # own coverage).
-            canon_donor_id, handle_for_canon = self._resolve_canon_handle(result)
+            canon_donor_id, handle_for_canon = self._resolve_canon_handle(result, namespace)
             if handle_for_canon is not None:
                 canonical_segments = self._canonical_augment_segments(
                     remaining=list(remaining),
@@ -640,9 +662,7 @@ class SemBlendProviderAdapter:
                     handle=handle_for_canon,
                     donor_tokens=list(handle_for_canon.token_ids),
                 )
-            canon_cover = sum(s_.length for s_ in canonical_segments) / max(
-                len(remaining), 1
-            )
+            canon_cover = sum(s_.length for s_ in canonical_segments) / max(len(remaining), 1)
             if canon_cover < self._config.min_reuse_ratio:
                 # Verified paraphrase serve: high semantic similarity with
                 # low token/canonical coverage is the paraphrase signature.
@@ -670,9 +690,7 @@ class SemBlendProviderAdapter:
                         # Measured composition: OR, never AND — the appeal
                         # rescues zero fact-divergent spans while strict
                         # conjunction wrongly rejects most true paraphrases.
-                        accepted = self._nli_appeal(
-                            handle_for_canon.prompt_text, prompt_text
-                        )
+                        accepted = self._nli_appeal(handle_for_canon.prompt_text, prompt_text)
                     if accepted:
                         logger.info(
                             "[FUZZY] adapter.match: paraphrase serve "
@@ -701,8 +719,7 @@ class SemBlendProviderAdapter:
                 self._stats.match_rejected_low_reuse += 1
                 return None
             logger.info(
-                "[FUZZY] adapter.match: canonical cover=%.3f rescues "
-                "low token reuse=%.3f",
+                "[FUZZY] adapter.match: canonical cover=%.3f rescues low token reuse=%.3f",
                 canon_cover,
                 float(result.reuse_ratio),
             )
@@ -713,7 +730,7 @@ class SemBlendProviderAdapter:
             pipeline_result=result,
             already_matched_len=already_matched_len,
             remaining=remaining,
-            extra_key=extra_key,
+            namespace=namespace,
             prompt_text=prompt_text,
             canonical_segments=canonical_segments,
         )
@@ -806,12 +823,74 @@ class SemBlendProviderAdapter:
         # We deliberately don't reach into SGLang here.
         return None
 
+    def _handle_allows(
+        self,
+        donor_id: Optional[str],
+        handle: Optional["_DonorKVHandle"],
+        namespace: str,
+    ) -> bool:
+        """True when `handle` belongs to `namespace`; counts every rejection.
+
+        Fails closed on a missing handle: a donor the adapter cannot resolve
+        is never served. Both sides are hashed namespaces, so they are safe
+        to log.
+        """
+        if handle is None:
+            return False
+        # getattr, not attribute access: an object that is not a
+        # _DonorKVHandle carries no namespace, and "cannot tell" has to read
+        # as "foreign" rather than raise into the engine's match path.
+        handle_namespace = getattr(handle, "namespace", None)
+        if handle_namespace == namespace:
+            return True
+        self._stats.cross_namespace_rejected += 1
+        logger.info(
+            "[FUZZY] namespace reject: donor_id=%s donor_ns=%s request_ns=%s",
+            donor_id,
+            handle_namespace,
+            namespace,
+        )
+        return False
+
+    def _donor_allows(self, donor_id: str, namespace: str) -> bool:
+        """Namespace check for a donor the adapter may hold no handle for.
+
+        Composite results name donors the adapter has already evicted, so the
+        pipeline donor store is consulted as well. Fails closed: a donor
+        whose namespace cannot be resolved from either side is foreign.
+        Callers hold ``_register_lock``.
+        """
+        handle = self._donor_kv.get(donor_id)
+        if handle is not None:
+            return self._handle_allows(donor_id, handle, namespace)
+
+        donor_namespace = None
+        try:
+            store = getattr(self._pipeline, "_donor_store", None)  # noqa: SLF001
+            getter = getattr(store, "get_donor", None)
+            node = getter(donor_id) if callable(getter) else None
+            if node is not None:
+                donor_namespace = getattr(node, "extra_key", None)
+        except Exception:  # pragma: no cover — defensive
+            donor_namespace = None
+
+        if donor_namespace == namespace:
+            return True
+        self._stats.cross_namespace_rejected += 1
+        logger.info(
+            "[FUZZY] namespace reject: donor_id=%s donor_ns=%s request_ns=%s",
+            donor_id,
+            donor_namespace,
+            namespace,
+        )
+        return False
+
     def _convert_result(
         self,
         pipeline_result: Any,
         already_matched_len: int,
         remaining: List[int],
-        extra_key: Optional[str],
+        namespace: str,
         prompt_text: Optional[str] = None,
         canonical_segments: Optional[List[FuzzyMatchSegment]] = None,
     ) -> Optional[FuzzyMatchResult]:
@@ -836,13 +915,25 @@ class SemBlendProviderAdapter:
                     len(self._donor_kv),
                 )
                 return None
-            if handle.extra_key != extra_key:
+            if not self._handle_allows(donor_id, handle, namespace):
+                return None
+            # A composite result mixes KV from several donors, so every one
+            # of them has to belong to this namespace. Evaluated eagerly, not
+            # short-circuited, so the counter reflects the real blast radius;
+            # one foreign donor drops the whole plan rather than trimming it.
+            composite_ids = list(getattr(pipeline_result, "donor_ids", None) or [])
+            foreign = [
+                candidate
+                for candidate in composite_ids
+                if candidate != donor_id and not self._donor_allows(candidate, namespace)
+            ]
+            if foreign:
                 logger.info(
-                    "[FUZZY] _convert_result: rejecting donor_id=%s extra_key=%r "
-                    "for query extra_key=%r",
-                    donor_id,
-                    handle.extra_key,
-                    extra_key,
+                    "[FUZZY] _convert_result: composite dropped — %d/%d donors "
+                    "outside request_ns=%s",
+                    len(foreign),
+                    len(composite_ids),
+                    namespace,
                 )
                 return None
             # Mark the donor as recently used for LRU. Move to end of the
@@ -866,9 +957,7 @@ class SemBlendProviderAdapter:
         if canonical_segments:
             all_segments = list(canonical_segments)
         else:
-            aligned_mass = sum(
-                len(_as_list(s_.target_positions)) for s_ in all_segments
-            )
+            aligned_mass = sum(len(_as_list(s_.target_positions)) for s_ in all_segments)
             if aligned_mass < max(1, len(remaining) // 4):
                 all_segments.extend(
                     self._canonical_augment_segments(
@@ -973,18 +1062,10 @@ class SemBlendProviderAdapter:
                     sparse_plan = build_sparse_plan(
                         gated,
                         remaining_len=len(remaining),
-                        min_donor_span=int(
-                            os.environ.get("SEMBLEND_SPARSE_MIN_SPAN", "512")
-                        ),
-                        edge_shave=int(
-                            os.environ.get("SEMBLEND_SPARSE_EDGE_SHAVE", "0")
-                        ),
-                        gap_period=int(
-                            os.environ.get("SEMBLEND_SPARSE_GAP_PERIOD", "0")
-                        ),
-                        gap_size=int(
-                            os.environ.get("SEMBLEND_SPARSE_GAP_SIZE", "64")
-                        ),
+                        min_donor_span=int(os.environ.get("SEMBLEND_SPARSE_MIN_SPAN", "512")),
+                        edge_shave=int(os.environ.get("SEMBLEND_SPARSE_EDGE_SHAVE", "0")),
+                        gap_period=int(os.environ.get("SEMBLEND_SPARSE_GAP_PERIOD", "0")),
+                        gap_size=int(os.environ.get("SEMBLEND_SPARSE_GAP_SIZE", "64")),
                     )
                 if len(gated) == 1 and head_target_start == 0:
                     # Positions are tail-relative: start 0 == anchored at the
@@ -1122,32 +1203,41 @@ class SemBlendProviderAdapter:
             ),
         )
 
-    def _resolve_canon_handle(self, result):
-        """Resolve the donor handle for canonical alignment.
+    def _resolve_canon_handle(self, result, namespace: str):
+        """Resolve the donor handle for canonical alignment in `namespace`.
 
         Composite (multi-donor) results can carry a donor_id that is not a
         registry key; falling back to the composite's donor ids, then to
         the sole registered donor, keeps the rescue from silently
-        skipping. Returns (donor_id, handle_or_None); a usable handle
-        always carries token_ids.
+        skipping. Every fallback is namespace-gated — the sole-donor one
+        especially, since "there is only one donor" says nothing about whose
+        it is. Returns (donor_id, handle_or_None); a usable handle always
+        carries token_ids and belongs to `namespace`.
         """
         donor_id = getattr(result, "donor_id", None)
         handle = self._donor_kv.get(donor_id)
-        if handle is not None and handle.token_ids is not None:
+        if (
+            handle is not None
+            and handle.token_ids is not None
+            and self._handle_allows(donor_id, handle, namespace)
+        ):
             return donor_id, handle
         for cand in list(getattr(result, "donor_ids", None) or []):
             h = self._donor_kv.get(cand)
-            if h is not None and h.token_ids is not None:
+            if (
+                h is not None
+                and h.token_ids is not None
+                and self._handle_allows(cand, h, namespace)
+            ):
                 logger.info(
-                    "[FUZZY] canonical: donor_id=%s not registered; using "
-                    "composite donor %s",
+                    "[FUZZY] canonical: donor_id=%s not registered; using composite donor %s",
                     donor_id,
                     cand,
                 )
                 return cand, h
         if len(self._donor_kv) == 1:
             sole_id, h = next(iter(self._donor_kv.items()))
-            if h.token_ids is not None:
+            if h.token_ids is not None and self._handle_allows(sole_id, h, namespace):
                 logger.info(
                     "[FUZZY] canonical: donor_id=%s not registered; falling "
                     "back to sole registered donor %s",
@@ -1156,8 +1246,7 @@ class SemBlendProviderAdapter:
                 )
                 return sole_id, h
         logger.info(
-            "[FUZZY] canonical: donor_id=%s unresolvable (registered=%d); "
-            "rescue skipped",
+            "[FUZZY] canonical: donor_id=%s unresolvable (registered=%d); rescue skipped",
             donor_id,
             len(self._donor_kv),
         )
@@ -1225,8 +1314,7 @@ class SemBlendProviderAdapter:
             if not runs and t_enc["input_ids"]:
                 probe = min(32, len(t_enc["input_ids"]), len(d_enc["input_ids"]))
                 logger.info(
-                    "[FUZZY] canonical align: zero runs; head sample "
-                    "target=%s donor=%s",
+                    "[FUZZY] canonical align: zero runs; head sample target=%s donor=%s",
                     t_enc["input_ids"][:probe],
                     d_enc["input_ids"][:probe],
                 )
@@ -1261,8 +1349,7 @@ class SemBlendProviderAdapter:
             )
         if runs and not segments:
             logger.info(
-                "[FUZZY] canonical: %d aligned runs but none survived "
-                "(engine-id guard drops=%d)",
+                "[FUZZY] canonical: %d aligned runs but none survived (engine-id guard drops=%d)",
                 len(runs),
                 dropped_by_guard,
             )
@@ -1385,9 +1472,7 @@ class SemBlendProviderAdapter:
             donor_offset=segment.donor_offset,
             length=keep if segment.length is not None else None,
             donor_kv_indices=(
-                segment.donor_kv_indices[:keep]
-                if segment.donor_kv_indices is not None
-                else None
+                segment.donor_kv_indices[:keep] if segment.donor_kv_indices is not None else None
             ),
             donor_req_id=segment.donor_req_id,
             layer_recompute_mask=segment.layer_recompute_mask,
@@ -1412,15 +1497,11 @@ class SemBlendProviderAdapter:
             donor_positions=_as_list(segment.donor_positions)[head:end],
             donor_node_id=segment.donor_node_id,
             donor_offset=(
-                segment.donor_offset + head
-                if segment.donor_offset is not None
-                else None
+                segment.donor_offset + head if segment.donor_offset is not None else None
             ),
             length=(end - head) if segment.length is not None else None,
             donor_kv_indices=(
-                segment.donor_kv_indices[head:end]
-                if segment.donor_kv_indices is not None
-                else None
+                segment.donor_kv_indices[head:end] if segment.donor_kv_indices is not None else None
             ),
             donor_req_id=segment.donor_req_id,
             layer_recompute_mask=segment.layer_recompute_mask,
@@ -1444,9 +1525,7 @@ class SemBlendProviderAdapter:
         Returns None when the whole run is protected. NodeRef addressing is
         rebased (donor_offset/length) alongside the parallel position arrays
         so both consume paths stay coherent."""
-        keyed = _as_list(
-            segment.donor_positions if key == "donor" else segment.target_positions
-        )
+        keyed = _as_list(segment.donor_positions if key == "donor" else segment.target_positions)
         positions = _as_list(segment.target_positions)
         if not keyed or keyed[0] >= protect:
             return segment
@@ -1462,15 +1541,11 @@ class SemBlendProviderAdapter:
             donor_positions=_as_list(segment.donor_positions)[trim:],
             donor_node_id=segment.donor_node_id,
             donor_offset=(
-                segment.donor_offset + trim
-                if segment.donor_offset is not None
-                else None
+                segment.donor_offset + trim if segment.donor_offset is not None else None
             ),
             length=(len(positions) - trim) if segment.length is not None else None,
             donor_kv_indices=(
-                segment.donor_kv_indices[trim:]
-                if segment.donor_kv_indices is not None
-                else None
+                segment.donor_kv_indices[trim:] if segment.donor_kv_indices is not None else None
             ),
             donor_req_id=segment.donor_req_id,
             layer_recompute_mask=segment.layer_recompute_mask,
@@ -1517,9 +1592,7 @@ class SemBlendProviderAdapter:
                     continue
                 segment = trimmed
             if head_trim > 0 or edge_trim > 0:
-                trimmed = self._trim_run_edges(
-                    segment, max(edge_trim, head_trim), edge_trim
-                )
+                trimmed = self._trim_run_edges(segment, max(edge_trim, head_trim), edge_trim)
                 if trimmed is None:
                     self._stats.segments_dropped_edge_trim += 1
                     continue
@@ -1535,9 +1608,7 @@ class SemBlendProviderAdapter:
             kept.append(segment)
         return kept
 
-    def _merge_segments(
-        self, segments: List[FuzzyMatchSegment]
-    ) -> List[FuzzyMatchSegment]:
+    def _merge_segments(self, segments: List[FuzzyMatchSegment]) -> List[FuzzyMatchSegment]:
         """Concatenate gated runs into few large scatter segments.
 
         Position/index arrays are explicit, so merged segments need no
@@ -1561,12 +1632,8 @@ class SemBlendProviderAdapter:
                 first = bucket[0]
                 merged.append(
                     FuzzyMatchSegment(
-                        target_positions=[
-                            p for s in bucket for p in _as_list(s.target_positions)
-                        ],
-                        donor_positions=[
-                            p for s in bucket for p in _as_list(s.donor_positions)
-                        ],
+                        target_positions=[p for s in bucket for p in _as_list(s.target_positions)],
+                        donor_positions=[p for s in bucket for p in _as_list(s.donor_positions)],
                         donor_node_id=first.donor_node_id,
                         donor_offset=first.donor_offset,
                         length=bucket_size,
@@ -1584,14 +1651,10 @@ class SemBlendProviderAdapter:
 
         for segment in segments:
             seg_len = len(_as_list(segment.target_positions))
-            same_group = (
-                not bucket
-                or (
-                    segment.donor_req_id == bucket[0].donor_req_id
-                    and segment.donor_node_id == bucket[0].donor_node_id
-                    and (segment.donor_kv_indices is None)
-                    == (bucket[0].donor_kv_indices is None)
-                )
+            same_group = not bucket or (
+                segment.donor_req_id == bucket[0].donor_req_id
+                and segment.donor_node_id == bucket[0].donor_node_id
+                and (segment.donor_kv_indices is None) == (bucket[0].donor_kv_indices is None)
             )
             if bucket and (not same_group or bucket_size + seg_len > limit):
                 flush()
@@ -1690,6 +1753,10 @@ class _Stats:
     match_errors: int = 0
     match_rejected_low_reuse: int = 0
     match_rejected_no_kv: int = 0
+    # Donor candidates withheld from a match because their extra_key
+    # namespace differed from the requesting tenant's. Non-zero here is
+    # isolation doing its job, not an error.
+    cross_namespace_rejected: int = 0
     donor_kv_evicted: int = 0
     cache_resets: int = 0
     # Match was found by the alignment pipeline but its head segment did not
@@ -1717,6 +1784,7 @@ class _Stats:
             "match_errors": self.match_errors,
             "match_rejected_low_reuse": self.match_rejected_low_reuse,
             "match_rejected_no_kv": self.match_rejected_no_kv,
+            "cross_namespace_rejected": self.cross_namespace_rejected,
             "match_hits_dropped_no_prefix_run": self.match_hits_dropped_no_prefix_run,
             "donor_kv_evicted": self.donor_kv_evicted,
             "cache_resets": self.cache_resets,

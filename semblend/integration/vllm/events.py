@@ -17,12 +17,17 @@ be the embedding the engine stored for that donor (the same model the fleet
 router uses to embed the query). The pipeline reuses its computed donor
 embedding, so register-side and query-side vectors are comparable.
 
+Isolation rule: the ``extra_key`` passed to :meth:`donor_registered` MUST be
+the isolation key the donor's KV is stored under engine-side, so the fleet
+catalog isolates the donor exactly as the engine-local donor store does.
+
 Enabled only when ``SEMBLEND_NATS_URL`` is set; all publishing is fail-safe and
 never raises into the inference hot path.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -35,7 +40,14 @@ logger = logging.getLogger("semblend.vllm.events")
 def _worker_id_from_env(explicit: Optional[int]) -> int:
     """Derive a stable integer worker id: an explicit value, else
     ``SEMBLEND_WORKER_ID``, else a trailing ordinal in HOSTNAME (a StatefulSet
-    pod ``vllm-backend-2`` -> 2), else a stable hash of the hostname."""
+    pod ``vllm-backend-2`` -> 2), else a digest of the hostname.
+
+    The fallback digests the hostname instead of calling ``hash()``: CPython
+    salts string hashing per process, so ``hash()`` gives the same host a
+    different id in every process and after every restart. Consumers key
+    donors by worker id, so an unstable id splits one worker into many and
+    leaves stale entries no eviction can reach.
+    """
     if explicit is not None:
         return int(explicit)
     env = os.environ.get("SEMBLEND_WORKER_ID")
@@ -45,7 +57,8 @@ def _worker_id_from_env(explicit: Optional[int]) -> int:
     match = re.search(r"(\d+)$", host)
     if match:
         return int(match.group(1))
-    return abs(hash(host)) % 100000
+    digest = hashlib.blake2b(host.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % 100000
 
 
 class VllmContractEmitter:
@@ -166,12 +179,24 @@ class VllmContractEmitter:
         *,
         tenant: Optional[str] = None,
         template: Optional[str] = None,
+        extra_key: Optional[str] = None,
     ) -> None:
         """Emit DonorRegistered, reusing the donor's stored embedding. Per-donor
         ``tenant`` / ``template`` override the worker-level namespace extra so
-        the consumer can gate reuse to the right tenant/template."""
+        the consumer can gate reuse to the right tenant/template.
+
+        ``extra_key`` is the per-request isolation key (vLLM's ``cache_salt``)
+        the donor's KV was registered under in the engine-local store. It is
+        bound into the namespace the event carries, because tenant/template
+        are worker-level routing hints: without the request's own key every
+        donor a worker announces looks equally reusable to the fleet router,
+        which is how a tenant-B request lands on a tenant-A donor.
+        """
         try:
-            from semblend.integration.dynamo.semantic_events import donor_registered_event
+            from semblend.integration.dynamo.semantic_events import (
+                bind_isolation_key,
+                donor_registered_event,
+            )
 
             ns = self._namespace
             if tenant is not None or template is not None:
@@ -181,6 +206,7 @@ class VllmContractEmitter:
                 if template is not None:
                     extra["template"] = template
                 ns = replace(self._namespace, extra=extra or None)
+            ns = bind_isolation_key(ns, extra_key)
 
             emb = embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
             self._sink(

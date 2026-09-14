@@ -15,14 +15,43 @@ from __future__ import annotations
 import re
 
 _WORD_NUMS = {
-    "zero": 0, "two": 2, "three": 3, "four": 4, "five": 5,
-    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-    "eleven": 11, "twelve": 12, "twenty": 20, "thirty": 30, "forty": 40,
-    "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+    "zero": 0,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
 }
 _STOP_CAPS = {
-    "The", "A", "An", "In", "On", "At", "It", "This", "That",
-    "With", "Across", "During", "Put", "However", "Nevertheless",
+    "The",
+    "A",
+    "An",
+    "In",
+    "On",
+    "At",
+    "It",
+    "This",
+    "That",
+    "With",
+    "Across",
+    "During",
+    "Put",
+    "However",
+    "Nevertheless",
 }
 _MAGNITUDES = r"(?:million|billion|trillion|thousand|hundred|percent|%)"
 
@@ -54,14 +83,8 @@ def identifier_set(text: str) -> set:
     ("billing-eu", "us-east-1", "cart_sync") and upper-case codes with a
     digit ("INC-4471"). Two documents that share every number and differ
     only in such an identifier are different facts, not a rewording."""
-    compounds = {
-        m.group(0).lower()
-        for m in re.finditer(r"\b[a-z0-9]+(?:[-_][a-z0-9]+)+\b", text)
-    }
-    codes = {
-        m.group(0)
-        for m in re.finditer(r"\b[A-Z]{2,}[-_]?\d[\w-]*\b", text)
-    }
+    compounds = {m.group(0).lower() for m in re.finditer(r"\b[a-z0-9]+(?:[-_][a-z0-9]+)+\b", text)}
+    codes = {m.group(0) for m in re.finditer(r"\b[A-Z]{2,}[-_]?\d[\w-]*\b", text)}
     return compounds | codes
 
 

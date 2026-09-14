@@ -52,7 +52,11 @@ def test_tolerance_adopts_edited_chunk_on_diagonal():
     assert r is not None
     assert r.recompute_chunks < r0.recompute_chunks  # hole was adopted
     assert r.tolerated_mismatch_tokens == 1
-    assert r.mismatched_positions == ((307, 300),) or r.mismatched_positions == ((300 + 7, 300),) or len(r.mismatched_positions) == 1
+    assert (
+        r.mismatched_positions == ((307, 300),)
+        or r.mismatched_positions == ((300 + 7, 300),)
+        or len(r.mismatched_positions) == 1
+    )
 
 
 def test_tolerance_below_density_still_recomputes():

@@ -39,7 +39,7 @@ class _AliasFinder(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname != _OLD and not fullname.startswith(_OLD + "."):
             return None
-        real = _NEW + fullname[len(_OLD):]
+        real = _NEW + fullname[len(_OLD) :]
         return importlib.util.spec_from_loader(fullname, _AliasLoader(real))
 
 

@@ -109,9 +109,25 @@ class DonorStore:
             chunk_size=chunk_size,
         )
 
+        # Isolation bookkeeping. The lookup filter is fail-open on
+        # extra_key=None (see _allowed_ids_for_extra_key), so the store
+        # reports when a caller takes that escape hatch over donors that
+        # asked to be isolated, rather than letting it pass unseen.
+        self._namespaced_donors = 0
+        self._unnamespaced_lookups = 0
+        self._warned_unnamespaced_lookup = False
+
     @property
     def size(self) -> int:
         return len(self._entries)
+
+    @property
+    def unnamespaced_lookups(self) -> int:
+        """Lookups made with ``extra_key=None`` while namespaced donors were held.
+
+        Non-zero means some caller searched across every tenant in this store.
+        """
+        return self._unnamespaced_lookups
 
     @property
     def embedding_dim(self) -> int:
@@ -139,16 +155,46 @@ class DonorStore:
         self._vector_index.clear()
         self._chunk_index.clear()
         self._token_index.clear()
+        self._namespaced_donors = 0
 
     def _allowed_ids_for_extra_key(self, extra_key: str | None) -> set[str] | None:
-        """Donor ids visible to the supplied namespace (None = all)."""
+        """Donor ids visible to the supplied namespace.
+
+        ``extra_key=None`` returns None, meaning every donor: that is the
+        single-tenant contract, not an unset field to be inferred. Callers
+        that have an isolation namespace must pass it on lookup as well as
+        on registration — a donor keyed at registration is still returned to
+        an unkeyed lookup.
+        """
         if extra_key is None:
+            self._note_unnamespaced_lookup()
             return None
         return {
-            donor_id
-            for donor_id, donor in self._entries.items()
-            if donor.extra_key == extra_key
+            donor_id for donor_id, donor in self._entries.items() if donor.extra_key == extra_key
         }
+
+    def _note_unnamespaced_lookup(self) -> None:
+        """Record a lookup that searched every namespace in the store.
+
+        The filter stays fail-open on purpose — tightening it would break
+        every single-tenant deployment that never sets a key — so the honest
+        alternative is to say so out loud when the escape hatch is actually
+        crossing an isolation boundary. Warned once per store (this sits on
+        the per-request lookup path) and counted for the whole lifetime.
+        """
+        if self._namespaced_donors == 0:
+            return
+        self._unnamespaced_lookups += 1
+        if self._warned_unnamespaced_lookup:
+            return
+        self._warned_unnamespaced_lookup = True
+        logger.warning(
+            "unnamespaced lookup over a store holding namespaced donors: "
+            "extra_key=None matches every donor, including %d registered "
+            "under an isolation key. Pass the caller's namespace on lookup; "
+            "None is the single-tenant contract.",
+            self._namespaced_donors,
+        )
 
     def add_donor(self, node: DonorNode) -> None:
         """Add a donor to the store with O(1) append + O(chunks) indexing.
@@ -163,7 +209,9 @@ class DonorStore:
 
         # Evict LRU if at capacity
         while len(self._entries) >= self._max_entries:
-            evicted_id, _ = self._entries.popitem(last=False)
+            evicted_id, evicted = self._entries.popitem(last=False)
+            if evicted.extra_key is not None:
+                self._namespaced_donors -= 1
             self._vector_index.remove(evicted_id)
             self._chunk_index.remove_donor(evicted_id)
             self._token_index.remove_donor(evicted_id)
@@ -173,10 +221,10 @@ class DonorStore:
         else:
             # zero vector: never clears the similarity threshold, matching
             # the previous zero-row behavior for embedding-less donors
-            self._vector_index.add(
-                node.request_id, np.zeros(self._embedding_dim, dtype=np.float32)
-            )
+            self._vector_index.add(node.request_id, np.zeros(self._embedding_dim, dtype=np.float32))
         self._entries[node.request_id] = node
+        if node.extra_key is not None:
+            self._namespaced_donors += 1
 
         # Index chunks in ChunkIndex (exact hash) and TokenIndex (fuzzy)
         if node.token_ids:
@@ -208,8 +256,11 @@ class DonorStore:
         for locs in chunk_index.find_matching_chunks(query_tokens, min_matches=1).values():
             for loc in locs:
                 counts[loc.donor_id] = counts.get(loc.donor_id, 0) + 1
-        ranked = [d for d, n in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
-                  if n >= self._CHUNK_OVERLAP_MIN_CHUNKS]
+        ranked = [
+            d
+            for d, n in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+            if n >= self._CHUNK_OVERLAP_MIN_CHUNKS
+        ]
         proposed = {donor_id for donor_id, _ in proposals}
         extra: list[tuple[str, float]] = []
         for donor_id in ranked:
@@ -270,14 +321,10 @@ class DonorStore:
         query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-8)
         proposals = [
             (donor_id, sim)
-            for donor_id, sim in self._vector_index.search(
-                query_norm, top_k=top_k, allowed=allowed
-            )
+            for donor_id, sim in self._vector_index.search(query_norm, top_k=top_k, allowed=allowed)
             if sim >= self._min_similarity
         ]
-        proposals = self._add_chunk_overlap_proposals(
-            proposals, query_norm, query_tokens, allowed
-        )
+        proposals = self._add_chunk_overlap_proposals(proposals, query_norm, query_tokens, allowed)
         if not proposals:
             logger.debug(
                 "DonorStore: no candidates above threshold %.2f",
@@ -455,9 +502,17 @@ class DonorStore:
         """Find donor candidates using Jaccard token-set similarity.
 
         No embedding is needed -- operates purely on token IDs.
+
+        ``extra_key=None`` scans every donor in the store. That is the
+        single-tenant contract: it is "this deployment has no isolation
+        key", not "the caller did not have one handy". A caller that keys
+        its donors must pass the same key here.
         """
         if not self._entries or not query_tokens:
             return []
+
+        if extra_key is None:
+            self._note_unnamespaced_lookup()
 
         query_set = set(query_tokens)
         scored: list[tuple[float, DonorNode]] = []
@@ -523,6 +578,10 @@ class DonorStore:
 
         Used by multi_donor_alignment to build the donor_token_store.
         Returns defensive copies to prevent mutation of internal state.
+
+        ``extra_key=None`` returns every donor — the single-tenant contract.
+        Lookup entry points count that case; this helper does not, so a
+        keyed caller is never double-counted.
         """
         return {
             did: list(node.token_ids)
@@ -555,6 +614,9 @@ class DonorStore:
             pq_store: Optional PQSegmentStore for semantic chunk matching.
             target_text: Decoded prompt text for per-chunk embedding.
             embedder: Embedder instance for per-chunk embedding.
+            extra_key: Isolation namespace. Only donors registered under it
+                may contribute to the composite. None means the caller
+                applied no isolation key.
 
         Returns:
             MultiDonorAlignmentResult or None.
@@ -564,6 +626,10 @@ class DonorStore:
             compute_multi_donor_alignment,
         )
 
+        # The chunk, token and PQ indexes underneath the alignment span
+        # every donor in the store, so the allowed set is threaded down
+        # explicitly rather than left implicit in the filtered token store.
+        allowed = self._allowed_ids_for_extra_key(extra_key)
         donor_token_store = self.get_all_donor_tokens(extra_key=extra_key)
         if not donor_token_store:
             return None
@@ -575,6 +641,7 @@ class DonorStore:
                 target_tokens=query_tokens,
                 chunk_index=self._chunk_index,
                 donor_token_store=donor_token_store,
+                allowed_donor_ids=allowed,
             )
             if cdc_result is not None and cdc_result.reuse_ratio >= min_reuse_ratio:
                 return cdc_result
@@ -591,6 +658,7 @@ class DonorStore:
             target_text=target_text,
             embedder=embedder,
             token_index=self._token_index,
+            allowed_donor_ids=allowed,
         )
 
         if result is not None and result.reuse_ratio < min_reuse_ratio:

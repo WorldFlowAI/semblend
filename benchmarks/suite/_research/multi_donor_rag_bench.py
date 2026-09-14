@@ -163,6 +163,11 @@ def run_benchmark(
 
     query_results: list[QueryResult] = []
 
+    # Every register_donor / find_donor call below omits extra_key, which is
+    # the single-tenant contract: all donors share one namespace and any
+    # query may reuse any of them. That is what this benchmark measures --
+    # a per-tenant run would pass each tenant's extra_key on both calls.
+
     # --- Single-donor baseline ---
     logger.info("Phase 1: Single-donor baseline (SEMBLEND_MULTI_DONOR=0)")
     os.environ["SEMBLEND_MULTI_DONOR"] = "0"

@@ -27,7 +27,7 @@ jobs:
           path: ~/.cache/pip
           key: lint-${{ hashFiles('pyproject.toml') }}
 
-      - run: pip install ruff
+      - run: pip install ruff==0.16.0
 
       - name: ruff check
         run: ruff check semblend/ semblend_core/ synapse_kv_connector/
@@ -66,6 +66,15 @@ jobs:
             --ignore=tests/integration \
             -v --tb=short \
             --junit-xml=test-results-${{ matrix.python-version }}.xml
+
+      # The engine integrations' isolation tests live here and run without
+      # a GPU or an engine installed; skipping them silently dropped the
+      # tenant-isolation regression suite from CI.
+      - name: Run integration tests
+        run: |
+          pytest tests/integration \
+            -v --tb=short \
+            --junit-xml=test-results-integration-${{ matrix.python-version }}.xml
 
       - name: Upload test results
         if: always()

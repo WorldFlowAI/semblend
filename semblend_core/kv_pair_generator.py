@@ -53,9 +53,7 @@ def extract_divergence_records(
     try:
         index = ChunkIndex()
         index.add_donor_chunks(donor_id, donor_tokens)
-        result = compute_cdc_alignment(
-            target_tokens, index, {donor_id: donor_tokens}
-        )
+        result = compute_cdc_alignment(target_tokens, index, {donor_id: donor_tokens})
     finally:
         if prev is None:
             os.environ.pop("SEMBLEND_CDC_CHUNKS", None)
@@ -65,9 +63,7 @@ def extract_divergence_records(
         return []
 
     pmap = result.composite_plan.position_map
-    runs = _matched_runs(
-        list(pmap.donor_positions), list(pmap.target_positions)
-    )
+    runs = _matched_runs(list(pmap.donor_positions), list(pmap.target_positions))
     records: List[dict] = []
     for idx in range(len(runs) - 1):
         d0, t0, len0 = runs[idx]

@@ -84,10 +84,14 @@ def test_semantic_pipeline():
         "Major providers include AWS, Azure, and Google Cloud Platform."
     )
     donor_tokens = list(range(500))  # Mock token IDs
+    # Every donor is registered under a tenant namespace; the lookup below
+    # passes the same key. Omitting it makes the donor visible to everyone.
+    tenant = "example-tenant"
     pipeline.register_donor(
         request_id="donor-001",
         token_ids=donor_tokens,
         prompt_text=donor_text,
+        extra_key=tenant,
     )
     print(f"  Registered donor: {pipeline.donor_count} donors in store")
 
@@ -102,6 +106,7 @@ def test_semantic_pipeline():
     result = pipeline.find_donor(
         token_ids=query_tokens,
         prompt_text=query_text,
+        extra_key=tenant,
     )
 
     print(f"  Pipeline result: found={result.found}")

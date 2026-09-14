@@ -65,6 +65,8 @@ class SemBlendBackend(ABC):
         request_id: str,
         token_ids: list[int],
         kv_metadata: dict,
+        *,
+        cache_salt: Any = None,
     ) -> None:
         """Capture a completed request's KV tensors as donor for future reuse.
 
@@ -72,10 +74,21 @@ class SemBlendBackend(ABC):
         extract KV tensors from the engine's cache and register them
         with the donor store.
 
+        Isolation contract: ``cache_salt`` is the boundary a donor is filed
+        under, and a lookup reaches it only by presenting the same salt. It
+        is keyword-only so a caller has to name it deliberately. Passing None
+        is the single-tenant contract: every donor registered without a salt
+        shares one namespace and any unsalted lookup can reuse any of them.
+        A backend serving more than one tenant must therefore thread the
+        request's salt through here — omitting it does not fail, it merges
+        every tenant into that shared pool.
+
         Args:
             request_id: Unique request identifier.
             token_ids: Token IDs of the completed request.
             kv_metadata: Engine-specific metadata (block table, cache pointers, etc.).
+            cache_salt: Isolation salt of the completed request, or None for
+                the single-tenant contract described above.
         """
 
     @abstractmethod

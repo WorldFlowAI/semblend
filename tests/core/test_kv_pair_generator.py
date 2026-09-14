@@ -23,9 +23,7 @@ def _seqs(sub_at, donor_tok, target_tok, n=400, shift=7):
 class TestExtractDivergenceRecords:
     def test_finds_single_substitution_with_offset(self):
         donor, target = _seqs(sub_at=200, donor_tok=5, target_tok=9)
-        recs = extract_divergence_records(
-            donor_tokens=donor, target_tokens=target, donor_id="d1"
-        )
+        recs = extract_divergence_records(donor_tokens=donor, target_tokens=target, donor_id="d1")
         subs = [r for r in recs if r["kind"] == "substitution"]
         assert len(subs) == 1
         r = subs[0]
@@ -40,9 +38,7 @@ class TestExtractDivergenceRecords:
         for k, (dt, tt) in enumerate([(5, 9), (6, 10), (7, 11)]):
             donor[157 + k] = dt
             target[150 + k] = tt
-        recs = extract_divergence_records(
-            donor_tokens=donor, target_tokens=target, donor_id="d1"
-        )
+        recs = extract_divergence_records(donor_tokens=donor, target_tokens=target, donor_id="d1")
         subs = [r for r in recs if r["kind"] == "substitution"]
         assert len(subs) == 3
         assert [r["target_pos"] for r in subs] == [150, 151, 152]
@@ -50,9 +46,7 @@ class TestExtractDivergenceRecords:
     def test_unequal_gap_excluded(self):
         donor, target = _seqs(sub_at=200, donor_tok=5, target_tok=9)
         target.insert(350, 4242)  # insertion -> unequal gap downstream
-        recs = extract_divergence_records(
-            donor_tokens=donor, target_tokens=target, donor_id="d1"
-        )
+        recs = extract_divergence_records(donor_tokens=donor, target_tokens=target, donor_id="d1")
         subs = [r for r in recs if r["kind"] == "substitution"]
         gaps = [r for r in recs if r["kind"] == "excluded_gap"]
         # the interior substitution survives; the insertion region is

@@ -199,8 +199,11 @@ class SemBlendPipeline:
         # skipped and the embedding path decides.
         env_cap = os.environ.get("SEMBLEND_CHUNK_FAST_PATH_MAX_TOKENS")
         self._chunk_fast_path_max_tokens = (
-            chunk_fast_path_max_tokens if chunk_fast_path_max_tokens is not None
-            else int(env_cap) if env_cap else 2048
+            chunk_fast_path_max_tokens
+            if chunk_fast_path_max_tokens is not None
+            else int(env_cap)
+            if env_cap
+            else 2048
         )
         self._model_name = model_name
         self._backend = backend
@@ -426,6 +429,12 @@ class SemBlendPipeline:
                     token_ids,
                     min_matches=1,
                 )
+                # The chunk index spans every donor the process registered,
+                # so the raw count lets donors outside this request's
+                # namespace decide whether we skip the embedding. Scope it
+                # first: the gate then measures only reuse this request is
+                # actually allowed to have.
+                chunk_matches = self._visible_chunk_matches(chunk_matches, extra_key)
                 from semblend_core.chunk_index import cdc_enabled
 
                 if len(chunk_matches) >= self._fast_path_min_hits or cdc_enabled():
@@ -443,7 +452,15 @@ class SemBlendPipeline:
                     )
                     if fast_result is not None:
                         return self._gate_consumable(
-                            fast_result, token_ids, prompt_text, None, top_k, extra_key, timings, t_start, probe=probe
+                            fast_result,
+                            token_ids,
+                            prompt_text,
+                            None,
+                            top_k,
+                            extra_key,
+                            timings,
+                            t_start,
+                            probe=probe,
                         )
                     # Attempted fast path but fell through to full pipeline
 
@@ -474,7 +491,15 @@ class SemBlendPipeline:
                 )
                 if multi_result is not None:
                     return self._gate_consumable(
-                        multi_result, token_ids, prompt_text, query_embedding, top_k, extra_key, timings, t_start, probe=probe
+                        multi_result,
+                        token_ids,
+                        prompt_text,
+                        query_embedding,
+                        top_k,
+                        extra_key,
+                        timings,
+                        t_start,
+                        probe=probe,
                     )
             except Exception as e:
                 logger.warning("multi-donor path failed: %s", e, exc_info=True)
@@ -508,7 +533,15 @@ class SemBlendPipeline:
                 )
                 if fuzzy_result is not None:
                     return self._gate_consumable(
-                        fuzzy_result, token_ids, prompt_text, query_embedding, top_k, extra_key, timings, t_start, probe=probe
+                        fuzzy_result,
+                        token_ids,
+                        prompt_text,
+                        query_embedding,
+                        top_k,
+                        extra_key,
+                        timings,
+                        t_start,
+                        probe=probe,
                     )
 
             # Stage 2.75: Verified paraphrase serve — every candidate was
@@ -659,7 +692,15 @@ class SemBlendPipeline:
             confidence_tier=confidence_tier,
         )
         return self._gate_consumable(
-            result, token_ids, prompt_text, query_embedding, top_k, extra_key, timings, t_start, probe=probe
+            result,
+            token_ids,
+            prompt_text,
+            query_embedding,
+            top_k,
+            extra_key,
+            timings,
+            t_start,
+            probe=probe,
         )
 
     def _gate_consumable(
@@ -1014,11 +1055,7 @@ class SemBlendPipeline:
             self._pq_store.add_segments(request_id, segment_embeddings.matrix)
         if os.environ.get("SEMBLEND_REGISTER_TIMING"):
             t_end = time.monotonic()
-            n_seg = (
-                int(segment_embeddings.matrix.shape[0])
-                if segment_embeddings is not None
-                else 0
-            )
+            n_seg = int(segment_embeddings.matrix.shape[0]) if segment_embeddings is not None else 0
             logger.info(
                 "[FUZZY] register timing: order=%.0fms embed=%.0fms "
                 "store=%.0fms total=%.0fms segments=%d tokens=%d",
@@ -1032,6 +1069,11 @@ class SemBlendPipeline:
 
         # Emit the DonorRegistered contract event, reusing the donor embedding
         # the store just indexed (identical-embedder with the fleet router).
+        #
+        # extra_key rides along: the same key that isolates this donor in the
+        # local store must isolate it in the fleet catalog, or a router that
+        # only ever sees the worker-level namespace will place another
+        # tenant's request on this donor.
         if self._event_emitter is not None and embedding is not None:
             self._event_emitter.donor_registered(
                 request_id,
@@ -1039,6 +1081,7 @@ class SemBlendPipeline:
                 embedding,
                 tenant=tenant,
                 template=template,
+                extra_key=extra_key,
             )
 
     # ------------------------------------------------------------------
@@ -1323,6 +1366,34 @@ class SemBlendPipeline:
     # ------------------------------------------------------------------
     # Multi-turn fast path + multi-donor
     # ------------------------------------------------------------------
+
+    def _visible_chunk_matches(
+        self,
+        chunk_matches: dict[int, list],
+        extra_key: str | None,
+    ) -> dict[int, list]:
+        """Chunk matches contributed by donors visible under ``extra_key``.
+
+        O(matched locations), not O(donors): the matches are already a small
+        per-query slice, so scoping the stage-0 gate costs nothing next to
+        the embedding it decides to skip. ``extra_key=None`` is the
+        single-tenant contract and filters nothing.
+        """
+        if extra_key is None or not chunk_matches:
+            return chunk_matches
+        get_donor = getattr(self._donor_store, "get_donor", None)
+        if get_donor is None:
+            return chunk_matches
+        visible: dict[int, list] = {}
+        for chunk_idx, locations in chunk_matches.items():
+            kept = [
+                loc
+                for loc in locations
+                if getattr(get_donor(loc.donor_id), "extra_key", None) == extra_key
+            ]
+            if kept:
+                visible[chunk_idx] = kept
+        return visible
 
     def _try_chunk_fast_path(
         self,

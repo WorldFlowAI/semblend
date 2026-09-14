@@ -46,7 +46,9 @@ def test_coverage_of_identity_span_is_full():
 
 
 def test_coverage_breaks_runs_on_either_side():
-    pmap = PositionMapping(donor_positions=list(range(20)), target_positions=list(range(10)) + list(range(50, 60)))
+    pmap = PositionMapping(
+        donor_positions=list(range(20)), target_positions=list(range(10)) + list(range(50, 60))
+    )
     assert contiguous_coverage(pmap, prompt_tokens=100, min_run=8) == 20 / 100
 
 
@@ -79,7 +81,9 @@ def _scattered_match(donor_tokens):
 def _pipeline(monkeypatch):
     monkeypatch.setenv("SEMBLEND_CHUNK_FAST_PATH", "0")
     store = DonorStore(max_entries=8, embedding_dim=DIM, min_similarity=0.6, chunk_size=1)
-    p = SemBlendPipeline(embedder_type="jaccard", donor_store=store, chunk_size=1, enable_pq_segments=False)
+    p = SemBlendPipeline(
+        embedder_type="jaccard", donor_store=store, chunk_size=1, enable_pq_segments=False
+    )
     p._embedder = _StubEmbedder()  # noqa: SLF001
     return p
 

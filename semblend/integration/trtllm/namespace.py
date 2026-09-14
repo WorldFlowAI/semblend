@@ -5,9 +5,69 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import replace
 from typing import Any, Mapping
 
 from semblend.integration.trtllm.upstream_interface import CacheNamespace
+
+# Isolation namespace for requests that carry no cache_salt.
+#
+# Every namespace key carries a non-empty salt namespace so the isolation
+# check is a plain equality compare with no "absent means every donor is
+# visible" escape hatch. Two requests that both lack a cache_salt share this
+# sentinel and MAY reuse each other's KV — single-tenant deployments keep
+# working unchanged. A request that carries a cache_salt never maps to the
+# sentinel, so a salted request can never consume an unsalted donor, and an
+# unsalted request can never consume a salted one. Same scheme as the vLLM
+# connector, so a salt isolates the same way on every engine.
+NO_CACHE_SALT_NAMESPACE = "semblend:ns:no-cache-salt"
+
+_CACHE_SALT_NAMESPACE_PREFIX = "semblend:ns:salt:"
+
+# Where the hashed salt lives on a CacheNamespace. ``extra`` is the only
+# extension point on the upstream TensorRT-LLM type, and it already carries
+# the routing-policy fields (tenant, template) that namespace_key hashes, so
+# the salt rides through to_dict() on donor events and plans the same way.
+CACHE_SALT_EXTRA_FIELD = "cache_salt"
+
+
+def cache_salt_namespace(cache_salt: Any) -> str:
+    """Isolation namespace for a request's ``cache_salt``.
+
+    The salt is hashed rather than stored verbatim: it is tenant-identifying
+    and the namespace reaches donor records, wire events and logs.
+    """
+    if cache_salt is None:
+        return NO_CACHE_SALT_NAMESPACE
+    salt = cache_salt if isinstance(cache_salt, str) else str(cache_salt)
+    salt = salt.strip()
+    if not salt:
+        # An empty salt carries no isolation intent — treat it as absent so
+        # it lands in the sentinel namespace rather than in one of its own.
+        return NO_CACHE_SALT_NAMESPACE
+    digest = hashlib.sha256(salt.encode("utf-8")).hexdigest()[:32]
+    return _CACHE_SALT_NAMESPACE_PREFIX + digest
+
+
+def bind_cache_salt(namespace: CacheNamespace, cache_salt: Any = None) -> CacheNamespace:
+    """Namespace with the request's hashed ``cache_salt`` bound into ``extra``.
+
+    Both providers bind at registration and at lookup, so a donor is only
+    reachable from requests carrying the same salt.
+
+    An absent salt leaves the namespace untouched rather than stamping the
+    sentinel: namespace_key defaults the missing field to the sentinel, the
+    wire shape of an unsalted deployment does not change, and a binding a
+    caller already made on this namespace is never erased by a later hop
+    that no longer has the raw salt.
+    """
+    salt_namespace = cache_salt_namespace(cache_salt)
+    if salt_namespace == NO_CACHE_SALT_NAMESPACE:
+        return namespace
+    extra = dict(namespace.extra)
+    if extra.get(CACHE_SALT_EXTRA_FIELD) == salt_namespace:
+        return namespace
+    return replace(namespace, extra={**extra, CACHE_SALT_EXTRA_FIELD: salt_namespace})
 
 
 def build_cache_namespace(
@@ -119,8 +179,24 @@ def build_cache_namespace(
 
 
 def namespace_key(namespace: CacheNamespace) -> str:
-    payload = json.dumps(namespace.to_dict(), sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    """Donor-store isolation key for a namespace.
+
+    The cache_salt field is always part of the hashed payload, defaulting to
+    the no-cache-salt sentinel when the namespace was never bound. That is
+    what makes absent-vs-salted a guaranteed mismatch: a salted namespace
+    carries a hashed salt in the same slot the sentinel occupies.
+
+    This deliberately changes the key of every namespace that predates the
+    field, so donors keyed before the salt was part of the namespace — whose
+    tenancy is unknown — are unreachable after upgrade instead of being
+    served to whichever tenant asks first.
+    """
+    payload = namespace.to_dict()
+    extra = dict(payload.get("extra") or {})
+    extra.setdefault(CACHE_SALT_EXTRA_FIELD, NO_CACHE_SALT_NAMESPACE)
+    keyed = {**payload, "extra": extra}
+    encoded = json.dumps(keyed, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _first_present(*values: Any) -> Any:

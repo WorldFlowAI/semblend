@@ -52,8 +52,7 @@ class TestResyncedTokenRuns:
     def test_reformatted_content_recovers_word_tokens(self):
         donor = "HEADER\n" + " ".join(f"word{i}" for i in range(50))
         target = "T[9] session\n" + "\n".join(
-            " ".join(f"word{i}" for i in range(k, min(k + 10, 50)))
-            for k in range(0, 50, 10)
+            " ".join(f"word{i}" for i in range(k, min(k + 10, 50))) for k in range(0, 50, 10)
         )
         tok = _WordTokenizer()
         runs = resynced_token_runs(
@@ -78,12 +77,8 @@ class TestResyncedTokenRuns:
         runs = resynced_token_runs(
             donor_text=" ".join(f"alpha{i}" for i in range(40)),
             target_text=" ".join(f"beta{i}" for i in range(40)),
-            donor_ids_offsets=tok.encode_with_offsets(
-                " ".join(f"alpha{i}" for i in range(40))
-            ),
-            target_ids_offsets=tok.encode_with_offsets(
-                " ".join(f"beta{i}" for i in range(40))
-            ),
+            donor_ids_offsets=tok.encode_with_offsets(" ".join(f"alpha{i}" for i in range(40))),
+            target_ids_offsets=tok.encode_with_offsets(" ".join(f"beta{i}" for i in range(40))),
             min_run_tokens=4,
         )
         assert runs == []
@@ -94,9 +89,7 @@ class TestResyncedTokenRuns:
         edited = list(base)
         edited[30] = "EDITED"
         # rewrap every 10 words (realistic reformat) + one content edit
-        target = "\n".join(
-            " ".join(edited[k : k + 10]) for k in range(0, 60, 10)
-        )
+        target = "\n".join(" ".join(edited[k : k + 10]) for k in range(0, 60, 10))
         tok = _WordTokenizer()
         runs = resynced_token_runs(
             donor_text=donor,

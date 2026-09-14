@@ -106,9 +106,7 @@ def test_env_var_parity(monkeypatch):
 
 
 def test_short_segments_dropped():
-    adapter, pipeline = _make(
-        {"multi_segment_emission": True, "segment_min_tokens": 40}
-    )
+    adapter, pipeline = _make({"multi_segment_emission": True, "segment_min_tokens": 40})
     _register(adapter, DONOR)
     pipeline.next_result = _two_run_result(DONOR)
     result = adapter.match(
@@ -130,34 +128,26 @@ def test_entity_swap_shaped_segments_dropped_by_identity_gate():
     # Corrupt every 10th aligned position in both runs (entity-tag mismatch).
     for t in list(range(0, 32, 10)) + list(range(36, 68, 10)):
         target[t] = 555_000 + t
-    result = adapter.match(
-        prompt_token_ids=target, already_matched_len=0, prompt_text="q"
-    )
+    result = adapter.match(prompt_token_ids=target, already_matched_len=0, prompt_text="q")
     assert result is None  # identity ~0.9 < 0.98 gates both runs -> miss
     assert adapter._stats.segments_dropped_low_identity == 2
 
 
 def test_identity_gate_configurable():
-    adapter, pipeline = _make(
-        {"multi_segment_emission": True, "segment_min_token_identity": 0.85}
-    )
+    adapter, pipeline = _make({"multi_segment_emission": True, "segment_min_token_identity": 0.85})
     _register(adapter, DONOR)
     pipeline.next_result = _two_run_result(DONOR)
     target = _matching_target(DONOR)
     for t in list(range(0, 32, 10)) + list(range(36, 68, 10)):
         target[t] = 555_000 + t
-    result = adapter.match(
-        prompt_token_ids=target, already_matched_len=0, prompt_text="q"
-    )
+    result = adapter.match(prompt_token_ids=target, already_matched_len=0, prompt_text="q")
     # identity ~0.90 >= 0.85: emitted at the looser gate (merged to one).
     assert result.segments is not None
     assert sum(len(list(s.target_positions)) for s in result.segments) == 64
 
 
 def test_segments_merge_into_scatter_buckets():
-    adapter, pipeline = _make(
-        {"multi_segment_emission": True, "segment_merge_max_positions": 100}
-    )
+    adapter, pipeline = _make({"multi_segment_emission": True, "segment_merge_max_positions": 100})
     _register(adapter, DONOR)
     pipeline.next_result = _two_run_result(DONOR)
     result = adapter.match(
@@ -174,9 +164,7 @@ def test_segments_merge_into_scatter_buckets():
 
 
 def test_merge_respects_position_limit():
-    adapter, pipeline = _make(
-        {"multi_segment_emission": True, "segment_merge_max_positions": 40}
-    )
+    adapter, pipeline = _make({"multi_segment_emission": True, "segment_merge_max_positions": 40})
     _register(adapter, DONOR)
     pipeline.next_result = _two_run_result(DONOR)
     result = adapter.match(
@@ -187,9 +175,7 @@ def test_merge_respects_position_limit():
 
 
 def test_merge_disabled_with_zero_limit():
-    adapter, pipeline = _make(
-        {"multi_segment_emission": True, "segment_merge_max_positions": 0}
-    )
+    adapter, pipeline = _make({"multi_segment_emission": True, "segment_merge_max_positions": 0})
     _register(adapter, DONOR)
     pipeline.next_result = _two_run_result(DONOR)
     result = adapter.match(
@@ -233,9 +219,7 @@ def test_trim_sink_rebases_noderef_addressing():
 
 
 def test_sink_protect_trims_first_run():
-    adapter, pipeline = _make(
-        {"multi_segment_emission": True, "sink_protect_tokens": 16}
-    )
+    adapter, pipeline = _make({"multi_segment_emission": True, "sink_protect_tokens": 16})
     _register(adapter, DONOR)
     pipeline.next_result = _two_run_result(DONOR)
     result = adapter.match(
@@ -249,9 +233,7 @@ def test_sink_protect_trims_first_run():
 
 
 def test_sink_protect_drops_fully_covered_run():
-    adapter, pipeline = _make(
-        {"multi_segment_emission": True, "sink_protect_tokens": 36}
-    )
+    adapter, pipeline = _make({"multi_segment_emission": True, "sink_protect_tokens": 36})
     _register(adapter, DONOR)
     pipeline.next_result = _two_run_result(DONOR)
     result = adapter.match(
@@ -375,12 +357,16 @@ def test_tail_reserve_and_position_aligned_gates():
     aligned = FuzzyMatchSegment(
         target_positions=list(range(10, 42)),
         donor_positions=list(range(10, 42)),
-        donor_node_id=1, donor_offset=10, length=32,
+        donor_node_id=1,
+        donor_offset=10,
+        length=32,
     )
     shifted = FuzzyMatchSegment(
         target_positions=list(range(100, 132)),
         donor_positions=list(range(0, 32)),
-        donor_node_id=1, donor_offset=0, length=32,
+        donor_node_id=1,
+        donor_offset=0,
+        length=32,
     )
     kept = adapter._gate_segments([aligned, shifted], [0] * 200, [0] * 200)
     assert adapter._stats.segments_dropped_position_aligned == 1
@@ -391,7 +377,9 @@ def test_tail_reserve_and_position_aligned_gates():
     tail_run = FuzzyMatchSegment(
         target_positions=list(range(950, 1000)),
         donor_positions=list(range(50, 100)),
-        donor_node_id=1, donor_offset=50, length=50,
+        donor_node_id=1,
+        donor_offset=50,
+        length=50,
     )
     kept2 = adapter._gate_segments([tail_run], [0] * 1000, long_target)
     # boundary = 1000 - 64 = 936 -> run 950.. fully reserved -> dropped
@@ -400,7 +388,9 @@ def test_tail_reserve_and_position_aligned_gates():
     mid_run = FuzzyMatchSegment(
         target_positions=list(range(900, 950)),
         donor_positions=list(range(100, 150)),
-        donor_node_id=1, donor_offset=100, length=50,
+        donor_node_id=1,
+        donor_offset=100,
+        length=50,
     )
     kept3 = adapter._gate_segments([mid_run], [0] * 1000, long_target)
     # trimmed at 936 -> keeps 900..935
@@ -416,18 +406,20 @@ def test_single_boundary_anchored_run_routes_contiguous():
     donor_positions = list(range(8, 40))
     target_positions = list(range(0, 32))
     pipeline.next_result = _StubPipelineResult(
-        found=True, donor_id="donor-A", similarity=0.8, reuse_ratio=0.7,
+        found=True,
+        donor_id="donor-A",
+        similarity=0.8,
+        reuse_ratio=0.7,
         donor_tokens=list(DONOR),
         position_map=_StubPosMap(donor_positions, target_positions),
-        layer_deviations=[], confidence_tier="fuzzy",
+        layer_deviations=[],
+        confidence_tier="fuzzy",
     )
     target = [-1] * 80
     for d, t in zip(range(8, 40), range(0, 32)):
         target[t] = DONOR[d]
     target = [tok if tok != -1 else 999_000 + i for i, tok in enumerate(target)]
-    result = adapter.match(
-        prompt_token_ids=target, already_matched_len=0, prompt_text="q"
-    )
+    result = adapter.match(prompt_token_ids=target, already_matched_len=0, prompt_text="q")
     assert result is not None
     assert result.segments is None  # contiguous contract
     assert result.cached_token_count == 32

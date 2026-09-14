@@ -231,6 +231,11 @@ class SemBlendKvConnectorScheduler(KvCacheConnectorScheduler):
             block_ids=list(cache_block_ids),
             block_hashes=list(getattr(request, "block_hashes", ()) or ()),
             location=DonorLocation.worker(worker_id=0, dp_rank=0),
+            # Key the donor by the salt of the request whose KV it is, the
+            # same value the lookup side binds at ~:126. Without it a salted
+            # tenant's KV lands in the no-cache-salt namespace and is served
+            # to every unsalted request.
+            cache_salt=getattr(request, "cache_salt", None),
         )
         if event is not None:
             _write_audit(

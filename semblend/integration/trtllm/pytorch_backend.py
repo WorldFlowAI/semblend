@@ -19,9 +19,117 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 from typing import Any
 
+from semblend.integration.trtllm.namespace import (
+    NO_CACHE_SALT_NAMESPACE,
+    bind_cache_salt,
+    build_cache_namespace,
+    cache_salt_namespace,
+    namespace_key,
+)
+
 logger = logging.getLogger("semblend.trtllm.backend")
+
+# One-time operator signal for a process where no salt ever arrives.
+#
+# The salt is supplied by callers outside this package (the engine, the
+# serving layer, the deployment's own request shaping). A process that never
+# receives one keys every donor into the no-cache-salt namespace: correct for
+# a single tenant, a cross-tenant leak for anyone else, and nothing inside
+# the process can tell those two deployments apart. So the default stays as
+# the upstream contracts expect and the operator is told once instead.
+UNSALTED_DONOR_WARN_AFTER_ENV = "SEMBLEND_UNSALTED_DONOR_WARN_AFTER"
+
+_DEFAULT_UNSALTED_DONOR_WARN_AFTER = 32
+
+
+def unsalted_donor_warn_after() -> int:
+    """Unsalted registrations a component tolerates before it warns once."""
+    raw = os.environ.get(UNSALTED_DONOR_WARN_AFTER_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_UNSALTED_DONOR_WARN_AFTER
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not an integer -- falling back to %d",
+            UNSALTED_DONOR_WARN_AFTER_ENV,
+            raw,
+            _DEFAULT_UNSALTED_DONOR_WARN_AFTER,
+        )
+        return _DEFAULT_UNSALTED_DONOR_WARN_AFTER
+
+
+class SaltIsolationWatch:
+    """Counts donor registrations by whether the request carried a salt.
+
+    Shared by this backend and both TensorRT-LLM providers so the signal
+    reads the same whichever component a deployment drives.
+
+    Warns at most once, and only while not a single salted registration has
+    been seen: a deployment that salts some requests is configured, so the
+    unsalted ones there are a deliberate shared namespace rather than an
+    isolation that was never switched on.
+
+    Args:
+        component: Name of the provider/backend, so an operator running
+            several knows which one is unisolated.
+        config_path: Where that component reads the salt from, so the
+            warning says what to set rather than only what is wrong.
+        warn_after: Threshold override; defaults to the env-tunable value.
+        log: Logger to warn through, so the record carries the component's
+            own logger name.
+    """
+
+    def __init__(
+        self,
+        component: str,
+        config_path: str,
+        *,
+        warn_after: int | None = None,
+        log: logging.Logger | None = None,
+    ) -> None:
+        self._component = component
+        self._config_path = config_path
+        self._warn_after = unsalted_donor_warn_after() if warn_after is None else warn_after
+        self._log = log or logger
+        self._unsalted = 0
+        self._salted = 0
+        self._warned = False
+
+    def record(self, salted: bool) -> None:
+        """Count one donor registration, warning if this process never salts."""
+        if salted:
+            self._salted += 1
+            return
+
+        self._unsalted += 1
+        if self._warned or self._salted or self._warn_after <= 0:
+            return
+        if self._unsalted < self._warn_after:
+            return
+
+        self._warned = True
+        self._log.warning(
+            "%s: %d donors registered and not one carried a cache_salt, so every "
+            "request in this process can reuse every other request's KV. Correct "
+            "for a single tenant; otherwise set a per-tenant salt via %s. "
+            "Threshold: %s.",
+            self._component,
+            self._unsalted,
+            self._config_path,
+            UNSALTED_DONOR_WARN_AFTER_ENV,
+        )
+
+    def stats(self) -> dict:
+        """Counters for the owning component's get_stats()."""
+        return {
+            "unsalted_donors_registered": self._unsalted,
+            "salted_donors_registered": self._salted,
+            "unsalted_namespace_warned": self._warned,
+        }
 
 
 class TRTLLMPyTorchBackend:
@@ -68,6 +176,17 @@ class TRTLLMPyTorchBackend:
         self._rope_base = self._config.get("rope_base", 10000.0)
         self._model_name = self._config.get("model_name", "")
 
+        # Donor isolation namespace. Every donor registered through this
+        # backend is keyed by this namespace plus the registering request's
+        # cache_salt, and every lookup is keyed the same way, so KV produced
+        # under one salt is unreachable from another. Requests that carry no
+        # salt share the no-cache-salt sentinel, which is what keeps
+        # single-tenant deployments reusing exactly as before.
+        self._namespace = build_cache_namespace(
+            model=self._model_name,
+            block_size=self._tokens_per_block,
+        )
+
         # Pipeline (lazy init to avoid import overhead at module load)
         self._pipeline = None
 
@@ -78,7 +197,19 @@ class TRTLLMPyTorchBackend:
             "rope_corrections": 0,
             "semantic_hits": 0,
             "misses": 0,
+            # Donors withheld from a lookup because their cache_salt
+            # namespace differed from the requesting tenant's. Non-zero here
+            # is isolation doing its job, not an error.
+            "cross_namespace_rejected": 0,
         }
+
+        # Isolation here is only as good as the salt the launcher hook hands
+        # down, and that comes from out-of-repo request objects, so a
+        # deployment that never sets one is reported rather than guessed at.
+        self._salt_watch = SaltIsolationWatch(
+            "TRTLLMPyTorchBackend (semblend-trtllm launcher hook)",
+            "cache_salt on the request, or kv_metadata['cache_salt'] at registration",
+        )
 
         logger.info(
             "TRTLLMPyTorchBackend initialized: "
@@ -158,6 +289,8 @@ class TRTLLMPyTorchBackend:
         request_id: str,
         token_ids: list[int],
         kv_metadata: dict,
+        *,
+        cache_salt: Any = None,
     ) -> None:
         """Register a completed request as a donor for future reuse.
 
@@ -171,7 +304,12 @@ class TRTLLMPyTorchBackend:
         Args:
             request_id: Unique request identifier.
             token_ids: Token IDs of the completed request.
-            kv_metadata: Engine-specific metadata (unused for lightweight path).
+            kv_metadata: Engine-specific metadata. A ``cache_salt`` entry is
+                read from it when the keyword below is not supplied, so a
+                caller that already threads metadata needs no new argument.
+            cache_salt: Isolation salt of the completed request. The donor is
+                reachable only from lookups carrying the same salt; omitting
+                it registers into the no-cache-salt namespace.
         """
         pipeline = self._get_pipeline()
         if pipeline is None:
@@ -181,12 +319,17 @@ class TRTLLMPyTorchBackend:
         if prompt_text is None:
             return
 
+        salt = cache_salt if cache_salt is not None else _metadata_cache_salt(kv_metadata)
         pipeline.register_donor(
             request_id=request_id,
             token_ids=token_ids,
             prompt_text=prompt_text,
+            extra_key=self._request_namespace(salt),
         )
         self._stats["donors_registered"] += 1
+        # Reached only with the pipeline live, so the count reflects donors
+        # this process actually made reusable.
+        self._salt_watch.record(cache_salt_namespace(salt) != NO_CACHE_SALT_NAMESPACE)
 
     def apply_rope_correction(
         self,
@@ -260,6 +403,8 @@ class TRTLLMPyTorchBackend:
         self,
         token_ids: list[int],
         prompt_text: str | None = None,
+        *,
+        cache_salt: Any = None,
     ) -> dict | None:
         """Run the SemBlend pipeline to find a semantic donor.
 
@@ -270,6 +415,10 @@ class TRTLLMPyTorchBackend:
         Args:
             token_ids: Token IDs of the incoming request.
             prompt_text: Decoded prompt text. If None, decodes from token_ids.
+            cache_salt: Isolation salt of the incoming request. Only donors
+                registered under the same salt are candidates; a caller that
+                omits it sees the no-cache-salt namespace only, never another
+                tenant's donors.
 
         Returns:
             Dict with donor info on hit, None on miss:
@@ -293,12 +442,19 @@ class TRTLLMPyTorchBackend:
             self._stats["misses"] += 1
             return None
 
+        extra_key = self._request_namespace(cache_salt)
         result = pipeline.find_donor(
             token_ids=token_ids,
             prompt_text=prompt_text,
+            extra_key=extra_key,
         )
 
         if not result.found:
+            self._stats["misses"] += 1
+            self._stats["cross_namespace_rejected"] += self._withheld_donor_count(extra_key)
+            return None
+
+        if not self._namespace_allows(result.donor_id or "", extra_key):
             self._stats["misses"] += 1
             return None
 
@@ -333,12 +489,74 @@ class TRTLLMPyTorchBackend:
         donor_count = pipeline.donor_count if pipeline is not None else 0
         return {
             **self._stats,
+            **self._salt_watch.stats(),
             "donor_store_size": donor_count,
         }
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _request_namespace(self, cache_salt: Any) -> str:
+        """Donor-store isolation key: the backend namespace plus this salt.
+
+        The salt is hashed on the way in, so neither the donor record nor a
+        log line ever carries the tenant-identifying value itself.
+        """
+        return namespace_key(bind_cache_salt(self._namespace, cache_salt))
+
+    def _namespace_allows(self, donor_id: str, extra_key: str) -> bool:
+        """Defense in depth over the donor store's own extra_key filter.
+
+        Fails closed: a donor whose namespace cannot be resolved is
+        rejected. The store already filters on extra_key, so this only fires
+        when the store and the request disagree — which is exactly the case
+        that must never be served.
+        """
+        donor_namespace = self._donor_namespace(donor_id)
+        if donor_namespace == extra_key:
+            return True
+        self._stats["cross_namespace_rejected"] += 1
+        logger.warning(
+            "namespace reject: donor=%s donor_ns=%s request_ns=%s",
+            donor_id,
+            donor_namespace,
+            extra_key,
+        )
+        return False
+
+    def _donor_namespace(self, donor_id: str) -> str | None:
+        """Namespace key a stored donor was registered under, None if unknown."""
+        pipeline = self._pipeline
+        if pipeline is None or not donor_id:
+            return None
+        try:
+            node = pipeline._donor_store.get_donor(donor_id)
+        except Exception:
+            return None
+        if node is None:
+            return None
+        return getattr(node, "extra_key", None)
+
+    def _withheld_donor_count(self, extra_key: str) -> int:
+        """Donors in the store this namespace is not allowed to see.
+
+        semblend_core filters on extra_key before it proposes candidates, so
+        a foreign donor never surfaces as a rejected candidate and the
+        operator-visible counter would read zero while isolation was in fact
+        doing its job. Only called on a miss, after the lookup has already
+        paid for an embedding.
+        """
+        pipeline = self._pipeline
+        if pipeline is None:
+            return 0
+        try:
+            entries = pipeline._donor_store._entries
+            return sum(
+                1 for node in entries.values() if getattr(node, "extra_key", None) != extra_key
+            )
+        except Exception:
+            return 0
 
     def _get_pipeline(self):
         """Lazily initialize the SemBlend pipeline."""
@@ -421,3 +639,15 @@ class TRTLLMPyTorchBackend:
             )
 
         return tokenizer.decode(sampled, skip_special_tokens=True)
+
+
+def _metadata_cache_salt(kv_metadata: Any) -> Any:
+    """Read a request's cache_salt out of engine metadata, if it carries one.
+
+    The engine-side metadata shape varies by call site (mapping or object),
+    and a caller that has no salt to offer must land on None so the request
+    keys into the no-cache-salt namespace rather than skipping isolation.
+    """
+    if isinstance(kv_metadata, Mapping):
+        return kv_metadata.get("cache_salt")
+    return getattr(kv_metadata, "cache_salt", None)

@@ -15,7 +15,10 @@ import numpy as np
 import pytest
 
 from semblend.integration.sglang.config import SemBlendProviderConfig
-from semblend.integration.sglang.provider import SemBlendProviderAdapter
+from semblend.integration.sglang.provider import (
+    SemBlendProviderAdapter,
+    _isolation_namespace,
+)
 from semblend.integration.sglang.types import (
     FuzzyMatchResult,
     QualitySignals,
@@ -179,9 +182,7 @@ class TestRegisterDonor:
         )
         assert ok is False
 
-    def test_register_donor_returns_fast_when_embed_is_slow(
-        self, adapter, pipeline
-    ):
+    def test_register_donor_returns_fast_when_embed_is_slow(self, adapter, pipeline):
         # Register_donor must return without waiting for the embedder.
         # Patch the stub embedder to sleep 200ms, then assert the call
         # returns in well under that. After flushing the background
@@ -208,9 +209,7 @@ class TestRegisterDonor:
         elapsed_ms = (time.monotonic() - t0) * 1000
 
         assert ok is True
-        assert elapsed_ms < 50, (
-            f"register_donor took {elapsed_ms:.0f}ms — embed must not block"
-        )
+        assert elapsed_ms < 50, f"register_donor took {elapsed_ms:.0f}ms — embed must not block"
 
         # Flush the executor by shutting it down with wait=True. Donor
         # should now be in the store.
@@ -252,7 +251,11 @@ class TestRegisterDonor:
 
         assert ok is True
         adapter._register_executor.shutdown(wait=True)
-        assert pipeline._donor_store.donors[0].extra_key == "namespace-a"
+        # The raw extra_key is tenant-identifying: the core donor store sees
+        # the hashed namespace derived from it, and never the value itself.
+        stored = pipeline._donor_store.donors[0].extra_key
+        assert stored == _isolation_namespace("namespace-a")
+        assert "namespace-a" not in stored
 
 
 class TestClear:
@@ -341,9 +344,7 @@ class TestMatchMisses:
         stats = adapter.stats()
         assert stats["match_misses"] == 1
 
-    def test_composite_result_with_real_similarity_passes_gate(
-        self, adapter, pipeline
-    ):
+    def test_composite_result_with_real_similarity_passes_gate(self, adapter, pipeline):
         """Composite multi-donor results now carry a real cosine similarity
         computed inside semblend_core (pipeline._compute_aggregate_similarity).
         The adapter applies the same min_similarity gate to all paths;
@@ -380,9 +381,7 @@ class TestMatchMisses:
         assert result is not None
         assert result.cached_token_count == 16
 
-    def test_composite_result_below_similarity_gate_is_rejected(
-        self, adapter, pipeline
-    ):
+    def test_composite_result_below_similarity_gate_is_rejected(self, adapter, pipeline):
         """The cosine gate applies uniformly. A composite result with a low
         similarity (now a real cosine, not a sentinel) is rejected just like
         a single-donor result would be. This guards against the prior
@@ -501,7 +500,7 @@ class TestMatchMisses:
         )
 
         assert result is None
-        assert pipeline.find_donor_calls[-1]["extra_key"] == "namespace-b"
+        assert pipeline.find_donor_calls[-1]["extra_key"] == _isolation_namespace("namespace-b")
 
 
 # ---------------------------------------------------------------------
@@ -534,8 +533,7 @@ class TestMatchHits:
                 target_positions=list(range(16)),
             ),
             layer_deviations=[
-                {"layerIdx": i, "deviationScore": 0.1, "shouldRecompute": False}
-                for i in range(4)
+                {"layerIdx": i, "deviationScore": 0.1, "shouldRecompute": False} for i in range(4)
             ],
             confidence_tier="exact",
         )
@@ -697,8 +695,7 @@ class TestMatchHits:
                 target_positions=list(range(16)),
             ),
             layer_deviations=[
-                {"layerIdx": i, "deviationScore": 0.9, "shouldRecompute": True}
-                for i in range(4)
+                {"layerIdx": i, "deviationScore": 0.9, "shouldRecompute": True} for i in range(4)
             ],
         )
         result = adapter.match(
@@ -753,9 +750,7 @@ class TestMatchHits:
         assert stats["match_hits_discovery_only"] == 1
         assert stats["match_hits"] == 0
 
-    def test_on_donor_inserted_sets_donor_last_node_id_in_match_result(
-        self, adapter, pipeline
-    ):
+    def test_on_donor_inserted_sets_donor_last_node_id_in_match_result(self, adapter, pipeline):
         """Adapter records donor_last_node_id and surfaces it at match time.
 
         Validates the plumbing for the SGLang RadixCache pool-leak fix:

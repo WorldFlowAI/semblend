@@ -147,13 +147,9 @@ def test_donor_text_truncated_when_disabled(monkeypatch) -> None:
 def test_namespace_isolation(monkeypatch) -> None:
     monkeypatch.setenv("SEMBLEND_PARAPHRASE_SERVE", "1")
     pipeline = _pipeline(monkeypatch)
-    pipeline.register_donor(
-        "d1", DONOR_TOKENS, prompt_text=DONOR_TEXT, extra_key="tenant-a"
-    )
+    pipeline.register_donor("d1", DONOR_TOKENS, prompt_text=DONOR_TEXT, extra_key="tenant-a")
 
-    result = pipeline.find_donor(
-        TARGET_TOKENS, prompt_text=TARGET_TEXT, extra_key="tenant-b"
-    )
+    result = pipeline.find_donor(TARGET_TOKENS, prompt_text=TARGET_TEXT, extra_key="tenant-b")
 
     assert result.found is False
 

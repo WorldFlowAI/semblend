@@ -139,13 +139,16 @@ class TestChunkFastPathDonorStore:
 
         assert match is not None
         assert match.donor.request_id == "namespace-b"
-        assert store.find_donor(
-            query_embedding=query_embedding,
-            query_tokens=query_tokens,
-            top_k=1,
-            min_reuse_ratio=0.5,
-            extra_key="missing",
-        ) is None
+        assert (
+            store.find_donor(
+                query_embedding=query_embedding,
+                query_tokens=query_tokens,
+                top_k=1,
+                min_reuse_ratio=0.5,
+                extra_key="missing",
+            )
+            is None
+        )
 
     def test_find_multi_donor(self):
         store = DonorStore(
@@ -215,11 +218,14 @@ class TestChunkFastPathDonorStore:
             )
         )
 
-        assert store.find_multi_donor(
-            query_tokens=chunk_a + chunk_b,
-            min_reuse_ratio=0.5,
-            extra_key="missing",
-        ) is None
+        assert (
+            store.find_multi_donor(
+                query_tokens=chunk_a + chunk_b,
+                min_reuse_ratio=0.5,
+                extra_key="missing",
+            )
+            is None
+        )
 
 
 class TestChunkFastPathThreshold:

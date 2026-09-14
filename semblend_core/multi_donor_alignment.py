@@ -35,6 +35,29 @@ logger = logging.getLogger(__name__)
 _CONTEXT_GATE_ENABLED = os.environ.get("SEMBLEND_CONTEXT_GATE", "1") != "0"
 
 
+def _donor_in_namespace(
+    donor_id: str,
+    allowed_donor_ids: set[str] | None,
+    donor_token_store: dict[str, list[int]],
+) -> bool:
+    """Whether `donor_id` may contribute KV to this request's composite.
+
+    The chunk index, the token index and the PQ store are process-global:
+    they hold every donor ever registered and carry no isolation key of
+    their own. So every donor id they hand back is re-checked here before
+    its chunk can enter a plan.
+
+    Fails closed. With an explicit allowed set, only ids in that set pass.
+    With none, membership in the donor token store is the gate, so a donor
+    the caller could not even produce tokens for never contributes; when
+    the caller did not isolate at all, that store holds every donor and
+    reuse is unchanged.
+    """
+    if allowed_donor_ids is not None:
+        return donor_id in allowed_donor_ids
+    return donor_id in donor_token_store
+
+
 def _get_chunk_embeddings(
     target_text: str,
     unmatched_indices: list[int],
@@ -95,6 +118,7 @@ def compute_cdc_alignment(
     target_tokens: list[int],
     chunk_index,
     donor_token_store: dict[str, list[int]],
+    allowed_donor_ids: set[str] | None = None,
 ):
     """CDC-boundary alignment: offset-invariant, diagonal-coherent, long runs.
 
@@ -109,13 +133,20 @@ def compute_cdc_alignment(
     bounds = cdc_boundaries(target_tokens)
     if not bounds:
         return None
-    _dbg = {"chunks": 0, "with_locs": 0, "locs_total": 0, "diag_hits": 0, "verify_fail": 0}
+    _dbg = {
+        "chunks": 0,
+        "with_locs": 0,
+        "locs_total": 0,
+        "diag_hits": 0,
+        "verify_fail": 0,
+        # Donor chunks withheld because the donor is outside this
+        # request's namespace.
+        "ns_rejected": 0,
+    }
     import os as _os
 
     try:
-        mismatch_tolerance = float(
-            _os.environ.get("SEMBLEND_SPAN_MISMATCH_TOLERANCE", "0") or 0
-        )
+        mismatch_tolerance = float(_os.environ.get("SEMBLEND_SPAN_MISMATCH_TOLERANCE", "0") or 0)
     except ValueError:
         mismatch_tolerance = 0.0
     tolerated_chunks = 0
@@ -134,6 +165,13 @@ def compute_cdc_alignment(
     for t_start, t_end in bounds:
         chunk = target_tokens[t_start:t_end]
         locations = chunk_index.lookup_chunk(chunk)
+        visible = [
+            loc
+            for loc in locations
+            if _donor_in_namespace(loc.donor_id, allowed_donor_ids, donor_token_store)
+        ]
+        _dbg["ns_rejected"] += len(locations) - len(visible)
+        locations = visible
         chosen = None
         diagonal_hit = False
         if locations:
@@ -160,16 +198,12 @@ def compute_cdc_alignment(
                 seg_len = t_end - t_start
                 if d_tokens is not None and len(d_tokens) >= d_pos + seg_len:
                     window = d_tokens[d_pos : d_pos + seg_len]
-                    mism = [
-                        k for k in range(seg_len) if window[k] != chunk[k]
-                    ]
+                    mism = [k for k in range(seg_len) if window[k] != chunk[k]]
                     if mism and len(mism) <= mismatch_tolerance * seg_len:
                         tolerated_chunks += 1
                         tolerated_mismatch_tokens += len(mism)
                         for k in mism:
-                            mismatched_positions.append(
-                                (d_pos + k, t_start + k)
-                            )
+                            mismatched_positions.append((d_pos + k, t_start + k))
                         exact_chunks += 1
                         if prev_donor[0] not in donor_id_set:
                             donor_id_set.append(prev_donor[0])
@@ -192,24 +226,17 @@ def compute_cdc_alignment(
             recompute_chunks += 1
             prev_donor = None
             for i in range(t_start, t_end):
-                slot_actions.append(
-                    MultiDonorSlotAction(action="recompute", target_pos=i)
-                )
+                slot_actions.append(MultiDonorSlotAction(action="recompute", target_pos=i))
             continue
         # Verify token equality (hash is never trusted alone).
         donor_tokens = donor_token_store.get(chosen.donor_id)
         seg_len = t_end - t_start
-        if (
-            donor_tokens is None
-            or donor_tokens[chosen.pos : chosen.pos + seg_len] != chunk
-        ):
+        if donor_tokens is None or donor_tokens[chosen.pos : chosen.pos + seg_len] != chunk:
             _dbg["verify_fail"] += 1
             recompute_chunks += 1
             prev_donor = None
             for i in range(t_start, t_end):
-                slot_actions.append(
-                    MultiDonorSlotAction(action="recompute", target_pos=i)
-                )
+                slot_actions.append(MultiDonorSlotAction(action="recompute", target_pos=i))
             continue
         exact_chunks += 1
         if chosen.donor_id not in donor_id_set:
@@ -280,6 +307,7 @@ def compute_multi_donor_alignment(
     target_text: str = "",
     embedder: object | None = None,
     token_index: object | None = None,
+    allowed_donor_ids: set[str] | None = None,
 ) -> MultiDonorAlignmentResult | None:
     """Compute multi-donor chunk alignment using ChunkIndex.
 
@@ -296,11 +324,19 @@ def compute_multi_donor_alignment(
         context_gate: Override for context gate. None uses env var.
         min_fuzzy_overlap: Minimum token overlap for fuzzy match.
         pq_store: Optional PQSegmentStore for fuzzy verification.
+        allowed_donor_ids: Donor ids this request may read KV from. None
+            means the caller applied no isolation key, and donor_token_store
+            membership is the only gate.
 
     Returns:
         MultiDonorAlignmentResult or None if no useful matches found.
     """
     use_context_gate = context_gate if context_gate is not None else _CONTEXT_GATE_ENABLED
+
+    # Donor chunk candidates withheld because the donor sits outside this
+    # request's namespace. Reported below so the withholding is visible to
+    # an operator instead of just showing up as lower reuse.
+    namespace_rejections = 0
 
     # Split target into chunks
     target_chunks: list[list[int]] = []
@@ -321,6 +357,15 @@ def compute_multi_donor_alignment(
             continue
 
         locations = chunk_index.lookup_chunk(t_chunk)
+        # Filter before any selection below runs: a foreign donor must not
+        # be able to seed a diagonal or win first-unused.
+        visible = [
+            loc
+            for loc in locations
+            if _donor_in_namespace(loc.donor_id, allowed_donor_ids, donor_token_store)
+        ]
+        namespace_rejections += len(locations) - len(visible)
+        locations = visible
         if not locations:
             prev_exact = None
             continue
@@ -399,18 +444,27 @@ def compute_multi_donor_alignment(
                             min_similarity=0.85,
                         )
                         for i, match in enumerate(matches):
-                            if match is not None:
-                                donor_id, donor_chunk_idx, sim = match
-                                t_idx = unmatched_indices[i]
-                                semantic_assignments[t_idx] = ChunkAssignment(
-                                    target_chunk_idx=t_idx,
-                                    donor_id=donor_id,
-                                    donor_chunk_idx=donor_chunk_idx,
-                                    match_type=MatchType.FUZZY,
-                                    confidence=sim,
-                                )
-                                used_donor_chunks.setdefault(donor_id, set()).add(donor_chunk_idx)
-                                semantic_chunk_hits += 1
+                            if match is None:
+                                continue
+                            donor_id, donor_chunk_idx, sim = match
+                            # PQ search spans every donor in the store, so
+                            # its winner is not necessarily one this
+                            # request may read.
+                            if not _donor_in_namespace(
+                                donor_id, allowed_donor_ids, donor_token_store
+                            ):
+                                namespace_rejections += 1
+                                continue
+                            t_idx = unmatched_indices[i]
+                            semantic_assignments[t_idx] = ChunkAssignment(
+                                target_chunk_idx=t_idx,
+                                donor_id=donor_id,
+                                donor_chunk_idx=donor_chunk_idx,
+                                match_type=MatchType.FUZZY,
+                                confidence=sim,
+                            )
+                            used_donor_chunks.setdefault(donor_id, set()).add(donor_chunk_idx)
+                            semantic_chunk_hits += 1
 
                         if semantic_chunk_hits > 0:
                             logger.info(
@@ -455,7 +509,12 @@ def compute_multi_donor_alignment(
                 for t_idx in unmatched_indices:
                     t_chunk = target_chunks[t_idx]
                     candidates = token_index.find_fuzzy_candidates(t_chunk)
-                    for ref, shared_count in candidates[:5]:  # Top 5 per chunk
+                    for ref, _shared_count in candidates[:5]:  # Top 5 per chunk
+                        if not _donor_in_namespace(
+                            ref.donor_id, allowed_donor_ids, donor_token_store
+                        ):
+                            namespace_rejections += 1
+                            continue
                         candidate_donor_ids.add(ref.donor_id)
 
                 if candidate_donor_ids:
@@ -482,6 +541,11 @@ def compute_multi_donor_alignment(
 
         donor_chunk_cache: dict[str, tuple[list[list[int]], list[int]]] = {}
         for donor_id in candidate_donor_ids:
+            # Last gate before a donor's chunks reach the fuzzy matcher,
+            # whichever phase above proposed it.
+            if not _donor_in_namespace(donor_id, allowed_donor_ids, donor_token_store):
+                namespace_rejections += 1
+                continue
             donor_tokens = donor_token_store.get(donor_id)
             if donor_tokens is None:
                 continue
@@ -535,6 +599,12 @@ def compute_multi_donor_alignment(
                     best_match.donor_chunk_idx
                 )
 
+    if namespace_rejections:
+        logger.warning(
+            "multi_donor_alignment: withheld %d cross-namespace donor chunk candidates",
+            namespace_rejections,
+        )
+
     # Merge assignments (exact > semantic > fuzzy priority)
     all_assignments = {**fuzzy_assignments, **semantic_assignments, **assignments}
 
@@ -567,11 +637,13 @@ def compute_multi_donor_alignment(
     if not all_assignments:
         logger.info(
             "multi_donor_alignment: no assignments after all phases "
-            "(exact=%d, semantic=%d, fuzzy=%d, total_chunks=%d)",
+            "(exact=%d, semantic=%d, fuzzy=%d, total_chunks=%d, "
+            "cross_namespace_rejected=%d)",
             len(assignments),
             len(semantic_assignments),
             len(fuzzy_assignments),
             num_target_chunks,
+            namespace_rejections,
         )
         return None
 
@@ -583,6 +655,7 @@ def compute_multi_donor_alignment(
         donor_token_store=donor_token_store,
         chunk_size=chunk_size,
         chunk_index_hits=chunk_index_hits,
+        namespace_rejections=namespace_rejections,
     )
 
 
@@ -593,6 +666,7 @@ def _build_composite_result(
     donor_token_store: dict[str, list[int]],
     chunk_size: int,
     chunk_index_hits: int,
+    namespace_rejections: int = 0,
 ) -> MultiDonorAlignmentResult:
     """Build the composite plan from chunk assignments."""
     # Collect unique donor IDs
@@ -723,13 +797,14 @@ def _build_composite_result(
 
     logger.info(
         "multi_donor_alignment: %d exact + %d fuzzy + %d recompute chunks, "
-        "reuse=%.3f, donors=%d, chunk_index_hits=%d",
+        "reuse=%.3f, donors=%d, chunk_index_hits=%d, cross_namespace_rejected=%d",
         exact_chunks,
         fuzzy_chunks,
         recompute_chunks,
         reuse_ratio,
         len(donor_ids),
         chunk_index_hits,
+        namespace_rejections,
     )
 
     return MultiDonorAlignmentResult(

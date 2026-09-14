@@ -2,7 +2,6 @@
 lifecycle (rebuild folding, tombstones, re-ranking) with a fake graph."""
 
 import numpy as np
-import pytest
 
 from semblend_core.donor_index import BruteForceIndex, DeltaGraphIndex
 
@@ -82,7 +81,7 @@ class TestDeltaGraphIndex:
         ix = DeltaGraphIndex(2, _fake_graph_factory(built), rebuild_threshold=2)
         ix.add("far", _vec(0, 1))
         ix.add("mid", _vec(0.7, 0.7))  # rebuild
-        ix.add("near", _vec(1, 0))     # delta only
+        ix.add("near", _vec(1, 0))  # delta only
         out = ix.search(_vec(1, 0), top_k=3)
         assert [d for d, _ in out] == ["near", "mid", "far"]
 
@@ -99,7 +98,9 @@ class TestRecallTelemetry:
     def test_sampled_audit_records_perfect_recall_for_exact_fake(self):
         built = []
         ix = DeltaGraphIndex(
-            2, _fake_graph_factory(built), rebuild_threshold=2,
+            2,
+            _fake_graph_factory(built),
+            rebuild_threshold=2,
             recall_sample_every=1,
         )
         ix.add("a", _vec(1, 0))
@@ -115,16 +116,16 @@ class TestRecallTelemetry:
 
             return search
 
-        ix = DeltaGraphIndex(2, lossy_factory, rebuild_threshold=2,
-                             recall_sample_every=1)
+        ix = DeltaGraphIndex(2, lossy_factory, rebuild_threshold=2, recall_sample_every=1)
         ix.add("a", _vec(1, 0))
         ix.add("b", _vec(0, 1))  # rebuild -> both only in (lossy) graph
         ix.search(_vec(1, 0), top_k=2)
         assert ix.observed_recall == 0.0
 
     def test_sampling_disabled(self):
-        ix = DeltaGraphIndex(2, _fake_graph_factory([]), rebuild_threshold=100,
-                             recall_sample_every=0)
+        ix = DeltaGraphIndex(
+            2, _fake_graph_factory([]), rebuild_threshold=100, recall_sample_every=0
+        )
         ix.add("a", _vec(1, 0))
         ix.search(_vec(1, 0), top_k=1)
         assert ix.recall_samples == 0

@@ -26,6 +26,15 @@ Environment variables (SemBlend-specific):
     SEMBLEND_MAX_DONORS=1000        Maximum donors in the semantic store
     SEMBLEND_MIN_REUSE_RATIO=0.50   Minimum alignment reuse ratio
     SEMBLEND_TRTLLM_APPROACH=auto   Hook approach (auto, token_sub, radix_patch)
+    SEMBLEND_UNSALTED_DONOR_WARN_AFTER=32
+                                    Donors registered with no cache_salt before
+                                    the one-time isolation warning is logged
+
+Tenant isolation:
+    Donors are keyed by the cache_salt of the request that produced them and
+    lookups are keyed by the salt of the requesting one, so KV never crosses
+    between salts. Requests that carry no cache_salt share one namespace --
+    correct for a single tenant, and the case the warning above is about.
 """
 
 from __future__ import annotations
@@ -224,11 +233,17 @@ def _launch_server(args: argparse.Namespace, model_ref: str) -> None:
     launch_server(args.host, args.port, llm_args)
 
 
-def _attach_semblend(llm: Any, args: argparse.Namespace) -> None:
+def _attach_semblend(llm: Any, args: argparse.Namespace) -> Any:
     """Attach SemBlend hooks to the TRT-LLM instance.
 
     Discovers the KVCacheManager and ModelEngine from the LLM instance,
-    creates the backend and hook, and wires everything together.
+    creates the backend and hook, and wires everything together: the hook
+    both looks donors up and registers finished requests, each carrying that
+    request's own cache_salt, so this path isolates on both sides rather
+    than gating lookups against a store every tenant wrote into.
+
+    Returns the hook (None when no KVCacheManager could be discovered) so a
+    caller can read its stats.
     """
     from semblend.integration.trtllm.model_engine_hook import (
         SemBlendModelEngineHook,
@@ -258,7 +273,7 @@ def _attach_semblend(llm: Any, args: argparse.Namespace) -> None:
             "SemBlend hooks disabled. TRT-LLM version may not expose "
             "the PyTorch backend's KV manager."
         )
-        return
+        return None
 
     # Build model config from LLM metadata
     model_config = {
@@ -287,6 +302,7 @@ def _attach_semblend(llm: Any, args: argparse.Namespace) -> None:
     hook = SemBlendModelEngineHook(engine=engine, backend=backend)
     approach = hook.wrap()
     logger.info("SemBlend hooks attached: approach=%s", approach)
+    return hook
 
 
 if __name__ == "__main__":

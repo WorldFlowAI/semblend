@@ -31,6 +31,63 @@ from typing import Any
 
 logger = logging.getLogger("semblend.trtllm.hook")
 
+# Engine methods that mark a request complete, most specific first. TRT-LLM's
+# name for this varies by version, so the hook probes the same way it probes
+# for an enqueue API.
+_COMPLETION_ATTRS = (
+    "finish_request",
+    "request_finished",
+    "on_request_finished",
+    "complete_request",
+)
+
+_REQUEST_ID_ATTRS = ("request_id", "py_request_id", "id")
+
+
+def _first_cache_salt(*candidates: Any) -> Any:
+    """First ``cache_salt`` among the objects a call site has in hand.
+
+    Both call sites below reach the donor store, and the store's filter is
+    fail-open on a missing key: a lookup that forgets the salt sees every
+    tenant's donors. Candidates are walked outermost first so a wrapper that
+    carries no salt cannot mask the request inside it that does.
+    """
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        salt = getattr(candidate, "cache_salt", None)
+        if salt is not None:
+            return salt
+    return None
+
+
+def _match_prefix_cache_salt(key: Any, args: tuple, kwargs: dict) -> Any:
+    """Salt carried by whatever the patched ``match_prefix`` was handed.
+
+    The tree is keyed on an object whose shape differs across TRT-LLM
+    versions -- a bare token list, a key wrapper, or one that references the
+    request -- so every level is inspected. A key that carries none lands in
+    the no-cache-salt namespace, which can only reach unsalted donors.
+    """
+    return _first_cache_salt(
+        key,
+        getattr(key, "key", None),
+        getattr(key, "req", None),
+        getattr(key, "request", None),
+        kwargs.get("req"),
+        kwargs.get("request"),
+        *args,
+    )
+
+
+def _request_id(request: Any) -> str:
+    """Donor id for a finished request, empty when the engine exposes none."""
+    for attr in _REQUEST_ID_ATTRS:
+        value = getattr(request, attr, None)
+        if value is not None:
+            return str(value)
+    return ""
+
 
 class SemBlendModelEngineHook:
     """Hook into TRT-LLM's PyTorch ModelEngine for semantic KV reuse.
@@ -62,11 +119,13 @@ class SemBlendModelEngineHook:
         self._backend = backend
         self._approach = approach or os.environ.get("SEMBLEND_TRTLLM_APPROACH", "auto")
         self._original_enqueue = None
+        self._original_finish: tuple[str, Any] | None = None
         self._active_approach = None
         self._stats = {
             "requests_intercepted": 0,
             "substitutions_applied": 0,
             "corrections_applied": 0,
+            "donors_registered": 0,
         }
 
     def wrap(self) -> str:
@@ -97,11 +156,20 @@ class SemBlendModelEngineHook:
             return "none"
 
         self._active_approach = approach
+        # Registration is wired on the same engine as lookup: a donor
+        # registered without the finishing request's cache_salt lands in the
+        # no-cache-salt namespace, where every unsalted request can consume
+        # it however carefully the lookup side gates.
+        self._wrap_donor_registration()
         logger.info("SemBlend TRT-LLM hook active: approach=%s", approach)
         return approach
 
     def unwrap(self) -> None:
         """Restore the original engine behavior."""
+        if self._original_finish is not None:
+            attr, original = self._original_finish
+            setattr(self._engine, attr, original)
+            self._original_finish = None
         if self._original_enqueue is not None:
             self._engine.enqueue_request = self._original_enqueue
             self._original_enqueue = None
@@ -111,6 +179,11 @@ class SemBlendModelEngineHook:
     @property
     def active_approach(self) -> str | None:
         return self._active_approach
+
+    @property
+    def backend(self) -> Any:
+        """Backend this hook registers donors into and looks donors up from."""
+        return self._backend
 
     def get_stats(self) -> dict:
         return {**self._stats}
@@ -199,7 +272,13 @@ class SemBlendModelEngineHook:
             if token_ids is None or len(token_ids) < 100:
                 return original_fn(request, *args, **kwargs)
 
-            donor_info = self._backend.find_semantic_donor(token_ids)
+            # The request is in scope here, so its salt travels with the
+            # lookup: without it the backend keys into the no-cache-salt
+            # namespace and any tenant's donor is a candidate.
+            donor_info = self._backend.find_semantic_donor(
+                token_ids,
+                cache_salt=_first_cache_salt(request),
+            )
             if donor_info is None:
                 return original_fn(request, *args, **kwargs)
 
@@ -282,6 +361,7 @@ class SemBlendModelEngineHook:
                 result,
                 original_match,
                 *args,
+                cache_salt=_match_prefix_cache_salt(token_ids, args, kwargs),
                 **kwargs,
             )
 
@@ -295,12 +375,17 @@ class SemBlendModelEngineHook:
         base_result: Any,
         original_match: Any,
         *args: Any,
+        cache_salt: Any = None,
         **kwargs: Any,
     ) -> Any:
-        """Attempt semantic donor lookup, then check radix tree for donor."""
+        """Attempt semantic donor lookup, then check radix tree for donor.
+
+        ``cache_salt`` is the isolation salt of the key the tree was asked
+        about; only donors registered under it are candidates.
+        """
         try:
             ids = list(token_ids) if hasattr(token_ids, "__iter__") else []
-            donor_info = self._backend.find_semantic_donor(ids)
+            donor_info = self._backend.find_semantic_donor(ids, cache_salt=cache_salt)
             if donor_info is None:
                 return base_result
 
@@ -332,6 +417,72 @@ class SemBlendModelEngineHook:
         if hasattr(result, "matched_length"):
             return result.matched_length
         return 0
+
+    # ------------------------------------------------------------------
+    # Donor registration (all approaches)
+    # ------------------------------------------------------------------
+
+    def _wrap_donor_registration(self) -> str | None:
+        """Patch the engine's request-completion path to register donors.
+
+        Without this the launcher hook only ever looks donors up, so the
+        shipped console script isolates on one side of a pair it never
+        completes. Returns the patched attribute name, or None when the
+        engine exposes no completion API.
+        """
+        attr, original = self._find_completion_api()
+        if original is None:
+            logger.info(
+                "No request-completion API on %s -- donors on this path are "
+                "registered by the KV connector instead",
+                type(self._engine).__name__,
+            )
+            return None
+
+        hook = self
+
+        def patched_finish(request: Any, *args: Any, **kwargs: Any) -> Any:
+            hook._register_donor(request)
+            return original(request, *args, **kwargs)
+
+        self._original_finish = (attr, original)
+        setattr(self._engine, attr, patched_finish)
+        logger.info("Patched %s.%s for donor registration", type(self._engine).__name__, attr)
+        return attr
+
+    def _find_completion_api(self) -> tuple[str, Any]:
+        """First callable request-completion method on the engine."""
+        for attr in _COMPLETION_ATTRS:
+            candidate = getattr(self._engine, attr, None)
+            if callable(candidate):
+                return attr, candidate
+        return "", None
+
+    def _register_donor(self, request: Any) -> None:
+        """Register a finished request as a donor under its own cache_salt.
+
+        The token ids registered are the ones the request actually ran with,
+        substituted ones included: those are the tokens whose KV the engine
+        cached, so those are the tokens a later lookup has to match.
+
+        Graceful degradation: any error leaves the request unregistered
+        rather than registered under the wrong namespace.
+        """
+        try:
+            request_id = _request_id(request)
+            token_ids = self._extract_token_ids(request)
+            if not request_id or not token_ids:
+                return
+
+            self._backend.register_donor(
+                request_id,
+                token_ids,
+                {},
+                cache_salt=_first_cache_salt(request),
+            )
+            self._stats["donors_registered"] += 1
+        except Exception as e:
+            logger.debug("SemBlend donor registration skipped (graceful): %s", e)
 
     # ------------------------------------------------------------------
     # Approach C: Block-Level Injection

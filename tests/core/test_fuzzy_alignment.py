@@ -84,9 +84,7 @@ class TestExactRunRecovery:
         result = compute_alignment(donor, target, chunk_size=16)
 
         copy_actions = [
-            sa
-            for sa in result.slot_actions
-            if sa.action == SlotActionType.COPY_FROM_DONOR
+            sa for sa in result.slot_actions if sa.action == SlotActionType.COPY_FROM_DONOR
         ]
         assert len(copy_actions) == len(shared)
         assert result.reuse_ratio > 0.99
@@ -112,11 +110,7 @@ class TestExactRunRecovery:
             max_segments=4,
         )
 
-        copied = [
-            sa
-            for sa in result.slot_actions
-            if sa.action == SlotActionType.COPY_FROM_DONOR
-        ]
+        copied = [sa for sa in result.slot_actions if sa.action == SlotActionType.COPY_FROM_DONOR]
         assert len(copied) == len(run_a) + len(run_b)
 
         run_starts = []

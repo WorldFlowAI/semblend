@@ -66,9 +66,9 @@ def test_result_fields_wrapper_reads_stay_present_and_optional_extras_default():
     import dataclasses as dc
 
     for f in list(FuzzyMatchResult.__dataclass_fields__.values())[6:]:
-        assert (
-            f.default is not dc.MISSING or f.default_factory is not dc.MISSING
-        ), f"new FuzzyMatchResult field must be optional: {f.name}"
+        assert f.default is not dc.MISSING or f.default_factory is not dc.MISSING, (
+            f"new FuzzyMatchResult field must be optional: {f.name}"
+        )
 
 
 def test_segment_fields_wrapper_reads_stay_present():

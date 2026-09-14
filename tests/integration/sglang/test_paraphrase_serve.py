@@ -40,9 +40,7 @@ def test_accepted_paraphrase_builds_contiguous_result(monkeypatch):
     a = _adapter(monkeypatch)
     h = _handle("The tally recorded exactly 47 approvals in Geneva.")
     remaining = list(range(500, 540))
-    res = a._paraphrase_result(
-        donor_id="d", handle=h, remaining=remaining, similarity=0.97
-    )
+    res = a._paraphrase_result(donor_id="d", handle=h, remaining=remaining, similarity=0.97)
     assert res is not None
     assert res.cached_token_count == 38  # 40 remaining - 2 tail reserve
     assert list(res.kv_cache_indices) == list(range(1000, 1038))
@@ -55,9 +53,10 @@ def test_accepted_paraphrase_builds_contiguous_result(monkeypatch):
 def test_short_window_returns_none(monkeypatch):
     a = _adapter(monkeypatch)
     h = _handle("text", n_kv=64)
-    assert a._paraphrase_result(
-        donor_id="d", handle=h, remaining=list(range(6)), similarity=0.97
-    ) is None
+    assert (
+        a._paraphrase_result(donor_id="d", handle=h, remaining=list(range(6)), similarity=0.97)
+        is None
+    )
 
 
 class _FakeNliGate:

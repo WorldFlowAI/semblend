@@ -20,13 +20,22 @@ This module requires SGLang to be installed and is loaded at runtime.
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import time
 from collections import OrderedDict
+from dataclasses import is_dataclass
+from dataclasses import replace as dataclass_replace
 from typing import Any, Optional
 
 import numpy as np
+
+from semblend.integration.sglang.namespace import (
+    NO_EXTRA_KEY_NAMESPACE,
+    chain_namespace,
+    isolation_namespace,
+)
 
 logger = logging.getLogger("semblend.sglang.radix")
 
@@ -118,6 +127,39 @@ def _tokens_to_text(token_ids: list[int]) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Isolation namespace
+# ---------------------------------------------------------------------------
+
+# The sentinel and the hashing helper live in namespace.py so the
+# upstream-PR adapter does not have to import them out of this
+# monkey-patch module. Re-exported under the old private name because
+# released integrations and tests still reach for it here.
+_isolation_namespace = isolation_namespace
+
+
+def _key_namespace(key: Any) -> str:
+    """Isolation namespace of whatever SGLang passes as the match_prefix key.
+
+    Composed per field over the params object, the RadixKey it wraps and the
+    Req either of them references, so neither an outer wrapper without the
+    field nor an inner one carrying only half of it can change the result.
+    A bare token list (older SGLang) carries no isolation value and lands in
+    the sentinel namespace, which is also what that release's own tree does.
+    """
+    return chain_namespace(key)
+
+
+def _req_namespace(req: Any) -> str:
+    """Isolation namespace of a finished SGLang Req, for donor registration.
+
+    The same composition as ``_key_namespace``, over the same field set:
+    registration and lookup are one function, so a salted request cannot
+    register under its salt and then look one up without it.
+    """
+    return chain_namespace(req)
+
+
+# ---------------------------------------------------------------------------
 # Donor store
 # ---------------------------------------------------------------------------
 
@@ -125,7 +167,7 @@ def _tokens_to_text(token_ids: list[int]) -> Optional[str]:
 class _DonorEntry:
     """A cached donor prompt for semantic matching."""
 
-    __slots__ = ("token_ids", "embedding", "timestamp", "num_tokens")
+    __slots__ = ("token_ids", "embedding", "timestamp", "num_tokens", "namespace")
 
     def __init__(
         self,
@@ -133,11 +175,14 @@ class _DonorEntry:
         embedding: np.ndarray,
         timestamp: float,
         num_tokens: int,
+        namespace: str,
     ) -> None:
         self.token_ids = token_ids
         self.embedding = embedding
         self.timestamp = timestamp
         self.num_tokens = num_tokens
+        # Isolation namespace of the request that produced this KV.
+        self.namespace = namespace
 
 
 class _SemBlendDonorStore:
@@ -148,21 +193,36 @@ class _SemBlendDonorStore:
         max_entries: int = 1000,
         min_similarity: float = 0.60,
     ) -> None:
-        self._entries: OrderedDict[tuple[int, ...], _DonorEntry] = OrderedDict()
+        self._entries: OrderedDict[tuple[str, tuple[int, ...]], _DonorEntry] = OrderedDict()
         self._max_entries = max_entries
         self._min_similarity = min_similarity
+        self._namespace_rejections = 0
 
     @property
     def size(self) -> int:
         return len(self._entries)
 
+    @property
+    def namespace_rejections(self) -> int:
+        """Donor candidates skipped because their namespace did not match.
+
+        Monotonic across the store's lifetime; the cache reports the
+        per-lookup delta through get_semblend_stats().
+        """
+        return self._namespace_rejections
+
     def add_donor(
         self,
         token_ids: tuple[int, ...],
         embedding: np.ndarray,
+        *,
+        namespace: str = NO_EXTRA_KEY_NAMESPACE,
     ) -> None:
         """Register a completed request as a potential donor."""
-        key = token_ids[:256]  # Use first 256 tokens as dedup key
+        # Dedup on the first 256 tokens, within a namespace only: the same
+        # prompt sent by two tenants must register twice, or the second
+        # tenant would never get a donor it is allowed to see.
+        key = (namespace, token_ids[:256])
         if key in self._entries:
             self._entries.move_to_end(key)
             return
@@ -172,6 +232,7 @@ class _SemBlendDonorStore:
             embedding=embedding / (np.linalg.norm(embedding) + 1e-10),
             timestamp=time.monotonic(),
             num_tokens=len(token_ids),
+            namespace=namespace,
         )
 
         while len(self._entries) > self._max_entries:
@@ -181,8 +242,15 @@ class _SemBlendDonorStore:
         self,
         query_embedding: np.ndarray,
         exclude_tokens: Optional[tuple[int, ...]] = None,
+        *,
+        namespace: str = NO_EXTRA_KEY_NAMESPACE,
     ) -> Optional[_DonorEntry]:
-        """Find the most semantically similar donor.
+        """Most semantically similar donor within `namespace`.
+
+        Isolation is a hard filter applied before scoring, not a penalty:
+        a donor whose namespace differs is never a candidate, whatever its
+        similarity. The default is the no-extra-key sentinel, so a caller
+        that supplies nothing can only ever see unkeyed donors.
 
         Returns the best DonorEntry above the similarity threshold, or None.
         """
@@ -195,6 +263,11 @@ class _SemBlendDonorStore:
         best_sim = self._min_similarity
 
         for entry in self._entries.values():
+            # Isolation gate first — a cross-namespace donor is not a
+            # candidate regardless of how similar it is.
+            if entry.namespace != namespace:
+                self._namespace_rejections += 1
+                continue
             if exclude_tokens and entry.token_ids[:256] == exclude_tokens[:256]:
                 continue
 
@@ -274,6 +347,10 @@ def _extract_token_ids_from_key(key: Any) -> list[int]:
 
     SGLang v0.4.x passes the key directly as a list/tuple of token IDs.
     Newer versions may wrap it in a MatchPrefixParams or similar object.
+
+    Only the token ids come back from here. The isolation fields the same
+    key carries are read separately by ``_key_namespace`` — they must not
+    be dropped on the floor while unwrapping.
     """
     # Direct list/tuple of ints
     if isinstance(key, (list, tuple)):
@@ -293,6 +370,90 @@ def _extract_token_ids_from_key(key: Any) -> list[int]:
 
     logger.warning(f"Cannot extract token IDs from key type: {type(key).__name__}")
     return []
+
+
+def _with_attribute(obj: Any, name: str, value: Any) -> Optional[Any]:
+    """Copy of ``obj`` with one attribute replaced, or None if it cannot be.
+
+    Copies rather than assigns in place: SGLang hands us the live key of the
+    request being scheduled, and the donor lookup must not disturb it.
+    """
+    if is_dataclass(obj) and not isinstance(obj, type):
+        try:
+            return dataclass_replace(obj, **{name: value})
+        except (TypeError, ValueError):
+            # Non-init or unknown field on this build — fall back to a copy.
+            pass
+    try:
+        clone = copy.copy(obj)
+        setattr(clone, name, value)
+        return clone
+    except (AttributeError, TypeError):
+        return None
+
+
+def _donor_lookup_key(key: Any, donor_token_ids: list[int]) -> Optional[Any]:
+    """A match_prefix key for the donor's tokens, shaped like ``key``.
+
+    The donor lookup re-enters the same tree, so it has to present the same
+    key type AND the same isolation value the request arrived with. A bare
+    token list is no substitute: on builds whose match_prefix expects a
+    RadixKey it raises, so the semantic path never fires there at all, and on
+    builds that partition the tree by extra_key it would look the donor up
+    outside the requesting tenant's partition.
+
+    Returns None when the shape cannot be rebuilt; the caller then declines
+    the donor rather than querying the tree unisolated.
+    """
+    if isinstance(key, (list, tuple)):
+        # Older SGLang passes the token ids themselves, and that release's
+        # tree carries no isolation value, so the list is the whole key.
+        return list(donor_token_ids)
+
+    if hasattr(key, "token_ids"):
+        return _with_attribute(key, "token_ids", list(donor_token_ids))
+
+    inner = getattr(key, "key", None)
+    if inner is not None:
+        rebuilt = _donor_lookup_key(inner, donor_token_ids)
+        if rebuilt is None:
+            return None
+        # The wrapper's other fields (notably ``req``) ride along: some
+        # builds read the isolation value off the request, not the key.
+        return _with_attribute(key, "key", rebuilt)
+
+    return None
+
+
+def _cap_match_result(result: Any, max_reuse: int) -> Optional[tuple[Any, int]]:
+    """``(result, matched_len)`` with the matched prefix cut to ``max_reuse``.
+
+    Returns None when this result shape cannot be capped. An uncappable
+    result must become a miss, never an uncapped hit: a prefix at least as
+    long as the request leaves the SGLang scheduler no token to prefill,
+    i.e. a negative new-token count.
+    """
+    if not isinstance(result, tuple) or len(result) < 2:
+        return None
+
+    indices = result[0]
+    if not hasattr(indices, "__len__"):
+        return None
+    if len(indices) <= max_reuse:
+        return result, len(indices)
+
+    # A host-side hit length describes the untruncated prefix; cutting the
+    # device indices out from under it would leave the two disagreeing.
+    if getattr(result, "host_hit_length", 0):
+        return None
+
+    truncated = indices[:max_reuse]
+    if hasattr(result, "_replace") and getattr(result, "_fields", None):
+        # SGLang's MatchResult is a NamedTuple: rebuild it as its own type so
+        # the scheduler still gets the node fields it reads by name. A plain
+        # 2-tuple would drop last_host_node / host_hit_length.
+        return result._replace(**{result._fields[0]: truncated}), max_reuse
+    return (truncated, result[1]), max_reuse
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +491,16 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
                 "semantic_hits": 0,
                 "misses": 0,
                 "donors_registered": 0,
+                # Donor entries withheld from a lookup because their
+                # extra_key namespace differed from the requesting tenant's.
+                # Non-zero here is isolation doing its job, not an error.
+                "cross_namespace_rejected": 0,
+                # Donors declined because no isolated tree key could be built
+                # for this SGLang key shape.
+                "donor_key_unavailable": 0,
+                # Donors declined because their prefix could not be capped to
+                # leave the scheduler a token to prefill.
+                "uncapped_prefix_declined": 0,
             }
 
             if self._semblend_enabled:
@@ -381,16 +552,27 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
                     self._semblend_stats["radix_hits"] += 1
                 return base_result
 
+            # Isolation namespace for this request. The donor lookup below
+            # carries it, and every donor was registered under the namespace
+            # of the request that produced its KV.
             return self._try_semantic_match(
-                token_ids, matched_len, base_result, target_len=len(token_ids), **kwargs
+                key,
+                token_ids,
+                matched_len,
+                base_result,
+                target_len=len(token_ids),
+                namespace=_key_namespace(key),
+                **kwargs,
             )
 
         def _try_semantic_match(
             self,
+            key: Any,
             token_ids: list[int],
             matched_len: int,
             base_result: Any,
             target_len: int = 0,
+            namespace: str = NO_EXTRA_KEY_NAMESPACE,
             **kwargs: Any,
         ) -> Any:
             """Attempt semantic donor search and tree lookup."""
@@ -401,17 +583,26 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
                     self._semblend_stats["misses"] += 1
                     return base_result
 
-                donor = self._semblend_donor_store.find_donor(
+                store = self._semblend_donor_store
+                rejected_before = store.namespace_rejections
+                donor = store.find_donor(
                     query_embedding,
                     exclude_tokens=tuple(token_ids[:256]),
+                    namespace=namespace,
                 )
+                withheld = store.namespace_rejections - rejected_before
+                self._semblend_stats["cross_namespace_rejected"] += withheld
 
                 if donor is None:
                     self._semblend_stats["misses"] += 1
+                    logger.debug(
+                        f"SemBlend semantic miss: store_size={store.size}, "
+                        f"out_of_namespace={withheld}"
+                    )
                     return base_result
 
                 return self._lookup_donor_in_tree(
-                    donor, matched_len, base_result, t0, target_len=target_len, **kwargs
+                    key, donor, matched_len, base_result, t0, target_len=target_len, **kwargs
                 )
 
             except Exception as e:
@@ -421,6 +612,7 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
 
         def _lookup_donor_in_tree(
             self,
+            key: Any,
             donor: _DonorEntry,
             matched_len: int,
             base_result: Any,
@@ -430,29 +622,48 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
         ) -> Any:
             """Check if a donor's tokens exist in the radix tree.
 
-            When the donor has more tokens than the target request,
-            we cap the reused prefix to avoid negative new-token counts
-            in the SGLang scheduler.
+            The tree is re-entered with a key rebuilt from the request's own
+            key, so the lookup carries the isolation value SGLang keys its
+            tree on instead of dropping it.
+
+            When the donor has more tokens than the target request we cap the
+            reused prefix to avoid negative new-token counts in the SGLang
+            scheduler, and a donor whose result cannot be capped is declined
+            rather than served uncapped.
             """
             try:
-                donor_token_ids = list(donor.token_ids)
-                donor_result = super().match_prefix(donor_token_ids, **kwargs)
+                donor_key = _donor_lookup_key(key, list(donor.token_ids))
+                if donor_key is None:
+                    logger.debug(
+                        f"SemBlend donor declined: no isolated tree key for {type(key).__name__}"
+                    )
+                    self._semblend_stats["donor_key_unavailable"] += 1
+                    self._semblend_stats["misses"] += 1
+                    return base_result
+
+                donor_result = super().match_prefix(donor_key, **kwargs)
                 donor_matched = _get_matched_length(donor_result)
 
                 # Cap reuse to target request length minus a safety
                 # margin of 1 token (SGLang needs at least 1 new token
                 # to prefill).
                 if target_len > 0 and donor_matched >= target_len:
-                    max_reuse = max(target_len - 1, 0)
-                    if isinstance(donor_result, tuple) and len(donor_result) >= 2:
-                        prefix_tensor = donor_result[0]
-                        if hasattr(prefix_tensor, "__len__") and len(prefix_tensor) > max_reuse:
-                            donor_result = (prefix_tensor[:max_reuse], donor_result[1])
-                            donor_matched = max_reuse
-                            logger.info(
-                                f"SemBlend capped prefix: {len(prefix_tensor)} -> "
-                                f"{max_reuse} tokens (target_len={target_len})"
-                            )
+                    capped = _cap_match_result(donor_result, max(target_len - 1, 0))
+                    if capped is None:
+                        logger.debug(
+                            f"SemBlend donor declined: {donor_matched}-token prefix "
+                            f"cannot be capped to target_len={target_len}"
+                        )
+                        self._semblend_stats["uncapped_prefix_declined"] += 1
+                        self._semblend_stats["misses"] += 1
+                        return base_result
+                    donor_result, capped_len = capped
+                    if capped_len != donor_matched:
+                        logger.info(
+                            f"SemBlend capped prefix: {donor_matched} -> "
+                            f"{capped_len} tokens (target_len={target_len})"
+                        )
+                    donor_matched = capped_len
 
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 if donor_matched > matched_len:
@@ -493,7 +704,11 @@ def get_semblend_radix_cache_class(base_cache_cls: type) -> type:
                 if embedding is None:
                     return
 
-                self._semblend_donor_store.add_donor(tuple(token_ids), embedding)
+                self._semblend_donor_store.add_donor(
+                    tuple(token_ids),
+                    embedding,
+                    namespace=_req_namespace(req),
+                )
                 self._semblend_stats["donors_registered"] += 1
 
             except Exception as e:
