@@ -3,6 +3,31 @@
 Notable changes to the `semblend` package, newest first. Releases before
 0.3.22 are described by their git tags and commit history.
 
+## 0.3.23 - 2026-09-14
+
+### Added
+
+**A request-derivable tenant key on every `DonorRegistered` event.** The
+event's namespace now carries `extra.tenant_key`, tenant key v1:
+`semblend:tenant:v1:` followed by the first 32 hex characters of
+`sha256(cache_salt)`, or the sentinel `semblend:tenant:v1:none` when the
+request carries no salt. It is a function of the raw salt alone, so a
+gateway that sets the salt per tenant can compute the same key and a fleet
+catalog can scope donor placement to one tenant without knowing anything
+engine-specific. The engine-local isolation namespace at `extra.cache_salt`
+is unchanged and is still what every lookup enforces. The contract and a
+shared test vector live in `docs/tenant-key-v1.md` and
+`tests/tenant_key_v1_vector.json`.
+
+Publishers: the vLLM connector passes the request's salt into
+`register_donor`; the TensorRT-LLM provider binds the key on the event
+namespace only; the SGLang adapter now announces its donors through
+`SemBlendPipeline.publish_donor_registered` (it previously published no
+event at all) and carries the sentinel until its wrapper threads the salt;
+the direct `SemBlendEventEmitter.donor_registered` takes `cache_salt` and
+warns once when it is omitted. The raw salt never reaches an event or a log
+line.
+
 ## 0.3.22 - 2026-09-13
 
 ### Security
