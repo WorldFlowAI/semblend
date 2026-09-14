@@ -54,6 +54,10 @@ def mock_vllm_imports():
         "vllm.v1.core.sched.output",
         "vllm.v1.kv_cache_interface",
         "vllm.v1.request",
+        # The connector imports torch at module scope; CI runs without it.
+        "torch",
+        "torch.cuda",
+        "triton",
     ]:
         if mod_name not in sys.modules:
             installed[mod_name] = MagicMock()
