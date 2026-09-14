@@ -8,6 +8,10 @@ import os
 from dataclasses import replace
 from typing import Any, Mapping
 
+from semblend.integration.dynamo.semantic_events import (
+    TENANT_KEY_EXTRA_FIELD,
+    tenant_key_for_salt,
+)
 from semblend.integration.trtllm.upstream_interface import CacheNamespace
 
 # Isolation namespace for requests that carry no cache_salt.
@@ -68,6 +72,49 @@ def bind_cache_salt(namespace: CacheNamespace, cache_salt: Any = None) -> CacheN
     if extra.get(CACHE_SALT_EXTRA_FIELD) == salt_namespace:
         return namespace
     return replace(namespace, extra={**extra, CACHE_SALT_EXTRA_FIELD: salt_namespace})
+
+
+def bind_tenant_key(namespace: CacheNamespace, cache_salt: Any = None) -> CacheNamespace:
+    """Namespace with the request's tenant key bound into ``extra``.
+
+    Two different keys ride on a published donor. ``cache_salt`` above is the
+    engine-local isolation namespace: it is hashed from the salt the engine
+    stores the KV under and it is what ``namespace_key`` keys the donor by.
+    ``tenant_key`` is ``tenant key v1`` — a function of the raw salt alone —
+    so a router holding the request can reproduce it and place on it. Both
+    are stamped, never one instead of the other.
+
+    The derivation is imported rather than repeated: one implementation of
+    the contract per package, so the TRT-LLM and vLLM publishers cannot drift
+    into two different keys for one salt. The field is always stamped,
+    sentinel included, so an unsalted donor is explicitly unsalted on the
+    wire rather than silent.
+
+    This binds only for the wire. It must not be bound into the namespace
+    ``namespace_key`` hashes: that key is the engine-local store's, and
+    moving it would strand every donor registered before the change.
+    """
+    value = tenant_key_for_salt(cache_salt)
+    extra = dict(namespace.extra or {})
+    if extra.get(TENANT_KEY_EXTRA_FIELD) == value:
+        return namespace
+    return replace(namespace, extra={**extra, TENANT_KEY_EXTRA_FIELD: value})
+
+
+def strip_tenant_key(namespace: CacheNamespace) -> CacheNamespace:
+    """Namespace without the wire-only tenant key.
+
+    The engine-local identity of a donor is the namespace ``namespace_key``
+    hashes, and the tenant key is not part of it. A provider that rebuilds a
+    donor handle from a published event has to drop the field again, or the
+    handle compares unequal to the request namespace it came from and every
+    lookup fails closed as cross-namespace.
+    """
+    extra = dict(namespace.extra or {})
+    if TENANT_KEY_EXTRA_FIELD not in extra:
+        return namespace
+    del extra[TENANT_KEY_EXTRA_FIELD]
+    return replace(namespace, extra=extra)
 
 
 def build_cache_namespace(

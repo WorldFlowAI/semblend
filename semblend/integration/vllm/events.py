@@ -21,6 +21,14 @@ Isolation rule: the ``extra_key`` passed to :meth:`donor_registered` MUST be
 the isolation key the donor's KV is stored under engine-side, so the fleet
 catalog isolates the donor exactly as the engine-local donor store does.
 
+Tenant rule: ``cache_salt`` is the request's RAW salt, and is published
+separately as the tenant key of ``tenant key v1``
+(``semblend/../dynamo/semantic_events.py``, ``docs/tenant-key-v1.md``). The
+isolation key above is derived from engine-private inputs, so a router holding
+only the request cannot reproduce it; the tenant key is a function of the salt
+alone, so whoever set the salt can. Both are stamped, and neither replaces the
+other.
+
 Enabled only when ``SEMBLEND_NATS_URL`` is set; all publishing is fail-safe and
 never raises into the inference hot path.
 """
@@ -35,6 +43,11 @@ from dataclasses import replace
 from typing import Any, Callable, Optional, Sequence
 
 logger = logging.getLogger("semblend.vllm.events")
+
+#: Distinguishes "the caller threaded no salt argument at all" from "this
+#: request genuinely had no salt". Both publish the no-tenant sentinel; only
+#: the first is a wiring gap worth warning about.
+_UNSET_CACHE_SALT = object()
 
 
 def _worker_id_from_env(explicit: Optional[int]) -> int:
@@ -180,22 +193,31 @@ class VllmContractEmitter:
         tenant: Optional[str] = None,
         template: Optional[str] = None,
         extra_key: Optional[str] = None,
+        cache_salt: Any = _UNSET_CACHE_SALT,
     ) -> None:
         """Emit DonorRegistered, reusing the donor's stored embedding. Per-donor
         ``tenant`` / ``template`` override the worker-level namespace extra so
         the consumer can gate reuse to the right tenant/template.
 
-        ``extra_key`` is the per-request isolation key (vLLM's ``cache_salt``)
-        the donor's KV was registered under in the engine-local store. It is
-        bound into the namespace the event carries, because tenant/template
-        are worker-level routing hints: without the request's own key every
-        donor a worker announces looks equally reusable to the fleet router,
-        which is how a tenant-B request lands on a tenant-A donor.
+        ``extra_key`` is the per-request isolation key the donor's KV was
+        registered under in the engine-local store. It is bound into the
+        namespace the event carries, because tenant/template are worker-level
+        routing hints: without the request's own key every donor a worker
+        announces looks equally reusable to the fleet router, which is how a
+        tenant-B request lands on a tenant-A donor.
+
+        ``cache_salt`` is that request's RAW salt, published beside the
+        isolation key as the tenant key (``tenant key v1``). Omitting the
+        argument publishes the no-tenant sentinel and warns once: a router
+        cannot derive ``extra_key``, so a worker that never threads the salt
+        announces donors no keyed placement can ever select.
         """
         try:
             from semblend.integration.dynamo.semantic_events import (
                 bind_isolation_key,
+                bind_tenant_key,
                 donor_registered_event,
+                warn_missing_tenant_key_once,
             )
 
             ns = self._namespace
@@ -207,6 +229,11 @@ class VllmContractEmitter:
                     extra["template"] = template
                 ns = replace(self._namespace, extra=extra or None)
             ns = bind_isolation_key(ns, extra_key)
+            if cache_salt is _UNSET_CACHE_SALT:
+                warn_missing_tenant_key_once()
+                ns = bind_tenant_key(ns, None)
+            else:
+                ns = bind_tenant_key(ns, cache_salt)
 
             emb = embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
             self._sink(

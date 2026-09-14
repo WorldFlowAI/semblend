@@ -1,0 +1,6 @@
+{
+  "cache_salt": "tenant-acme",
+  "tenant_key": "semblend:tenant:v1:9332cc3fc0ec09d0f04fa8e1e08637b5",
+  "no_salt_tenant_key": "semblend:tenant:v1:none",
+  "contract": "tenant key v1"
+}

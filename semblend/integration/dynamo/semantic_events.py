@@ -8,17 +8,28 @@ The embedding is not a typed field; it rides the per-segment opaque
 ``provider_metadata`` as little-endian f32 bytes (a JSON array of u8). Consumers
 decode it with the same convention (:func:`decode_embedding`). ``donor_id`` is
 the join key.
+
+A donor's namespace carries two different keys, and they are not
+interchangeable: ``extra.cache_salt`` is the engine-local isolation namespace
+the donor's KV is actually stored under, and ``extra.tenant_key`` is the
+request-derivable tenant identity of ``tenant key v1``. Only the second can be
+computed by a caller that holds the request. The contract is written down in
+``docs/tenant-key-v1.md``; :func:`tenant_key_for_salt` is its reference
+implementation.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import struct
 from dataclasses import dataclass, replace
 from typing import Any, Optional, Sequence
 
 import numpy as np
+
+logger = logging.getLogger("semblend.semantic_events")
 
 SEMANTIC_KV_EVENT_SUBJECT = "semantic-kv-events"
 SEMANTIC_KV_EVENT_SCHEMA_VERSION = 1
@@ -40,6 +51,25 @@ ISOLATION_EXTRA_FIELD = "cache_salt"
 NO_ISOLATION_NAMESPACE = "semblend:ns:no-cache-salt"
 
 _ISOLATION_NAMESPACE_PREFIX = "semblend:ns:salt:"
+
+# Where a donor's request-derivable tenant identity rides on the wire, beside
+# ISOLATION_EXTRA_FIELD rather than instead of it.
+#
+# The isolation key above is derived from engine-private inputs, so no caller
+# holding only the request can reproduce it; a consumer that wants to place a
+# request on a donor of the same tenant has nothing to compare against. The
+# tenant key is a function of the raw cache_salt alone, so whoever set the
+# salt can compute it. See ``docs/tenant-key-v1.md``.
+TENANT_KEY_EXTRA_FIELD = "tenant_key"
+
+# Value of TENANT_KEY_EXTRA_FIELD for a donor whose request carried no salt.
+NO_TENANT_KEY = "semblend:tenant:v1:none"
+
+# Contract name, versioned so a future derivation ships as v2 under its own
+# prefix rather than silently redefining this one.
+TENANT_KEY_CONTRACT = "tenant key v1"
+
+_TENANT_KEY_PREFIX = "semblend:tenant:v1:"
 
 
 def encode_embedding(embedding: Sequence[float]) -> list[int]:
@@ -129,6 +159,63 @@ def bind_isolation_key(namespace: CacheNamespace, extra_key: Any = None) -> Cach
     if extra.get(ISOLATION_EXTRA_FIELD) == value:
         return namespace
     return replace(namespace, extra={**extra, ISOLATION_EXTRA_FIELD: value})
+
+
+#: Sentinel for "the caller never passed a salt at all", which is a wiring
+#: gap, as opposed to ``None``, which is a request that genuinely has none.
+_UNSET_CACHE_SALT = object()
+
+_warned_missing_tenant_key = False
+
+
+def warn_missing_tenant_key_once() -> None:
+    """Warn the first time a donor is registered with no salt threaded in."""
+    global _warned_missing_tenant_key
+    if _warned_missing_tenant_key:
+        return
+    _warned_missing_tenant_key = True
+    logger.warning(
+        "SemBlend registered donors without a tenant key: no cache_salt was "
+        "passed to donor_registered, so every donor this worker publishes "
+        "carries %s and a router cannot place requests by tenant. Thread the "
+        "request's cache_salt through register_donor (%s).",
+        NO_TENANT_KEY,
+        TENANT_KEY_CONTRACT,
+    )
+
+
+def tenant_key_for_salt(cache_salt: Any = None) -> str:
+    """Tenant key v1 for a request's raw ``cache_salt``.
+
+    ``"semblend:tenant:v1:" + sha256(cache_salt utf-8)[:32]`` for a non-empty
+    salt, else :data:`NO_TENANT_KEY`.
+
+    The salt is hashed exactly as received — no trimming, no case folding —
+    so anyone holding the same bytes reproduces the same key without having
+    to reproduce anyone's normalization. The digest is what reaches the wire,
+    so a tenant-identifying salt never does.
+    """
+    if cache_salt is None:
+        return NO_TENANT_KEY
+    salt = cache_salt if isinstance(cache_salt, str) else str(cache_salt)
+    if not salt:
+        return NO_TENANT_KEY
+    digest = hashlib.sha256(salt.encode("utf-8")).hexdigest()[:32]
+    return _TENANT_KEY_PREFIX + digest
+
+
+def bind_tenant_key(namespace: CacheNamespace, cache_salt: Any = None) -> CacheNamespace:
+    """Namespace with the request's tenant key bound into ``extra``.
+
+    Always stamped, sentinel included, for the same reason
+    :func:`bind_isolation_key` always stamps its field: a consumer should
+    never have to guess whether a namespace predates the contract.
+    """
+    value = tenant_key_for_salt(cache_salt)
+    extra = dict(namespace.extra or {})
+    if extra.get(TENANT_KEY_EXTRA_FIELD) == value:
+        return namespace
+    return replace(namespace, extra={**extra, TENANT_KEY_EXTRA_FIELD: value})
 
 
 def worker_location(worker_id: int, dp_rank: int = 0, tier: str = "device") -> dict[str, Any]:
@@ -267,24 +354,33 @@ class SemBlendEventEmitter:
         prompt_text: str,
         *,
         extra_key: Optional[str] = None,
+        cache_salt: Any = _UNSET_CACHE_SALT,
     ) -> Optional[dict[str, Any]]:
         """Build a DonorRegistered event with the donor's embedding, or None if
         the embedder is unavailable (fail closed: no embedding, no event).
 
         ``extra_key`` is the isolation key the donor's KV was registered under
         engine-side. It is bound into the namespace the event carries so the
-        fleet catalog isolates this donor exactly as the local store does;
-        omitting it would publish the donor as tenant-less.
+        fleet catalog isolates this donor exactly as the local store does.
+
+        ``cache_salt`` is the request's RAW salt, published beside it as the
+        tenant key (``tenant key v1``). Only that key is derivable by a caller
+        holding the request, so a worker that never threads the salt announces
+        donors no keyed placement can select: omitting the argument publishes
+        the sentinel and warns once per process.
         """
         raw = self._embedder.embed(prompt_text)
         if raw is None:
             return None
+        if cache_salt is _UNSET_CACHE_SALT:
+            warn_missing_tenant_key_once()
+            cache_salt = None
         embedding = np.asarray(raw, dtype=np.float32).tolist()
         return donor_registered_event(
             event_id=self._next_id(),
             worker_id=self._worker_id,
             donor_id=donor_id,
-            namespace=bind_isolation_key(self._namespace, extra_key),
+            namespace=bind_tenant_key(bind_isolation_key(self._namespace, extra_key), cache_salt),
             token_ids=token_ids,
             embedding=embedding,
             dp_rank=self._dp_rank,

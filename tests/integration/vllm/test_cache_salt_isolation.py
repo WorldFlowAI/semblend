@@ -491,3 +491,125 @@ class TestPipelinePostCheckFailsClosed:
 
         assert kept == []
         assert connector._stats["cross_namespace_rejected"] == 1
+
+
+class TestTenantKeyThreading:
+    """The connector publishes a tenant key derived from the raw salt.
+
+    The engine-local namespace isolates the donor inside this worker; the
+    tenant key is what a fleet router can recompute from the request it is
+    placing, so the donor path has to forward the salt itself and not only
+    the namespace hashed from it.
+    """
+
+    @staticmethod
+    def _emitting_pipeline(events):
+        from semblend.integration.dynamo.semantic_events import CacheNamespace
+        from semblend.integration.vllm.events import VllmContractEmitter
+
+        pipeline = _make_pipeline()
+        pipeline._event_emitter = VllmContractEmitter(  # noqa: SLF001
+            worker_id=3,
+            namespace=CacheNamespace(
+                model="qwen",
+                tokenizer="qwen",
+                kv_layout="vllm",
+                block_size=32,
+            ),
+            sink=events.append,
+        )
+        return pipeline
+
+    def test_the_donor_event_carries_the_key_for_the_request_salt(self, connector_module):
+        from semblend.integration.dynamo.semantic_events import (
+            TENANT_KEY_EXTRA_FIELD,
+            tenant_key_for_salt,
+        )
+
+        events: list[dict] = []
+        connector = _make_connector(connector_module, pipeline=self._emitting_pipeline(events))
+
+        connector._register_donor(_FakeRequest("donor", DONOR_TOKENS, DONOR_TEXT, "tenant-acme"))
+
+        extra = events[0]["data"]["namespace"]["extra"]
+        assert extra[TENANT_KEY_EXTRA_FIELD] == tenant_key_for_salt("tenant-acme")
+
+    def test_the_salt_is_keyed_exactly_as_the_request_carried_it(self, connector_module):
+        """The namespace trims the salt; the tenant key must not.
+
+        A router holding the request reproduces the key from the bytes it
+        set, so any normalization here would publish a key nobody can match.
+        """
+        from semblend.integration.dynamo.semantic_events import (
+            TENANT_KEY_EXTRA_FIELD,
+            tenant_key_for_salt,
+        )
+
+        events: list[dict] = []
+        connector = _make_connector(connector_module, pipeline=self._emitting_pipeline(events))
+
+        connector._register_donor(_FakeRequest("donor", DONOR_TOKENS, DONOR_TEXT, " tenant-acme "))
+
+        extra = events[0]["data"]["namespace"]["extra"]
+        assert extra[TENANT_KEY_EXTRA_FIELD] == tenant_key_for_salt(" tenant-acme ")
+        assert extra[TENANT_KEY_EXTRA_FIELD] != tenant_key_for_salt("tenant-acme")
+
+    def test_an_unsalted_request_publishes_the_sentinel_without_warning(
+        self, connector_module, caplog
+    ):
+        import logging
+
+        from semblend.integration.dynamo import semantic_events
+        from semblend.integration.dynamo.semantic_events import (
+            NO_TENANT_KEY,
+            TENANT_KEY_EXTRA_FIELD,
+        )
+
+        semantic_events._warned_missing_tenant_key = False  # noqa: SLF001
+        events: list[dict] = []
+        connector = _make_connector(connector_module, pipeline=self._emitting_pipeline(events))
+
+        with caplog.at_level(logging.WARNING, logger="semblend.semantic_events"):
+            connector._register_donor(_FakeRequest("donor", DONOR_TOKENS, DONOR_TEXT))
+
+        extra = events[0]["data"]["namespace"]["extra"]
+        assert extra[TENANT_KEY_EXTRA_FIELD] == NO_TENANT_KEY
+        assert not [r for r in caplog.records if "without a tenant key" in r.message]
+
+    def test_a_request_type_without_the_field_at_all_warns_once(self, connector_module, caplog):
+        """A missing attribute is a wiring gap, not an unsalted request.
+
+        An engine version whose request object never carries ``cache_salt``
+        would otherwise publish every donor tenant-less with no signal: the
+        warning is the only way that reaches an operator.
+        """
+        import logging
+
+        from semblend.integration.dynamo import semantic_events
+        from semblend.integration.dynamo.semantic_events import (
+            NO_TENANT_KEY,
+            TENANT_KEY_EXTRA_FIELD,
+        )
+
+        class _NoSaltFieldRequest:
+            """A request object from an engine that has no cache_salt."""
+
+            def __init__(self, request_id):
+                self.request_id = request_id
+                self.all_token_ids = list(DONOR_TOKENS)
+                self.num_prompt_tokens = len(DONOR_TOKENS)
+                self.prompt = DONOR_TEXT
+
+        assert not hasattr(_NoSaltFieldRequest("donor"), "cache_salt")
+        semantic_events._warned_missing_tenant_key = False  # noqa: SLF001
+        events: list[dict] = []
+        connector = _make_connector(connector_module, pipeline=self._emitting_pipeline(events))
+
+        with caplog.at_level(logging.WARNING, logger="semblend.semantic_events"):
+            connector._register_donor(_NoSaltFieldRequest("donor-a"))
+            connector._register_donor(_NoSaltFieldRequest("donor-b"))
+
+        assert len([r for r in caplog.records if "without a tenant key" in r.message]) == 1
+        assert all(
+            e["data"]["namespace"]["extra"][TENANT_KEY_EXTRA_FIELD] == NO_TENANT_KEY for e in events
+        )

@@ -151,7 +151,18 @@ def test_trtllm_contract_emitter_builds_wire_event():
     assert wire["worker_id"] == 3
     assert wire["data"]["kind"] == "donor_registered"
     assert wire["data"]["location"]["worker_id"] == 3
-    assert wire["data"]["namespace"]["extra"] == namespace.extra
+    # The wire namespace is the publisher's: the worker-level extra plus the
+    # per-request tenant key the registration stamped (here the no-salt
+    # sentinel, since this registration carried no cache_salt).
+    from semblend.integration.dynamo.semantic_events import (
+        NO_TENANT_KEY,
+        TENANT_KEY_EXTRA_FIELD,
+    )
+
+    assert wire["data"]["namespace"]["extra"] == {
+        **namespace.extra,
+        TENANT_KEY_EXTRA_FIELD: NO_TENANT_KEY,
+    }
     assert wire["data"]["segments"][0]["provider_metadata"]
 
 

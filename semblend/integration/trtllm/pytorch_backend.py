@@ -325,6 +325,10 @@ class TRTLLMPyTorchBackend:
             token_ids=token_ids,
             prompt_text=prompt_text,
             extra_key=self._request_namespace(salt),
+            # The raw salt as well as the namespace derived from it: the
+            # published tenant key is a function of the salt alone, so a
+            # router that set the salt can select this donor by tenant.
+            cache_salt=salt,
         )
         self._stats["donors_registered"] += 1
         # Reached only with the pipeline live, so the count reflects donors

@@ -19,6 +19,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -29,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 
 _EMBED_MAX_CHARS = int(os.environ.get("SEMBLEND_EMBED_MAX_CHARS", "4000"))
+
+#: Distinguishes "the caller threaded no salt argument at all" from "this
+#: request genuinely had no salt", so the emitter can warn about the first.
+_UNSET_CACHE_SALT = object()
 
 
 def _order_invariant_text(text: str, max_chars: int | None = None) -> str:
@@ -994,6 +999,7 @@ class SemBlendPipeline:
         extra_key: str | None = None,
         tenant: str | None = None,
         template: str | None = None,
+        cache_salt: Any = _UNSET_CACHE_SALT,
     ) -> None:
         """Register a completed request as a potential donor.
 
@@ -1004,8 +1010,14 @@ class SemBlendPipeline:
             request_id: Unique request identifier.
             token_ids: Token IDs of the completed request.
             prompt_text: Decoded prompt text for embedding.
+            extra_key: Engine-local isolation key this donor is stored under.
             tenant: Optional request tenant for fleet-routing policy.
             template: Optional prompt/template id for fleet-routing policy.
+            cache_salt: The request's RAW cache salt, published as the donor's
+                tenant key (``tenant key v1``). ``extra_key`` is derived from
+                engine-private inputs and no router can reproduce it, so the
+                salt is what makes a donor selectable by tenant. Omitting the
+                argument leaves the event tenant-less and warns once.
         """
         from semblend_core.donor_store import DonorNode
 
@@ -1067,22 +1079,56 @@ class SemBlendPipeline:
                 len(token_ids),
             )
 
-        # Emit the DonorRegistered contract event, reusing the donor embedding
-        # the store just indexed (identical-embedder with the fleet router).
-        #
-        # extra_key rides along: the same key that isolates this donor in the
-        # local store must isolate it in the fleet catalog, or a router that
-        # only ever sees the worker-level namespace will place another
-        # tenant's request on this donor.
-        if self._event_emitter is not None and embedding is not None:
-            self._event_emitter.donor_registered(
-                request_id,
-                token_ids,
-                embedding,
-                tenant=tenant,
-                template=template,
-                extra_key=extra_key,
-            )
+        self.publish_donor_registered(
+            request_id,
+            token_ids,
+            embedding,
+            extra_key=extra_key,
+            tenant=tenant,
+            template=template,
+            cache_salt=cache_salt,
+        )
+
+    def publish_donor_registered(
+        self,
+        request_id: str,
+        token_ids: list[int],
+        embedding: Any,
+        *,
+        extra_key: str | None = None,
+        tenant: str | None = None,
+        template: str | None = None,
+        cache_salt: Any = _UNSET_CACHE_SALT,
+    ) -> None:
+        """Emit the DonorRegistered contract event for a donor just indexed.
+
+        Reuses the embedding the store indexed (identical-embedder with the
+        fleet router). ``extra_key`` rides along: the same key that isolates
+        this donor in the local store must isolate it in the fleet catalog,
+        or a router that only ever sees the worker-level namespace will place
+        another tenant's request on this donor. ``cache_salt`` is what makes
+        the donor selectable by tenant at all — see :meth:`register_donor`.
+
+        Separate from :meth:`register_donor` because an engine adapter that
+        embeds and inserts on its own thread still has to announce its donors
+        the same way; the alternative is an engine whose donors exist locally
+        and are invisible to the fleet.
+        """
+        if self._event_emitter is None or embedding is None:
+            return
+        # The salt is forwarded only when the caller supplied one, so an
+        # emitter that has its own "no salt threaded" warning still fires
+        # it instead of seeing an indistinguishable None.
+        salt_kwargs = {} if cache_salt is _UNSET_CACHE_SALT else {"cache_salt": cache_salt}
+        self._event_emitter.donor_registered(
+            request_id,
+            token_ids,
+            embedding,
+            tenant=tenant,
+            template=template,
+            extra_key=extra_key,
+            **salt_kwargs,
+        )
 
     # ------------------------------------------------------------------
     # PartialAttention plan building

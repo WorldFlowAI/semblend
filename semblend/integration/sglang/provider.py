@@ -52,6 +52,11 @@ from semblend_core.pipeline import ProbeContext
 
 logger = logging.getLogger(__name__)
 
+#: Sentinel for "the caller never passed a salt", as opposed to ``None``,
+#: which is a request that genuinely carries none. Only the first is a
+#: wiring gap the publisher warns about.
+_UNSET_CACHE_SALT = object()
+
 # Back-compat alias: this adapter used to import the helper under its old
 # private name, and released integrations still read it from here.
 _isolation_namespace = isolation_namespace
@@ -227,6 +232,7 @@ class SemBlendProviderAdapter:
         *,
         prompt_text: Optional[str] = None,
         extra_key: Optional[str] = None,
+        cache_salt: Any = _UNSET_CACHE_SALT,
         radix_tree: Any = None,  # accepted for ABC compatibility; NodeRef path is v2
     ) -> bool:
         """Insert a completed request into the donor store.
@@ -244,6 +250,12 @@ class SemBlendProviderAdapter:
                 key, built from cache_salt / lora_id). Hashed into the
                 namespace the donor is bound to; a lookup must present the
                 same one.
+            cache_salt: The request's RAW cache salt, published as the
+                donor's tenant key. ``extra_key`` mixes in engine-private
+                values (lora id, the radix key's own shape), so no router can
+                reproduce it; the salt is what makes this donor selectable by
+                tenant in a fleet. Omitting the argument publishes the
+                no-tenant sentinel and warns once.
             radix_tree: Reserved for the future NodeRef resolution path.
 
         Returns:
@@ -300,6 +312,7 @@ class SemBlendProviderAdapter:
                     prompt_text or "",
                     generation,
                     namespace,
+                    cache_salt,
                 )
             except Exception:
                 self._donor_kv.pop(request_id, None)
@@ -326,6 +339,7 @@ class SemBlendProviderAdapter:
         prompt_text: str,
         generation: int,
         namespace: str,
+        cache_salt: Any = _UNSET_CACHE_SALT,
     ) -> None:
         """Run the embed + donor-store insert off the scheduler thread.
 
@@ -381,6 +395,8 @@ class SemBlendProviderAdapter:
                 self._pipeline._donor_store.add_donor(node)  # noqa: SLF001
             t_store_ms = (time.monotonic() - t_store_start) * 1000
 
+            self._announce_donor(request_id, segment_tokens, embedding, namespace, cache_salt)
+
             t_total_ms = (time.monotonic() - t_start) * 1000
             logger.info(
                 "[FUZZY] register_donor_async: ok request_id=%s tokens=%d "
@@ -402,6 +418,39 @@ class SemBlendProviderAdapter:
                 if generation == self._generation:
                     self._donor_kv.pop(request_id, None)
             self._stats.register_rejected += 1
+
+    def _announce_donor(
+        self,
+        request_id: str,
+        segment_tokens: List[int],
+        embedding: Any,
+        namespace: str,
+        cache_salt: Any = _UNSET_CACHE_SALT,
+    ) -> None:
+        """Publish the donor to the fleet on the same terms every engine does.
+
+        This adapter inserts into the donor store itself (the embed runs off
+        the scheduler thread), so without this the donor exists locally and no
+        fleet router ever learns of it.
+
+        Never raises: the donor is already registered locally, and a broker
+        that is down must not undo that.
+        """
+        salt_kwargs = {} if cache_salt is _UNSET_CACHE_SALT else {"cache_salt": cache_salt}
+        try:
+            self._pipeline.publish_donor_registered(
+                request_id,
+                segment_tokens,
+                embedding,
+                extra_key=namespace,
+                **salt_kwargs,
+            )
+        except Exception:
+            logger.debug(
+                "[FUZZY] register_donor_async: donor announce failed request_id=%s",
+                request_id,
+                exc_info=True,
+            )
 
     def _evict_lru_if_over_bound(self, reserve: int = 0) -> None:
         """Evict LRU donor handles until ``len(_donor_kv) + reserve <= max_entries``.

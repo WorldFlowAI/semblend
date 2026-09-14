@@ -29,11 +29,18 @@ jobs:
 
       - run: pip install ruff==0.16.0
 
+      # Every directory that carries shipped code or the tests that gate it.
+      # semblend_kv_connector/ and tests/ were outside this step while both
+      # were being changed, so a formatting drift there could not fail CI.
       - name: ruff check
-        run: ruff check semblend/ semblend_core/ synapse_kv_connector/
+        run: >-
+          ruff check semblend/ semblend_core/ synapse_kv_connector/
+          semblend_kv_connector/ tests/
 
       - name: ruff format
-        run: ruff format --check semblend/ semblend_core/ synapse_kv_connector/
+        run: >-
+          ruff format --check semblend/ semblend_core/ synapse_kv_connector/
+          semblend_kv_connector/ tests/
 
   test:
     name: Test (Python ${{ matrix.python-version }})

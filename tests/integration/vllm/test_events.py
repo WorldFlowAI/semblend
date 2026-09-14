@@ -12,7 +12,9 @@ from semblend.integration.dynamo.nats_publisher import (
 from semblend.integration.dynamo.semantic_events import (
     ISOLATION_EXTRA_FIELD,
     NO_ISOLATION_NAMESPACE,
+    NO_TENANT_KEY,
     SEMANTIC_KV_EVENT_SUBJECT,
+    TENANT_KEY_EXTRA_FIELD,
     CacheNamespace,
 )
 from semblend.integration.trtllm.events import DEFAULT_SUBJECT as TRTLLM_DEFAULT_SUBJECT
@@ -49,11 +51,13 @@ def test_vllm_donor_registered_carries_per_donor_routing_extra() -> None:
     assert data["namespace"]["extra"] == {
         "tenant": "wf-commercial",
         "template": "wf-rag-v1",
-        # No extra_key on this call, so the isolation field carries the
-        # sentinel: absent is an explicit value on the wire, never omitted.
-        # A consumer comparing the whole extra map must see "unsalted" and
-        # "salted" as different namespaces, which an omitted field cannot do.
+        # No extra_key and no cache_salt on this call, so both key fields
+        # carry their sentinel: absent is an explicit value on the wire,
+        # never omitted. A consumer comparing the whole extra map must see
+        # "unsalted" and "salted" as different namespaces, which an omitted
+        # field cannot do.
         ISOLATION_EXTRA_FIELD: NO_ISOLATION_NAMESPACE,
+        TENANT_KEY_EXTRA_FIELD: NO_TENANT_KEY,
     }
     assert len(data["segments"][0]["provider_metadata"]) == 384 * 4
 

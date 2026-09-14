@@ -292,11 +292,30 @@ class TestTensorRTProviderIsolation:
         assert event.namespace.extra[CACHE_SALT_EXTRA_FIELD] == cache_salt_namespace(SALT_A)
         assert SALT_A not in json.dumps(event.to_dict())
 
-    def test_unsalted_registration_leaves_namespace_untouched(self):
+    def test_unsalted_registration_leaves_the_isolation_key_unstamped(self):
+        """Absent salt, absent isolation field — but an explicit tenant key.
+
+        The two fields answer differently on purpose: ``namespace_key``
+        defaults the missing isolation field to the sentinel, so an unsalted
+        deployment's wire shape does not change, while the tenant key is
+        always stamped so a consumer never has to guess whether a namespace
+        predates the contract.
+        """
+        from semblend.integration.dynamo.semantic_events import (
+            NO_TENANT_KEY,
+            TENANT_KEY_EXTRA_FIELD,
+        )
+        from semblend.integration.trtllm.namespace import (
+            CACHE_SALT_EXTRA_FIELD,
+            strip_tenant_key,
+        )
+
         provider = _tensorrt_provider()
         event = _register_tensorrt(provider, None)
 
-        assert event.namespace == _namespace()
+        assert CACHE_SALT_EXTRA_FIELD not in event.namespace.extra
+        assert event.namespace.extra[TENANT_KEY_EXTRA_FIELD] == NO_TENANT_KEY
+        assert strip_tenant_key(event.namespace) == _namespace()
 
     def test_cross_salt_request_gets_no_donor(self):
         provider = _tensorrt_provider()
@@ -592,3 +611,139 @@ class TestLegacyProviderPostCheckFailsClosed:
 
         assert allowed is False
         assert provider.get_stats()["cross_namespace_rejected"] == 1
+
+
+class _RecordingEmitter:
+    """Stands in for the contract emitter the pipeline publishes through."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def donor_registered(self, request_id, token_ids, embedding, **kwargs) -> None:
+        self.calls.append(dict(kwargs))
+
+
+class TestTenantKeyThreading:
+    """Both providers forward the raw salt, not only the namespace.
+
+    The namespace isolates the donor inside this worker. The tenant key is
+    the one identity a fleet router can recompute from the request it is
+    placing, and it is derived from the salt alone, so the salt itself has
+    to reach the pipeline.
+    """
+
+    def test_the_tensorrt_provider_forwards_the_raw_salt(self):
+        provider = _tensorrt_provider()
+        emitter = _RecordingEmitter()
+        provider._pipeline._event_emitter = emitter  # noqa: SLF001
+
+        _register_tensorrt(provider, SALT_A)
+
+        assert emitter.calls[0]["cache_salt"] == SALT_A
+
+    def test_the_legacy_provider_forwards_the_raw_salt(self):
+        provider = _legacy_provider()
+        emitter = _RecordingEmitter()
+        provider._pipeline._event_emitter = emitter  # noqa: SLF001
+
+        _register_legacy(provider, SALT_A)
+
+        assert emitter.calls[0]["cache_salt"] == SALT_A
+
+    def test_an_unsalted_registration_still_reaches_the_emitter_as_a_salt(self):
+        """Absent is a real answer, not an unthreaded argument.
+
+        Both providers default ``cache_salt`` to ``None``, so forwarding it
+        publishes the sentinel key instead of tripping the "nobody wired the
+        salt" warning.
+        """
+        for provider, register in (
+            (_tensorrt_provider(), _register_tensorrt),
+            (_legacy_provider(), _register_legacy),
+        ):
+            emitter = _RecordingEmitter()
+            provider._pipeline._event_emitter = emitter  # noqa: SLF001
+
+            register(provider, None)
+
+            assert emitter.calls[0]["cache_salt"] is None
+
+    def test_distinct_salts_give_distinct_published_tenant_keys(self):
+        from semblend.integration.dynamo.semantic_events import tenant_key_for_salt
+
+        provider = _tensorrt_provider()
+        emitter = _RecordingEmitter()
+        provider._pipeline._event_emitter = emitter  # noqa: SLF001
+
+        _register_tensorrt(provider, SALT_A, request_id="donor-a")
+        _register_tensorrt(provider, SALT_B, request_id="donor-b")
+
+        keys = [tenant_key_for_salt(c["cache_salt"]) for c in emitter.calls]
+        assert keys[0] != keys[1]
+
+
+class TestTensorRTPublishesTheTenantKey:
+    """The TRT-LLM contract publisher stamps the tenant key on the wire.
+
+    A TRT-LLM worker used to publish only the engine-local isolation key, so
+    a fleet fed by it fell back to an identity no router can construct and
+    none of its donors could be selected by tenant.
+    """
+
+    def test_the_published_event_carries_the_tenant_key(self):
+        from semblend.integration.dynamo.semantic_events import (
+            TENANT_KEY_EXTRA_FIELD,
+            tenant_key_for_salt,
+        )
+
+        event = _register_tensorrt(_tensorrt_provider(), SALT_A)
+
+        assert event.namespace.extra[TENANT_KEY_EXTRA_FIELD] == tenant_key_for_salt(SALT_A)
+
+    def test_distinct_salts_publish_distinct_tenant_keys(self):
+        from semblend.integration.dynamo.semantic_events import TENANT_KEY_EXTRA_FIELD
+
+        provider = _tensorrt_provider()
+        a = _register_tensorrt(provider, SALT_A, request_id="donor-a")
+        b = _register_tensorrt(provider, SALT_B, request_id="donor-b")
+
+        assert (
+            a.namespace.extra[TENANT_KEY_EXTRA_FIELD] != b.namespace.extra[TENANT_KEY_EXTRA_FIELD]
+        )
+
+    def test_the_engine_local_key_did_not_move(self):
+        """The tenant key is wire-only: it must not enter the donor's key.
+
+        ``namespace_key`` is what the local store is keyed by, so a tenant
+        key inside it would strand every donor registered before the change.
+        """
+        from semblend.integration.trtllm.namespace import (
+            bind_cache_salt,
+            namespace_key,
+        )
+
+        provider = _tensorrt_provider()
+        _register_tensorrt(provider, SALT_A)
+
+        expected = namespace_key(bind_cache_salt(_namespace(), SALT_A))
+        stored = provider._pipeline._donor_store.get_donor("donor")  # noqa: SLF001
+        assert stored.extra_key == expected
+
+    def test_a_handle_rebuilt_from_a_published_event_still_matches_the_request(self):
+        """The wire-only key is stripped again when a handle is rebuilt.
+
+        The handle's namespace is compared for equality against the lookup
+        request's, so a handle carrying the extra field would reject every
+        lookup as cross-namespace.
+        """
+        from semblend.integration.trtllm.namespace import bind_cache_salt
+
+        provider = _tensorrt_provider()
+        event = _register_tensorrt(provider, SALT_A)
+
+        rebuilt = _tensorrt_provider()
+        rebuilt.register_donor(event)
+
+        assert rebuilt._donors["donor"].namespace == bind_cache_salt(  # noqa: SLF001
+            _namespace(), SALT_A
+        )

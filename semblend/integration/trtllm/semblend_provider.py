@@ -33,9 +33,11 @@ from semblend.integration.trtllm.namespace import (
     CACHE_SALT_EXTRA_FIELD,
     NO_CACHE_SALT_NAMESPACE,
     bind_cache_salt,
+    bind_tenant_key,
     build_cache_namespace,
     cache_salt_namespace,
     namespace_key,
+    strip_tenant_key,
 )
 from semblend.integration.trtllm.pytorch_backend import SaltIsolationWatch
 from semblend.integration.trtllm.upstream_interface import (
@@ -226,7 +228,10 @@ class SemBlendTensorRTProvider(SemanticKvProvider):
         self._donors[event.donor_id] = _TensorRTDonorHandle(
             donor_id=event.donor_id,
             token_ids=[],
-            namespace=event.namespace,
+            # The handle's namespace is compared for equality against the
+            # request's, so it must be the engine-local one. A published
+            # event also carries the tenant key, which is wire-only.
+            namespace=strip_tenant_key(event.namespace),
             block_ids=tuple(event.block_ids),
             location=event.location,
             provider_generation=event.provider_generation,
@@ -284,6 +289,10 @@ class SemBlendTensorRTProvider(SemanticKvProvider):
             token_ids=token_ids,
             prompt_text=prompt_text,
             extra_key=namespace_key(namespace),
+            # The raw salt as well as the namespace bound from it: the
+            # published tenant key is a function of the salt alone, so a
+            # router that set the salt can select this donor by tenant.
+            cache_salt=cache_salt,
         )
 
         segment = DonorSegment(
@@ -294,7 +303,14 @@ class SemBlendTensorRTProvider(SemanticKvProvider):
         )
         event = DonorRegistered(
             donor_id=request_id,
-            namespace=namespace,
+            # The published namespace carries the tenant key as well as the
+            # engine-local isolation key: the isolation key is hashed from
+            # engine-private inputs, so a fleet router holding the request
+            # cannot reproduce it and could never select this donor by
+            # tenant. Bound here, on the wire copy only — the handle below
+            # and namespace_key() keep the engine-local namespace, whose
+            # value every already-registered donor is stored under.
+            namespace=bind_tenant_key(namespace, cache_salt),
             location=location or DonorLocation.worker(worker_id=0, dp_rank=0),
             token_count=len(token_ids),
             segments=(segment,),
@@ -1519,6 +1535,10 @@ class SemBlendProvider(SemanticCacheLookupProvider):
             token_ids=token_ids,
             prompt_text=prompt_text,
             extra_key=self._request_namespace(cache_salt),
+            # The raw salt as well as the namespace derived from it: the
+            # published tenant key is a function of the salt alone, so a
+            # router that set the salt can select this donor by tenant.
+            cache_salt=cache_salt,
         )
         self._stats["registrations"] += 1
         self._salt_watch.record(cache_salt_namespace(cache_salt) != NO_CACHE_SALT_NAMESPACE)

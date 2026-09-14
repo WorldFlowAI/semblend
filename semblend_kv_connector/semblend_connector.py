@@ -2146,11 +2146,26 @@ class SemBlendConnectorV1(KVConnectorBase_V1):
 
         # New pipeline path
         if self._pipeline is not None:
+            # The raw salt rides along beside the namespace derived from it.
+            # The published tenant key hashes the salt exactly as the request
+            # carried it, so it is passed unstripped: stripping here would key
+            # the donor under a value no salt-setter can reproduce.
+            #
+            # The argument is passed only when the request type HAS the field.
+            # A request that carries `cache_salt=None` has genuinely no salt;
+            # a request object without the attribute at all is a wiring gap
+            # (an engine version this connector was never fitted to), and
+            # passing None for it would publish every donor tenant-less with
+            # no signal. Omitting it lets the publisher warn once instead.
+            salt_kwargs = (
+                {"cache_salt": request.cache_salt} if hasattr(request, "cache_salt") else {}
+            )
             self._pipeline.register_donor(
                 request_id=request.request_id,
                 token_ids=token_ids,
                 prompt_text=prompt,
                 extra_key=namespace,
+                **salt_kwargs,
             )
             print(
                 f"[SemBlend] donor reg (pipeline): req={request.request_id}, "

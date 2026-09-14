@@ -26,6 +26,8 @@ import pytest
 from semblend.integration.dynamo.semantic_events import (
     ISOLATION_EXTRA_FIELD,
     NO_ISOLATION_NAMESPACE,
+    NO_TENANT_KEY,
+    TENANT_KEY_EXTRA_FIELD,
     CacheNamespace,
     SemBlendEventEmitter,
 )
@@ -227,11 +229,14 @@ def test_vllm_emitter_binds_the_isolation_key_alongside_routing_extra() -> None:
     emitter.donor_registered("donor-b", list(range(64)), embedding, extra_key=NS_B)
 
     ns_a, ns_b = _wire_namespaces(events)
-    # Per-donor routing hints survive; the isolation key is bound on top.
+    # Per-donor routing hints survive; both keys are bound on top. No
+    # cache_salt was threaded through either call, so the tenant key is the
+    # sentinel -- the isolation key is what these assertions are about.
     assert ns_a["extra"] == {
         "tenant": "wf-commercial",
         "template": "wf-rag-v1",
         ISOLATION_EXTRA_FIELD: NS_A,
+        TENANT_KEY_EXTRA_FIELD: NO_TENANT_KEY,
     }
     assert ns_b["extra"][ISOLATION_EXTRA_FIELD] == NS_B
     assert not _hard_compatible(ns_a, ns_b)
@@ -247,7 +252,8 @@ def test_vllm_emitter_stamps_the_sentinel_when_no_key_is_passed() -> None:
     emitter.donor_registered("donor-a", list(range(64)), np.zeros(384, dtype=np.float32))
 
     assert events[0]["data"]["namespace"]["extra"] == {
-        ISOLATION_EXTRA_FIELD: NO_ISOLATION_NAMESPACE
+        ISOLATION_EXTRA_FIELD: NO_ISOLATION_NAMESPACE,
+        TENANT_KEY_EXTRA_FIELD: NO_TENANT_KEY,
     }
 
 
